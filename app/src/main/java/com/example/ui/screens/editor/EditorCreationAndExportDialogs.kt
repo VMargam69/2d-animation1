@@ -270,6 +270,7 @@ fun OfflineExportDialog(
     project: ProjectDocument,
     exportState: ExportUiState,
     onStartExport: (ExportFormat, ExportResolution, Int, Int) -> Unit,
+    onCancelExport: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var format by remember { mutableStateOf(ExportFormat.MP4) }
@@ -299,8 +300,9 @@ fun OfflineExportDialog(
                 when (exportState) {
                     is ExportUiState.Exporting -> {
                         val frac = (exportState.currentFrame.toFloat() / exportState.totalFrames.coerceAtLeast(1)).coerceIn(0f, 1f)
+                        val pct = (frac * 100).toInt()
                         Text(
-                            "Rendering ${exportState.format.displayName} locally...",
+                            "Rendering ${exportState.format.displayName} locally ($pct%)...",
                             style = MaterialTheme.typography.titleSmall,
                             color = StudioTextPrimary
                         )
@@ -428,7 +430,14 @@ fun OfflineExportDialog(
             }
         },
         dismissButton = {
-            if (exportState !is ExportUiState.Exporting) {
+            if (exportState is ExportUiState.Exporting) {
+                TextButton(
+                    onClick = onCancelExport,
+                    modifier = Modifier.testTag("cancel_export_btn")
+                ) {
+                    Text("Cancel Export", color = CoralPlayhead)
+                }
+            } else {
                 TextButton(onClick = onDismiss) { Text("Close", color = StudioTextSecondary) }
             }
         }

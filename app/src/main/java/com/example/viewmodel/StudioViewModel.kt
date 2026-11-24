@@ -82,11 +82,9 @@ data class StudioUiState(
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     val statusBanner: String? = null,
-    val hasLastRecoverableProject: Boolean = false
+    val hasLastRecoverableProject: Boolean = false,
+    val charactersById: Map<String, CharacterRigDefinition> = emptyMap()
 ) {
-    val charactersById: Map<String, CharacterRigDefinition>
-        get() = characters.associateBy { it.id }
-
     val selectedClip: TimelineClip?
         get() = project.activeScene.clips.firstOrNull { it.id == selectedClipId }
 }
@@ -118,9 +116,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _uiState = MutableStateFlow(StudioUiState())
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
 
+    /**
+     * Dedicated high-frequency frame stream updated during video playback without triggering
+     * full-screen Compose recompositions of toolbars, layer panels, or clip lists.
+     */
+    private val _playbackFrame = MutableStateFlow(0)
+    val playbackFrame: StateFlow<Int> = _playbackFrame.asStateFlow()
+
     private val undoStack = ArrayDeque<ProjectDocument>()
     private val redoStack = ArrayDeque<ProjectDocument>()
     private var playbackJob: Job? = null
+    private var exportJob: Job? = null
     private var statusClearJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
 
@@ -151,7 +157,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch {
             repository.characters.collect { chars ->
-                _uiState.update { it.copy(characters = chars) }
+                _uiState.update { it.copy(characters = chars, charactersById = chars.associateBy { c -> c.id }) }
             }
         }
         viewModelScope.launch {
@@ -259,6 +265,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val saved = repository.saveProject(doc, markAsLastOpened = true)
             clearHistory()
             router.navigate(HashRoute.AnimationEditor(saved.id))
+            _playbackFrame.value = 0
             _uiState.update {
                 it.copy(
                     project = saved,
@@ -280,6 +287,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val loaded = repository.loadProject(projectId) ?: return@launch
             clearHistory()
             router.navigate(HashRoute.AnimationEditor(loaded.id))
+            _playbackFrame.value = 0
             _uiState.update {
                 it.copy(
                     project = loaded,
@@ -300,6 +308,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val last = repository.recoverLastOpenedProject() ?: return@launch
             clearHistory()
             router.navigate(HashRoute.AnimationEditor(last.id))
+            _playbackFrame.value = 0
             _uiState.update {
                 it.copy(
                     project = last,
@@ -354,6 +363,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             fps = cur.fps
         )
         commitProjectChange(fresh)
+        _playbackFrame.value = 0
         _uiState.update { it.copy(currentFrame = 0, selectedClipId = null) }
         showStatus("Stage cleared")
     }
@@ -363,6 +373,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val cur = _uiState.value.project
         val built = template.buildProject(cur.name).copy(id = cur.id, createdAt = cur.createdAt)
         commitProjectChange(built)
+        _playbackFrame.value = 0
         _uiState.update {
             it.copy(
                 currentFrame = 0,
@@ -589,15 +600,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun selectKeyframeNode(clipId: String, globalFrame: Int) {
         stopPlayback()
         val maxFrame = (_uiState.value.project.activeScene.durationFrames - 1).coerceAtLeast(0)
+        val clamped = globalFrame.coerceIn(0, maxFrame)
         val layerId = _uiState.value.project.activeScene.clips.firstOrNull { it.id == clipId }?.layerId
+        _playbackFrame.value = clamped
         _uiState.update {
             it.copy(
                 selectedClipId = clipId,
                 selectedLayerId = layerId ?: it.selectedLayerId,
-                currentFrame = globalFrame.coerceIn(0, maxFrame)
+                currentFrame = clamped
             )
         }
-        showStatus("Selected keyframe node at F${globalFrame + 1}")
+        showStatus("Selected keyframe node at F${clamped + 1}")
     }
 
     fun cycleSelectedKeyframeEasing() {
@@ -774,6 +787,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         stopPlayback()
         val proj = _uiState.value.project
         if (index in proj.scenes.indices) {
+            _playbackFrame.value = 0
             _uiState.update {
                 it.copy(
                     project = proj.copy(activeSceneIndex = index),
@@ -796,6 +810,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         )
         val updated = proj.copy(scenes = proj.scenes + newScene, activeSceneIndex = proj.scenes.size)
         commitProjectChange(updated)
+        _playbackFrame.value = 0
         _uiState.update { it.copy(currentFrame = 0, selectedClipId = null) }
         showStatus("Added Scene $nextNum")
     }
@@ -807,6 +822,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val remaining = proj.scenes.toMutableList().apply { removeAt(idx) }
         val updated = proj.copy(scenes = remaining, activeSceneIndex = (idx - 1).coerceAtLeast(0))
         commitProjectChange(updated)
+        _playbackFrame.value = 0
         _uiState.update { it.copy(currentFrame = 0, selectedClipId = null) }
     }
 
@@ -834,9 +850,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             scene.copy(durationFrames = durationFrames.coerceIn(24, 1800))
         }
         commitProjectChange(updated)
+        val clamped = _playbackFrame.value.coerceAtMost(updated.activeScene.durationFrames - 1)
+        _playbackFrame.value = clamped
         _uiState.update {
             it.copy(
-                currentFrame = it.currentFrame.coerceAtMost(updated.activeScene.durationFrames - 1),
+                currentFrame = clamped,
                 activeSheet = ActiveEditorSheet.NONE
             )
         }
@@ -870,15 +888,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(timelineZoom = (it.timelineZoom + delta).coerceIn(0.5f, 2.5f)) }
     }
 
-    // --- Playback Engine ---
+    // --- Playback Engine (Drift-Free Monotonic Clock + Zero Full-Screen Recomposition) ---
     fun seekToFrame(frame: Int) {
         val maxFrame = (_uiState.value.project.activeScene.durationFrames - 1).coerceAtLeast(0)
-        _uiState.update { it.copy(currentFrame = frame.coerceIn(0, maxFrame)) }
+        val clamped = frame.coerceIn(0, maxFrame)
+        _playbackFrame.value = clamped
+        _uiState.update { it.copy(currentFrame = clamped) }
     }
 
     fun stepFrame(delta: Int) {
         stopPlayback()
-        seekToFrame(_uiState.value.currentFrame + delta)
+        seekToFrame(_playbackFrame.value + delta)
     }
 
     fun toggleLooping() {
@@ -894,37 +914,59 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun startPlayback() {
-        stopPlayback()
-        _uiState.update { it.copy(isPlaying = true) }
+        playbackJob?.cancel()
+        playbackJob = null
+        val initState = _uiState.value
+        val totalFrames = initState.project.activeScene.durationFrames.coerceAtLeast(1)
+        val startFrame = if (_playbackFrame.value >= totalFrames - 1) 0 else _playbackFrame.value
+        _playbackFrame.value = startFrame
+        _uiState.update { it.copy(isPlaying = true, currentFrame = startFrame) }
         startAudioPreviewIfPresent()
-        playbackJob = viewModelScope.launch {
-            while (isActive && _uiState.value.isPlaying) {
-                val state = _uiState.value
-                val fps = state.project.fps.coerceIn(12, 60)
-                val frameDelayMs = (1000L / fps).coerceAtLeast(16L)
-                delay(frameDelayMs)
 
-                val total = state.project.activeScene.durationFrames.coerceAtLeast(1)
-                val next = state.currentFrame + 1
-                if (next >= total) {
-                    if (state.isLooping) {
-                        _uiState.update { it.copy(currentFrame = 0) }
+        playbackJob = viewModelScope.launch {
+            val fps = _uiState.value.project.fps.coerceIn(12, 60)
+            val frameDurationNs = 1_000_000_000L / fps
+            var anchorFrame = startFrame
+            var anchorTimeNs = System.nanoTime()
+
+            while (isActive && _uiState.value.isPlaying) {
+                val nowNs = System.nanoTime()
+                val elapsedFrames = ((nowNs - anchorTimeNs) / frameDurationNs).toInt()
+                val targetRaw = anchorFrame + elapsedFrames
+                val total = _uiState.value.project.activeScene.durationFrames.coerceAtLeast(1)
+
+                if (targetRaw >= total) {
+                    if (_uiState.value.isLooping) {
+                        anchorFrame = 0
+                        anchorTimeNs = nowNs
+                        _playbackFrame.value = 0
                         restartAudioPreview()
                     } else {
+                        _playbackFrame.value = total - 1
                         stopPlayback()
+                        break
                     }
-                } else {
-                    _uiState.update { it.copy(currentFrame = next) }
+                } else if (targetRaw != _playbackFrame.value) {
+                    _playbackFrame.value = targetRaw
                 }
+
+                // Sleep cleanly to the exact next frame boundary (no drift, no busy-spin)
+                val nextBoundaryNs = anchorTimeNs + (elapsedFrames + 1L) * frameDurationNs
+                val sleepMs = ((nextBoundaryNs - System.nanoTime()) / 1_000_000L).coerceIn(1L, 42L)
+                delay(sleepMs)
             }
         }
     }
 
     fun stopPlayback() {
+        val wasPlaying = _uiState.value.isPlaying || playbackJob != null
         playbackJob?.cancel()
         playbackJob = null
         stopAudioPreview()
-        _uiState.update { it.copy(isPlaying = false) }
+        if (wasPlaying) {
+            val stoppedFrame = _playbackFrame.value
+            _uiState.update { it.copy(isPlaying = false, currentFrame = stoppedFrame) }
+        }
     }
 
     private fun startAudioPreviewIfPresent() {
@@ -937,7 +979,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             mediaPlayer = MediaPlayer().apply {
                 setDataSource(file.absolutePath)
                 prepare()
-                val seekMs = ((state.currentFrame - audioClip.startFrame).coerceAtLeast(0) * 1000) / state.project.fps.coerceAtLeast(1)
+                val seekMs = ((_playbackFrame.value - audioClip.startFrame).coerceAtLeast(0) * 1000) / state.project.fps.coerceAtLeast(1)
                 if (seekMs in 0 until duration) seekTo(seekMs)
                 start()
             }
@@ -962,13 +1004,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     // --- Export ---
     fun startExport(format: ExportFormat, resolution: ExportResolution, fps: Int, durationFrames: Int) {
         stopPlayback()
+        exportJob?.cancel()
         val state = _uiState.value
         val total = durationFrames.coerceIn(1, state.project.activeScene.durationFrames.coerceAtLeast(1))
         _uiState.update { it.copy(exportState = ExportUiState.Exporting(0, total, format)) }
 
-        viewModelScope.launch {
-            runCatching {
-                exporter.export(
+        exportJob = viewModelScope.launch {
+            try {
+                val output = exporter.export(
                     project = state.project,
                     charactersById = state.charactersById,
                     request = ExportRequest(format, resolution, fps, total)
@@ -977,14 +1020,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         it.copy(exportState = ExportUiState.Exporting(curFrame, tot, format))
                     }
                 }
-            }.onSuccess { output ->
                 _uiState.update { it.copy(exportState = ExportUiState.Success(output)) }
-            }.onFailure { err ->
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _uiState.update { it.copy(exportState = ExportUiState.Idle) }
+                throw e
+            } catch (err: Throwable) {
                 _uiState.update {
                     it.copy(exportState = ExportUiState.Error(err.localizedMessage ?: "Export failed"))
                 }
             }
         }
+    }
+
+    fun cancelExport() {
+        exportJob?.cancel()
+        exportJob = null
+        _uiState.update { it.copy(exportState = ExportUiState.Idle) }
+        showStatus("Export cancelled")
     }
 
     // --- Undo / Redo ---

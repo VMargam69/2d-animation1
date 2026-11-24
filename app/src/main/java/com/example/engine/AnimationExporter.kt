@@ -10,10 +10,14 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Build
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.MediaStore
 import com.example.model.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -45,7 +49,7 @@ class AnimationExporter(
         charactersById: Map<String, CharacterRigDefinition>,
         request: ExportRequest,
         onProgress: (currentFrame: Int, totalFrames: Int) -> Unit
-    ): ExportOutput = withContext(Dispatchers.IO) {
+    ): ExportOutput = withContext(Dispatchers.Default) {
         val scene = project.activeScene
         val totalFrames = request.durationFrames.coerceIn(1, scene.durationFrames.coerceAtLeast(1))
         val (outW, outH) = computeExportDimensions(project.width, project.height, request.resolution.longEdge)
@@ -53,20 +57,38 @@ class AnimationExporter(
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val baseFileName = "${safeName}_$stamp"
 
-        when (request.format) {
-            ExportFormat.PNG_SEQUENCE -> exportPngSequence(
-                scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, onProgress
-            )
-            ExportFormat.GIF -> exportAnimatedGif(
-                scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, onProgress
-            )
-            ExportFormat.MP4 -> exportMp4Video(
-                scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, onProgress
-            )
+        // Dedicated export renderer keeps export-sized background bitmap cached across all frames
+        val exportRenderer = sceneRenderer.createIndependentCopy()
+
+        // Throttle Compose UI progress callbacks (~15 updates/sec max) so UI stays buttery smooth
+        var lastReportMs = 0L
+        val throttledProgress: (Int, Int) -> Unit = { cur, tot ->
+            val now = SystemClock.uptimeMillis()
+            if (cur == tot || cur == 1 || (now - lastReportMs) >= 65L) {
+                lastReportMs = now
+                onProgress(cur, tot)
+            }
+        }
+
+        try {
+            when (request.format) {
+                ExportFormat.PNG_SEQUENCE -> exportPngSequence(
+                    exportRenderer, scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, throttledProgress
+                )
+                ExportFormat.GIF -> exportAnimatedGif(
+                    exportRenderer, scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, throttledProgress
+                )
+                ExportFormat.MP4 -> exportMp4Video(
+                    exportRenderer, scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, throttledProgress
+                )
+            }
+        } finally {
+            exportRenderer.clearScaledCache()
         }
     }
 
-    private fun exportPngSequence(
+    private suspend fun exportPngSequence(
+        renderer: SceneRenderer,
         scene: AnimationScene,
         charactersById: Map<String, CharacterRigDefinition>,
         totalFrames: Int,
@@ -85,7 +107,8 @@ class AnimationExporter(
 
         try {
             for (frame in 0 until totalFrames) {
-                sceneRenderer.renderFrame(
+                currentCoroutineContext().ensureActive()
+                renderer.renderFrame(
                     canvas = canvas,
                     width = outW,
                     height = outH,
@@ -96,11 +119,12 @@ class AnimationExporter(
                     onionSkinEnabled = false,
                     showMotionPaths = false,
                     selectedClipId = null,
-                    drawEditorOverlays = false
+                    drawEditorOverlays = false,
+                    isPlaying = true
                 )
                 val frameFile = File(rootDir, String.format(Locale.US, "frame_%04d.png", frame + 1))
-                FileOutputStream(frameFile).use { fos ->
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos)
+                BufferedOutputStream(FileOutputStream(frameFile), 32 * 1024).use { bos ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, bos)
                 }
                 totalBytes += frameFile.length()
                 onProgress(frame + 1, totalFrames)
@@ -118,7 +142,8 @@ class AnimationExporter(
         )
     }
 
-    private fun exportAnimatedGif(
+    private suspend fun exportAnimatedGif(
+        renderer: SceneRenderer,
         scene: AnimationScene,
         charactersById: Map<String, CharacterRigDefinition>,
         totalFrames: Int,
@@ -128,7 +153,6 @@ class AnimationExporter(
         baseName: String,
         onProgress: (Int, Int) -> Unit
     ): ExportOutput {
-        // Keep GIF dimensions crisp yet memory-friendly (max long edge 640px)
         val (gifW, gifH) = computeExportDimensions(outW, outH, minOf(outW.coerceAtLeast(outH), 640))
         val delayCs = (100 / fps.coerceIn(6, 30)).coerceAtLeast(3)
         val encoder = GifEncoder(width = gifW, height = gifH, delayCentiseconds = delayCs, loopCount = 0)
@@ -139,7 +163,8 @@ class AnimationExporter(
 
         try {
             for (frame in 0 until totalFrames) {
-                sceneRenderer.renderFrame(
+                currentCoroutineContext().ensureActive()
+                renderer.renderFrame(
                     canvas = canvas,
                     width = gifW,
                     height = gifH,
@@ -150,7 +175,8 @@ class AnimationExporter(
                     onionSkinEnabled = false,
                     showMotionPaths = false,
                     selectedClipId = null,
-                    drawEditorOverlays = false
+                    drawEditorOverlays = false,
+                    isPlaying = true
                 )
                 encoder.addFrame(bitmap)
                 onProgress(frame + 1, totalFrames)
@@ -162,16 +188,20 @@ class AnimationExporter(
         val outDir = File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir, "FrameCraft")
         outDir.mkdirs()
         val localFile = File(outDir, "$baseName.gif")
-        FileOutputStream(localFile).use { fos ->
-            encoder.finish(fos)
+        withContext(Dispatchers.IO) {
+            BufferedOutputStream(FileOutputStream(localFile), 64 * 1024).use { bos ->
+                encoder.finish(bos)
+            }
         }
 
-        val displayLocation = publishToMediaStoreIfSupported(
-            sourceFile = localFile,
-            fileName = "$baseName.gif",
-            mimeType = "image/gif",
-            isVideo = false
-        ) ?: "Pictures/FrameCraft/$baseName.gif"
+        val displayLocation = withContext(Dispatchers.IO) {
+            publishToMediaStoreIfSupported(
+                sourceFile = localFile,
+                fileName = "$baseName.gif",
+                mimeType = "image/gif",
+                isVideo = false
+            )
+        } ?: "Pictures/FrameCraft/$baseName.gif"
 
         return ExportOutput(
             displayPath = displayLocation,
@@ -182,7 +212,8 @@ class AnimationExporter(
         )
     }
 
-    private fun exportMp4Video(
+    private suspend fun exportMp4Video(
+        renderer: SceneRenderer,
         scene: AnimationScene,
         charactersById: Map<String, CharacterRigDefinition>,
         totalFrames: Int,
@@ -200,10 +231,11 @@ class AnimationExporter(
         outDir.mkdirs()
         val localFile = File(outDir, "$baseName.mp4")
 
+        val safeFps = fps.coerceIn(12, 60)
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, outW, outH).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, (outW * outH * 4).coerceIn(1_500_000, 10_000_000))
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_FRAME_RATE, safeFps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
 
@@ -211,6 +243,7 @@ class AnimationExporter(
         val muxer = MediaMuxer(localFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         var trackIndex = -1
         var muxerStarted = false
+        var writtenFrames = 0L
 
         try {
             encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -218,17 +251,22 @@ class AnimationExporter(
             encoder.start()
 
             val bufferInfo = MediaCodec.BufferInfo()
-            val frameDurationUs = 1_000_000L / fps.coerceAtLeast(1)
+            val frameDurationUs = 1_000_000L / safeFps
 
             fun drainEncoder(endOfStream: Boolean) {
                 if (endOfStream) {
                     encoder.signalEndOfInputStream()
                 }
+                // Non-blocking drain (0us) during active frame loop eliminates artificial 10ms/frame stalls!
+                val timeoutUs = if (endOfStream) 5_000L else 0L
+                var eosRetries = 0
                 while (true) {
-                    val outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 10_000)
+                    val outputIndex = encoder.dequeueOutputBuffer(bufferInfo, timeoutUs)
                     when {
                         outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                             if (!endOfStream) break
+                            eosRetries++
+                            if (eosRetries > 400) break
                         }
                         outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                             if (!muxerStarted) {
@@ -238,11 +276,16 @@ class AnimationExporter(
                             }
                         }
                         outputIndex >= 0 -> {
+                            eosRetries = 0
                             val encodedData = encoder.getOutputBuffer(outputIndex)
                             if (encodedData != null && bufferInfo.size > 0 &&
                                 (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 &&
                                 muxerStarted
                             ) {
+                                // Stamp exact deterministic frame PTS so playback is 100% smooth at target FPS
+                                // with zero Thread.sleep() stalls!
+                                bufferInfo.presentationTimeUs = writtenFrames * frameDurationUs
+                                writtenFrames++
                                 encodedData.position(bufferInfo.offset)
                                 encodedData.limit(bufferInfo.offset + bufferInfo.size)
                                 muxer.writeSampleData(trackIndex, encodedData, bufferInfo)
@@ -257,33 +300,32 @@ class AnimationExporter(
             }
 
             for (frame in 0 until totalFrames) {
+                currentCoroutineContext().ensureActive()
                 val canvas = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     inputSurface.lockHardwareCanvas()
                 } else {
                     inputSurface.lockCanvas(null)
                 }
                 try {
-                    sceneRenderer.renderFrame(
+                    renderer.renderFrame(
                         canvas = canvas,
                         width = outW,
                         height = outH,
                         scene = scene,
                         frame = frame,
-                        fps = fps,
+                        fps = safeFps,
                         charactersById = charactersById,
                         onionSkinEnabled = false,
                         showMotionPaths = false,
                         selectedClipId = null,
-                        drawEditorOverlays = false
+                        drawEditorOverlays = false,
+                        isPlaying = true
                     )
                 } finally {
                     inputSurface.unlockCanvasAndPost(canvas)
                 }
                 drainEncoder(endOfStream = false)
                 onProgress(frame + 1, totalFrames)
-                // Pace frames smoothly so surface timestamps advance deterministically
-                val sleepMs = (frameDurationUs / 2000L).coerceIn(1L, 12L)
-                Thread.sleep(sleepMs)
             }
 
             drainEncoder(endOfStream = true)
@@ -297,12 +339,14 @@ class AnimationExporter(
             runCatching { muxer.release() }
         }
 
-        val displayLocation = publishToMediaStoreIfSupported(
-            sourceFile = localFile,
-            fileName = "$baseName.mp4",
-            mimeType = "video/mp4",
-            isVideo = true
-        ) ?: "Movies/FrameCraft/$baseName.mp4"
+        val displayLocation = withContext(Dispatchers.IO) {
+            publishToMediaStoreIfSupported(
+                sourceFile = localFile,
+                fileName = "$baseName.mp4",
+                mimeType = "video/mp4",
+                isVideo = true
+            )
+        } ?: "Movies/FrameCraft/$baseName.mp4"
 
         return ExportOutput(
             displayPath = displayLocation,

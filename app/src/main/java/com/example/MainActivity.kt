@@ -115,6 +115,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
         is HashRoute.AnimationEditor -> {
             EditorScreen(
                 state = state,
+                playbackFrameFlow = viewModel.playbackFrame,
                 sceneRenderer = viewModel.sceneRenderer,
                 onBack = { viewModel.navigateBack() },
                 onUndo = { viewModel.undo() },
@@ -176,7 +177,8 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 },
                 onStartExport = { fmt, res, fps, dur ->
                     viewModel.startExport(fmt, res, fps, dur)
-                }
+                },
+                onCancelExport = { viewModel.cancelExport() }
             )
         }
     }

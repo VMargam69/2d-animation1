@@ -25,6 +25,7 @@ import com.example.viewmodel.StudioUiState
 @Composable
 fun EditorScreen(
     state: StudioUiState,
+    playbackFrameFlow: kotlinx.coroutines.flow.StateFlow<Int>,
     sceneRenderer: SceneRenderer,
     onBack: () -> Unit,
     onUndo: () -> Unit,
@@ -76,7 +77,8 @@ fun EditorScreen(
     onSetBackgroundColor: (String) -> Unit,
     onApplyTemplate: (String) -> Unit,
     onUpdateProjectSettings: (String, AspectRatioPreset, Int, Int, Int, Int, PreviewQuality) -> Unit,
-    onStartExport: (ExportFormat, ExportResolution, Int, Int) -> Unit
+    onStartExport: (ExportFormat, ExportResolution, Int, Int) -> Unit,
+    onCancelExport: () -> Unit
 ) {
     BackHandler { onBack() }
 
@@ -120,6 +122,8 @@ fun EditorScreen(
                         EditorCanvasPane(
                             project = state.project,
                             currentFrame = state.currentFrame,
+                            playbackFrameFlow = playbackFrameFlow,
+                            isPlaying = state.isPlaying,
                             charactersById = state.charactersById,
                             selectedClipId = state.selectedClipId,
                             canvasZoom = state.canvasZoom,
@@ -144,6 +148,7 @@ fun EditorScreen(
                         TimelinePanel(
                             project = state.project,
                             currentFrame = state.currentFrame,
+                            playbackFrameFlow = playbackFrameFlow,
                             isPlaying = state.isPlaying,
                             isLooping = state.isLooping,
                             selectedClipId = state.selectedClipId,
@@ -173,6 +178,8 @@ fun EditorScreen(
                         EditorCanvasPane(
                             project = state.project,
                             currentFrame = state.currentFrame,
+                            playbackFrameFlow = playbackFrameFlow,
+                            isPlaying = state.isPlaying,
                             charactersById = state.charactersById,
                             selectedClipId = state.selectedClipId,
                             canvasZoom = state.canvasZoom,
@@ -197,6 +204,7 @@ fun EditorScreen(
                         TimelinePanel(
                             project = state.project,
                             currentFrame = state.currentFrame,
+                            playbackFrameFlow = playbackFrameFlow,
                             isPlaying = state.isPlaying,
                             isLooping = state.isLooping,
                             selectedClipId = state.selectedClipId,
@@ -362,6 +370,7 @@ fun EditorScreen(
                 project = state.project,
                 exportState = state.exportState,
                 onStartExport = onStartExport,
+                onCancelExport = onCancelExport,
                 onDismiss = onCloseSheet
             )
         }

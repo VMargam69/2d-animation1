@@ -189,4 +189,51 @@ class AnimationEngineTest {
         )
         assertNull(hitWhileHidden)
     }
+
+    @Test
+    fun `skeleton mesh deformer computes normalized LBS weights and continuous FK joints`() {
+        val skel = SkeletonRigConfig(enabled = true)
+        val skin = com.example.engine.SkeletonMeshDeformer.buildSkinDataFromMask(
+            skeleton = skel,
+            alphaMask = null,
+            aspect = 0.65f
+        )
+
+        // Every vertex's top-3 skinning weights must be non-negative and sum strictly to 1.0
+        val vertCount = skin.restU.size
+        assertTrue(vertCount > 500)
+        for (i in 0 until vertCount) {
+            val o = i * 3
+            val w0 = skin.boneWeight[o]
+            val w1 = skin.boneWeight[o + 1]
+            val w2 = skin.boneWeight[o + 2]
+            assertTrue(w0 >= 0f && w1 >= 0f && w2 >= 0f)
+            assertEquals(1f, w0 + w1 + w2, 0.001f)
+        }
+
+        // Hierarchical FK: shoulder -> elbow -> hand must stay connected (forearm start == upper arm end)
+        val mat = FloatArray(11 * 6)
+        val posed = FloatArray(11 * 4)
+        val wavePose = com.example.engine.ProceduralRigRenderer.PoseAngles(
+            bodyTiltDeg = 6f,
+            headNodDeg = -8f,
+            rightArmDeg = -85f,
+            rightForearmDeg = -45f,
+            leftLegDeg = 18f,
+            leftKneeDeg = 22f
+        )
+        com.example.engine.SkeletonMeshDeformer.solveForwardKinematics(
+            boneRest = skin.boneRest,
+            aspect = 0.65f,
+            pose = wavePose,
+            outMat = mat,
+            outPosedJoints = posed
+        )
+        // Right upper arm (bone 5) distal joint == Right forearm (bone 6) proximal joint
+        assertEquals(posed[5 * 4 + 2], posed[6 * 4], 0.0005f)
+        assertEquals(posed[5 * 4 + 3], posed[6 * 4 + 1], 0.0005f)
+        // Left thigh (bone 7) distal joint == Left shin (bone 8) proximal joint
+        assertEquals(posed[7 * 4 + 2], posed[8 * 4], 0.0005f)
+        assertEquals(posed[7 * 4 + 3], posed[8 * 4 + 1], 0.0005f)
+    }
 }

@@ -31,7 +31,8 @@ import kotlin.math.min
 @Composable
 fun EditorCanvas(
     project: ProjectDocument,
-    currentFrame: Int,
+    playbackFrameFlow: kotlinx.coroutines.flow.StateFlow<Int>,
+    isPlaying: Boolean,
     charactersById: Map<String, CharacterRigDefinition>,
     selectedClipId: String?,
     canvasZoom: Float,
@@ -50,10 +51,11 @@ fun EditorCanvas(
     var activeStrokePoints by remember { mutableStateOf<List<NormalizedPoint>>(emptyList()) }
 
     val latestScene by rememberUpdatedState(scene)
-    val latestFrame by rememberUpdatedState(currentFrame)
     val latestSelectedId by rememberUpdatedState(selectedClipId)
     val latestZoom by rememberUpdatedState(canvasZoom)
     val latestDrawingMode by rememberUpdatedState(isDrawingMode)
+    val latestIsPlaying by rememberUpdatedState(isPlaying)
+    val liveFrameState = playbackFrameFlow.collectAsState()
 
     Canvas(
         modifier = modifier
@@ -62,10 +64,10 @@ fun EditorCanvas(
             // Tap gesture: hit-test objects in normalized stage coordinates to select or deselect
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
-                    if (latestDrawingMode) return@detectTapGestures
+                    if (latestDrawingMode || latestIsPlaying) return@detectTapGestures
                     val nx = (offset.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
                     val ny = (offset.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f)
-                    val hitClip = hitTestClipAtPoint(latestScene, latestFrame, nx, ny)
+                    val hitClip = hitTestClipAtPoint(latestScene, liveFrameState.value, nx, ny)
                     onSelectClip(hitClip?.id)
                 }
             }
@@ -74,13 +76,14 @@ fun EditorCanvas(
                 var activeDragClipId: String? = null
                 detectDragGestures(
                     onDragStart = { startOffset ->
+                        if (latestIsPlaying) return@detectDragGestures
                         val nx = (startOffset.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
                         val ny = (startOffset.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f)
                         if (latestDrawingMode) {
                             activeStrokePoints = listOf(NormalizedPoint(nx, ny))
                         } else {
                             // Hit-test on touch down so the user can immediately grab & translate any unlocked object
-                            val hit = hitTestClipAtPoint(latestScene, latestFrame, nx, ny)
+                            val hit = hitTestClipAtPoint(latestScene, liveFrameState.value, nx, ny)
                             activeDragClipId = hit?.id ?: latestSelectedId
                             if (hit != null && hit.id != latestSelectedId) {
                                 onSelectClip(hit.id)
@@ -124,19 +127,23 @@ fun EditorCanvas(
                 )
             }
     ) {
+        // Reading liveFrameState.value INSIDE the DrawScope invalidates ONLY the draw phase,
+        // achieving zero Compose recomposition during video playback!
+        val drawFrame = liveFrameState.value
         drawIntoCanvas { composeCanvas ->
             sceneRenderer.renderFrame(
                 canvas = composeCanvas.nativeCanvas,
                 width = size.width.toInt().coerceAtLeast(1),
                 height = size.height.toInt().coerceAtLeast(1),
                 scene = scene,
-                frame = currentFrame,
+                frame = drawFrame,
                 fps = project.fps,
                 charactersById = charactersById,
                 onionSkinEnabled = project.onionSkinEnabled,
                 showMotionPaths = project.showMotionPaths,
                 selectedClipId = selectedClipId,
-                drawEditorOverlays = true
+                drawEditorOverlays = true,
+                isPlaying = isPlaying
             )
         }
 

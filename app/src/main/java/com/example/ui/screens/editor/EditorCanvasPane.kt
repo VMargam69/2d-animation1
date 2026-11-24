@@ -30,6 +30,8 @@ import com.example.ui.theme.*
 fun EditorCanvasPane(
     project: ProjectDocument,
     currentFrame: Int,
+    playbackFrameFlow: kotlinx.coroutines.flow.StateFlow<Int>,
+    isPlaying: Boolean,
     charactersById: Map<String, CharacterRigDefinition>,
     selectedClipId: String?,
     canvasZoom: Float,
@@ -91,7 +93,8 @@ fun EditorCanvasPane(
         ) {
             EditorCanvas(
                 project = project,
-                currentFrame = currentFrame,
+                playbackFrameFlow = playbackFrameFlow,
+                isPlaying = isPlaying,
                 charactersById = charactersById,
                 selectedClipId = selectedClipId,
                 canvasZoom = canvasZoom,

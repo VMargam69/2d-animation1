@@ -19,6 +19,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -28,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import com.example.engine.ProceduralRigRenderer
 import com.example.model.*
 import com.example.ui.theme.*
+import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
 
 /**
@@ -38,6 +40,7 @@ import java.util.Locale
 fun TimelinePanel(
     project: ProjectDocument,
     currentFrame: Int,
+    playbackFrameFlow: StateFlow<Int>,
     isPlaying: Boolean,
     isLooping: Boolean,
     selectedClipId: String?,
@@ -75,9 +78,6 @@ fun TimelinePanel(
 
     val horizontalScroll = rememberScrollState()
     val verticalScroll = rememberScrollState()
-
-    val seconds = currentFrame.toFloat() / project.fps.coerceAtLeast(1).toFloat()
-    val timecode = String.format(Locale.US, "%02d:%04.1f", (seconds / 60).toInt(), seconds % 60f)
 
     Surface(
         color = StudioCharcoal,
@@ -131,10 +131,10 @@ fun TimelinePanel(
                     }
                 }
 
-                Text(
-                    text = "$timecode • F${currentFrame + 1}/${scene.durationFrames}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ElectricCyan
+                LiveTimecodeBadge(
+                    playbackFrameFlow = playbackFrameFlow,
+                    fps = project.fps,
+                    durationFrames = scene.durationFrames
                 )
             }
 
@@ -514,32 +514,62 @@ fun TimelinePanel(
                         }
                     }
 
-                    // Playhead Indicator Line & Handle across Ruler + All Tracks
-                    val playheadX = frameWidthDp * currentFrame
-                    Box(
-                        modifier = Modifier
-                            .offset(x = playheadX - 6.dp)
-                            .width(12.dp)
-                            .fillMaxHeight()
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .size(11.dp)
-                                .clip(CircleShape)
-                                .background(CoralPlayhead)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .padding(top = 8.dp)
-                                .width(2.dp)
-                                .fillMaxHeight()
-                                .background(CoralPlayhead)
-                        )
-                    }
+                    // GPU-accelerated Playhead Indicator Line & Handle (zero recomposition during playback!)
+                    LivePlayheadOverlay(
+                        playbackFrameFlow = playbackFrameFlow,
+                        frameWidthPx = frameWidthPx
+                    )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun LiveTimecodeBadge(
+    playbackFrameFlow: StateFlow<Int>,
+    fps: Int,
+    durationFrames: Int
+) {
+    val frame by playbackFrameFlow.collectAsState()
+    val seconds = frame.toFloat() / fps.coerceAtLeast(1).toFloat()
+    val timecode = String.format(Locale.US, "%02d:%04.1f", (seconds / 60).toInt(), seconds % 60f)
+    Text(
+        text = "$timecode • F${frame + 1}/$durationFrames",
+        style = MaterialTheme.typography.labelSmall,
+        color = ElectricCyan
+    )
+}
+
+@Composable
+private fun LivePlayheadOverlay(
+    playbackFrameFlow: StateFlow<Int>,
+    frameWidthPx: Float
+) {
+    val liveFrameState = playbackFrameFlow.collectAsState()
+    val halfWidthPx = with(LocalDensity.current) { 6.dp.toPx() }
+    Box(
+        modifier = Modifier
+            .graphicsLayer {
+                translationX = liveFrameState.value * frameWidthPx - halfWidthPx
+            }
+            .width(12.dp)
+            .fillMaxHeight()
+    ) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .size(11.dp)
+                .clip(CircleShape)
+                .background(CoralPlayhead)
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 8.dp)
+                .width(2.dp)
+                .fillMaxHeight()
+                .background(CoralPlayhead)
+        )
     }
 }

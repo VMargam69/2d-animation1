@@ -28,10 +28,10 @@ fun CharacterPreviewCanvas(
     customBitmap: Bitmap? = null,
     modifier: Modifier = Modifier
 ) {
-    val phase: Float = if (animate) {
+    val animatedPhaseState = if (animate) {
         val transition = rememberInfiniteTransition(label = "rig_preview_${rig.id}_${preset.name}")
         val durationMs = ((preset.defaultDurationFrames * 1000) / 24).coerceIn(700, 2400)
-        val animated by transition.animateFloat(
+        transition.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
@@ -40,12 +40,12 @@ fun CharacterPreviewCanvas(
             ),
             label = "phase"
         )
-        animated
     } else {
-        0.15f
+        null
     }
 
     Canvas(modifier = modifier.fillMaxSize()) {
+        val phase = animatedPhaseState?.value ?: 0.15f
         drawIntoCanvas { composeCanvas ->
             val nativeCanvas = composeCanvas.nativeCanvas
             val minDim = min(size.width, size.height)

@@ -655,9 +655,9 @@ internal object HumanRigDrawer {
     }
 
     /**
-     * Renders an imported PNG character as a skeleton-articulated cutout rig:
-     * clips and pivots Head, Torso, Left/Right Arms, and Left/Right Legs around
-     * the user's defined 12-joint [SkeletonRigConfig] so static PNG images animate live!
+     * Renders an imported PNG character using 2D Alpha-Aware Linear Blend Skinning (LBS)
+     * and Hierarchical Forward Kinematics via [SkeletonMeshDeformer] so joints bend smoothly
+     * without seams, black clipPath cutouts, or duplicated limb slices.
      */
     fun drawSkeletonPngRig(
         canvas: Canvas,
@@ -668,132 +668,15 @@ internal object HumanRigDrawer {
         alpha: Float,
         tintOverlayColor: Int?
     ) {
-        val targetH = 198f * rigScale
-        val aspect = bitmap.width.toFloat() / bitmap.height.coerceAtLeast(1).toFloat()
-        val targetW = targetH * aspect
-        val left = -targetW / 2f
-        val top = -targetH * 0.62f
-        val dstRect = RectF(left, top, left + targetW, top + targetH)
-
-        fun px(nx: Float) = left + nx * targetW
-        fun py(ny: Float) = top + ny * targetH
-
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-            this.alpha = (alpha.coerceIn(0f, 1f) * 255).toInt()
-            if (tintOverlayColor != null) {
-                colorFilter = PorterDuffColorFilter(tintOverlayColor, PorterDuff.Mode.SRC_ATOP)
-            }
-        }
-
-        // Helper to render one articulated limb/region of the PNG clipped around its bone capsule
-        fun drawBoneSegment(
-            ax: Float, ay: Float, bx: Float, by: Float,
-            radiusFactor: Float,
-            pivotX: Float, pivotY: Float,
-            angleDeg: Float
-        ) {
-            val len = hypot(bx - ax, by - ay).coerceAtLeast(12f * rigScale)
-            val rad = max(len * radiusFactor, 16f * rigScale)
-            val clipPath = Path().apply {
-                val dx = (bx - ax) / len
-                val dy = (by - ay) / len
-                val nx = -dy * rad
-                val ny = dx * rad
-                moveTo(ax + nx, ay + ny)
-                lineTo(bx + nx, by + ny)
-                lineTo(bx - nx, by - ny)
-                lineTo(ax - nx, ay - ny)
-                close()
-                addCircle(ax, ay, rad, Path.Direction.CW)
-                addCircle(bx, by, rad * 0.95f, Path.Direction.CW)
-            }
-            canvas.save()
-            canvas.rotate(angleDeg, pivotX, pivotY)
-            canvas.clipPath(clipPath)
-            canvas.drawBitmap(bitmap, null, dstRect, paint)
-            canvas.restore()
-        }
-
-        // 1. Legs (Left & Right Hip -> Foot)
-        drawBoneSegment(
-            px(skeleton.leftHipX), py(skeleton.leftHipY),
-            px(skeleton.leftFootX), py(skeleton.leftFootY),
-            0.27f, px(skeleton.leftHipX), py(skeleton.leftHipY),
-            pose.leftLegDeg * 0.75f
+        SkeletonMeshDeformer.drawDeformedSkeletonRig(
+            canvas = canvas,
+            bitmap = bitmap,
+            skeleton = skeleton,
+            pose = pose,
+            rigScale = rigScale,
+            alpha = alpha,
+            tintOverlayColor = tintOverlayColor
         )
-        drawBoneSegment(
-            px(skeleton.rightHipX), py(skeleton.rightHipY),
-            px(skeleton.rightFootX), py(skeleton.rightFootY),
-            0.27f, px(skeleton.rightHipX), py(skeleton.rightHipY),
-            pose.rightLegDeg * 0.75f
-        )
-
-        // 2. Left Arm (Shoulder -> Hand)
-        drawBoneSegment(
-            px(skeleton.leftShoulderX), py(skeleton.leftShoulderY),
-            px(skeleton.leftHandX), py(skeleton.leftHandY),
-            0.28f, px(skeleton.leftShoulderX), py(skeleton.leftShoulderY),
-            pose.leftArmDeg * 0.7f
-        )
-
-        // 3. Central Torso (Neck -> Pelvis)
-        drawBoneSegment(
-            px(skeleton.neckX), py(skeleton.neckY),
-            px(skeleton.pelvisX), py(skeleton.pelvisY),
-            0.52f, px(skeleton.pelvisX), py(skeleton.pelvisY),
-            pose.bodyTiltDeg * 0.4f
-        )
-
-        // 4. Head (Neck -> Head top)
-        val headDist = hypot(px(skeleton.headX) - px(skeleton.neckX), py(skeleton.headY) - py(skeleton.neckY))
-            .coerceAtLeast(18f * rigScale)
-        canvas.save()
-        canvas.rotate(pose.headNodDeg * 1.15f, px(skeleton.neckX), py(skeleton.neckY))
-        val headClip = Path().apply {
-            addCircle(px(skeleton.headX), py(skeleton.headY), headDist * 1.32f, Path.Direction.CW)
-        }
-        canvas.clipPath(headClip)
-        canvas.drawBitmap(bitmap, null, dstRect, paint)
-        canvas.restore()
-
-        // 5. Right Arm (Shoulder -> Hand)
-        drawBoneSegment(
-            px(skeleton.rightShoulderX), py(skeleton.rightShoulderY),
-            px(skeleton.rightHandX), py(skeleton.rightHandY),
-            0.28f, px(skeleton.rightShoulderX), py(skeleton.rightShoulderY),
-            pose.rightArmDeg * 0.7f
-        )
-
-        // Optional visible Skeleton Bone Overlay
-        if (skeleton.showBoneOverlay) {
-            val bonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = 0xCC38BDF8.toInt()
-                strokeWidth = 2.6f * rigScale
-                strokeCap = Paint.Cap.ROUND
-            }
-            val jointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = 0xFFF59E0B.toInt()
-                style = Paint.Style.FILL
-            }
-            val links = listOf(
-                Pair(px(skeleton.headX) to py(skeleton.headY), px(skeleton.neckX) to py(skeleton.neckY)),
-                Pair(px(skeleton.neckX) to py(skeleton.neckY), px(skeleton.torsoX) to py(skeleton.torsoY)),
-                Pair(px(skeleton.torsoX) to py(skeleton.torsoY), px(skeleton.pelvisX) to py(skeleton.pelvisY)),
-                Pair(px(skeleton.neckX) to py(skeleton.neckY), px(skeleton.leftShoulderX) to py(skeleton.leftShoulderY)),
-                Pair(px(skeleton.leftShoulderX) to py(skeleton.leftShoulderY), px(skeleton.leftHandX) to py(skeleton.leftHandY)),
-                Pair(px(skeleton.neckX) to py(skeleton.neckY), px(skeleton.rightShoulderX) to py(skeleton.rightShoulderY)),
-                Pair(px(skeleton.rightShoulderX) to py(skeleton.rightShoulderY), px(skeleton.rightHandX) to py(skeleton.rightHandY)),
-                Pair(px(skeleton.pelvisX) to py(skeleton.pelvisY), px(skeleton.leftHipX) to py(skeleton.leftHipY)),
-                Pair(px(skeleton.leftHipX) to py(skeleton.leftHipY), px(skeleton.leftFootX) to py(skeleton.leftFootY)),
-                Pair(px(skeleton.pelvisX) to py(skeleton.pelvisY), px(skeleton.rightHipX) to py(skeleton.rightHipY)),
-                Pair(px(skeleton.rightHipX) to py(skeleton.rightHipY), px(skeleton.rightFootX) to py(skeleton.rightFootY))
-            )
-            links.forEach { (a, b) ->
-                canvas.drawLine(a.first, a.second, b.first, b.second, bonePaint)
-                canvas.drawCircle(a.first, a.second, 4f * rigScale, jointPaint)
-                canvas.drawCircle(b.first, b.second, 4f * rigScale, jointPaint)
-            }
-        }
     }
 
     private fun withAlpha(color: Int, alpha: Int): Int =
