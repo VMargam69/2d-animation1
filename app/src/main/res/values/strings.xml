@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">FrameCraft</string>
+    <string name="studio_subtitle">Offline 2D Animation Studio</string>
+    <string name="nav_back">Navigate back</string>
+    <string name="nav_close">Close</string>
+    <string name="projects_title">Studio Projects</string>
+    <string name="projects_new">New Project</string>
+    <string name="projects_empty_title">Start Your First Animation</string>
+    <string name="projects_empty_hint">Create an offline project, pick a rigged character, choose a motion preset, and animate on a multi-layer keyframe timeline.</string>
+    <string name="characters_title">Characters</string>
+    <string name="characters_create">Create Character</string>
+    <string name="characters_search_hint">Search Characters...</string>
+    <string name="animations_title">Animation Library</string>
+    <string name="animations_search_hint">Search Animations...</string>
+    <string name="media_title">Offline Media Library</string>
+    <string name="media_search_hint">Search Media Assets...</string>
+    <string name="media_import">Import Asset</string>
+    <string name="editor_save">Save Project</string>
+    <string name="editor_export">Export Animation</string>
+    <string name="editor_settings">Project Settings</string>
+    <string name="editor_reset">Reset Project</string>
+    <string name="editor_play">Play</string>
+    <string name="editor_pause">Pause</string>
+    <string name="editor_onion_skin">Onion Skin</string>
+    <string name="editor_add_keyframe">Add Keyframe</string>
+    <string name="editor_layers">Layers</string>
+    <string name="editor_tutorials">Studio Guide</string>
+    <string name="export_title">Export Offline Animation</string>
+    <string name="export_start">Start Export</string>
+    <string name="export_complete">Export Complete</string>
+</resources>

@@ -1,0 +1,6 @@
+{
+  "name": "FrameCraft",
+  "description": "Offline 2D Android animation studio with character and animation preset libraries, multi-layer keyframe timeline, onion skinning, local projects, and MP4/GIF/PNG export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
