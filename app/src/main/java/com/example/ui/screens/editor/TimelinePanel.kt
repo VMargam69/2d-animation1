@@ -16,10 +16,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -64,8 +67,9 @@ fun TimelinePanel(
     modifier: Modifier = Modifier
 ) {
     val scene = project.activeScene
-    val sortedLayers = scene.layers.sortedByDescending { it.orderIndex }
-    val selectedClip = scene.clips.firstOrNull { it.id == selectedClipId }
+    val sortedLayers = remember(scene.layers) { scene.layers.sortedByDescending { it.orderIndex } }
+    val clipsByLayer = remember(scene.clips) { scene.clips.groupBy { it.layerId } }
+    val selectedClip = remember(scene.clips, selectedClipId) { scene.clips.firstOrNull { it.id == selectedClipId } }
     val selectedKeyframe = selectedClip?.keyframes?.firstOrNull {
         it.frame == (currentFrame - selectedClip.startFrame)
     }
@@ -389,9 +393,19 @@ fun TimelinePanel(
                                 }
                                 .testTag("timeline_frame_ruler")
                         ) {
+                            val rulerTextPaint = remember(density) {
+                                android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                    color = 0xFF94A3B8.toInt()
+                                    textSize = with(density) { 10.dp.toPx() }
+                                }
+                            }
                             Canvas(modifier = Modifier.fillMaxSize()) {
                                 val step = if (timelineZoom < 0.8f) 12 else 6
-                                for (f in 0 until scene.durationFrames) {
+                                // Cull ruler ticks & labels to the visible horizontal scroll window (+ generous buffer)
+                                val scrollPx = horizontalScroll.value.toFloat()
+                                val startF = ((scrollPx - 200f) / frameWidthPx).toInt().coerceAtLeast(0)
+                                val endF = ((scrollPx + 1800f) / frameWidthPx).toInt().coerceAtMost(scene.durationFrames - 1)
+                                for (f in startF..endF) {
                                     val x = f * frameWidthPx
                                     val isMajor = f % step == 0
                                     drawLine(
@@ -401,15 +415,30 @@ fun TimelinePanel(
                                         strokeWidth = if (isMajor) 1.5f else 1f
                                     )
                                 }
-                            }
-                            val labelStep = if (timelineZoom < 0.8f) 12 else 6
-                            for (f in 0 until scene.durationFrames step labelStep) {
-                                Text(
-                                    text = "${f + 1}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = StudioTextMuted,
-                                    modifier = Modifier.offset(x = frameWidthDp * f + 3.dp, y = 2.dp)
-                                )
+                                drawIntoCanvas { composeCanvas ->
+                                    val nc = composeCanvas.nativeCanvas
+                                    val firstMajor = (startF / step) * step
+                                    var f = firstMajor
+                                    while (f <= endF) {
+                                        if (f >= 0) {
+                                            nc.drawText("${f + 1}", f * frameWidthPx + 4f, 12f, rulerTextPaint)
+                                        }
+                                        f += step
+                                    }
+                                }
+                                // Draw amber camera keyframe ticks on ruler
+                                for (camKf in scene.cameraKeyframes) {
+                                    if (camKf.frame in startF..endF) {
+                                        val cx = camKf.frame * frameWidthPx
+                                        rotate(45f, pivot = Offset(cx, size.height - 6f)) {
+                                            drawRect(
+                                                color = AmberKeyframe,
+                                                topLeft = Offset(cx - 3.5f, size.height - 9.5f),
+                                                size = Size(7f, 7f)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                         HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
@@ -422,7 +451,7 @@ fun TimelinePanel(
                         ) {
                             sortedLayers.forEach { layer ->
                                 val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))
-                                val layerClips = scene.clips.filter { it.layerId == layer.id }
+                                val layerClips = clipsByLayer[layer.id].orEmpty()
 
                                 Box(
                                     modifier = Modifier
@@ -485,23 +514,22 @@ fun TimelinePanel(
                                                         .testTag("keyframe_node_${clip.id}_${kf.frame}")
                                                 ) {
                                                     Canvas(modifier = Modifier.size(12.dp)) {
-                                                        val dPath = Path().apply {
-                                                            moveTo(size.width / 2f, 0f)
-                                                            lineTo(size.width, size.height / 2f)
-                                                            lineTo(size.width / 2f, size.height)
-                                                            lineTo(0f, size.height / 2f)
-                                                            close()
-                                                        }
-                                                        drawPath(
-                                                            dPath,
-                                                            color = if (isNodeSelected) ElectricCyan else AmberKeyframe.copy(alpha = visAlpha)
-                                                        )
-                                                        if (isNodeSelected) {
-                                                            drawPath(
-                                                                dPath,
-                                                                color = Color.White,
-                                                                style = Stroke(width = 2f)
+                                                        val side = size.minDimension * 0.66f
+                                                        val topLeft = Offset((size.width - side) / 2f, (size.height - side) / 2f)
+                                                        rotate(45f) {
+                                                            drawRect(
+                                                                color = if (isNodeSelected) ElectricCyan else AmberKeyframe.copy(alpha = visAlpha),
+                                                                topLeft = topLeft,
+                                                                size = Size(side, side)
                                                             )
+                                                            if (isNodeSelected) {
+                                                                drawRect(
+                                                                    color = Color.White,
+                                                                    topLeft = topLeft,
+                                                                    size = Size(side, side),
+                                                                    style = Stroke(width = 2f)
+                                                                )
+                                                            }
                                                         }
                                                     }
                                                 }

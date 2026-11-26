@@ -369,6 +369,7 @@ data class AnimationScene(
     val backgroundImagePath: String? = null,
     val chromaKeyMode: ChromaKeyMode = ChromaKeyMode.NONE,
     val cameraKeyframes: List<CameraKeyframe> = emptyList(),
+    val cameraFocusClipId: String? = null,
     val durationFrames: Int = 144,
     val layers: List<AnimationLayer> = emptyList(),
     val clips: List<TimelineClip> = emptyList()

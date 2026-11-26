@@ -692,16 +692,20 @@ fun CameraAndChromaKeyDialog(
     currentFrame: Int,
     isCameraKeyMode: Boolean,
     onSetChromaKeyMode: (ChromaKeyMode) -> Unit,
+    onSetCameraFocusClip: (String?) -> Unit = {},
     onUpdateCamera: ((CameraKeyframe) -> CameraKeyframe) -> Unit,
     onDeleteCameraKeyframeAtFrame: () -> Unit,
     onResetAllCameraKeyframes: () -> Unit,
     onToggleCameraKeyMode: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val evalCam = remember(scene.cameraKeyframes, currentFrame) {
-        KeyframeEvaluator.evaluateCamera(scene.cameraKeyframes, currentFrame)
+    val evalCam = remember(scene, currentFrame) {
+        KeyframeEvaluator.evaluateCamera(scene, currentFrame)
     }
     val hasKfAtFrame = scene.cameraKeyframes.any { it.frame == currentFrame }
+    val trackableClips = remember(scene.clips) {
+        scene.clips.filter { it.characterId != null || it.imagePath != null || it.shapeKind != null }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -710,7 +714,8 @@ fun CameraAndChromaKeyDialog(
             Column {
                 Text("Camera Keyframing & Chroma Key", color = StudioTextPrimary)
                 Text(
-                    "Frame ${currentFrame + 1} • ${scene.cameraKeyframes.size} Camera Keyframe(s)",
+                    "Frame ${currentFrame + 1} • ${scene.cameraKeyframes.size} Camera Keyframe(s)" +
+                        if (evalCam.trackedClipName != null) " • Tracking ${evalCam.trackedClipName}" else "",
                     style = MaterialTheme.typography.labelSmall,
                     color = AmberKeyframe
                 )
@@ -739,7 +744,30 @@ fun CameraAndChromaKeyDialog(
 
                 HorizontalDivider(color = StudioBorderSubtle)
 
-                // 2. Stage Camera Keyframe Controls
+                // 2. Camera Focus Tracking (Auto-Follow Character/Subject)
+                Text("Camera Focus Tracking (Auto-Follow)", style = MaterialTheme.typography.labelLarge, color = ElectricCyan)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    item {
+                        FilterChip(
+                            selected = scene.cameraFocusClipId == null,
+                            onClick = { onSetCameraFocusClip(null) },
+                            label = { Text("Free Camera") },
+                            modifier = Modifier.testTag("camera_focus_none_chip")
+                        )
+                    }
+                    items(trackableClips, key = { it.id }) { clip ->
+                        FilterChip(
+                            selected = scene.cameraFocusClipId == clip.id,
+                            onClick = { onSetCameraFocusClip(clip.id) },
+                            label = { Text("Track: ${clip.name.take(18)}") },
+                            modifier = Modifier.testTag("camera_focus_clip_${clip.id}")
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 3. Stage Camera Keyframe Controls
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,

@@ -314,4 +314,59 @@ class AnimationEngineTest {
         assertNotEquals(0f, solved.rightArmOffset)
         assertEquals(10, com.example.engine.PropAndModularChartRenderer.MODULAR_CHART_ZONES.size)
     }
+
+    @Test
+    fun `camera focus tracking follows moving character clip and preserves zoom and framing offset`() {
+        val movingClip = TimelineClip(
+            id = "clip_runner",
+            layerId = "layer_char",
+            name = "Aarav Runner",
+            characterId = "char_aarav_desi",
+            startFrame = 0,
+            durationFrames = 60,
+            keyframes = listOf(
+                TransformKeyframe(frame = 0, x = 0.2f, y = 0.6f, easing = EasingType.LINEAR),
+                TransformKeyframe(frame = 20, x = 0.8f, y = 0.4f, easing = EasingType.LINEAR)
+            )
+        )
+        val scene = AnimationScene(
+            id = "scene_track",
+            name = "Track Scene",
+            cameraFocusClipId = "clip_runner",
+            cameraKeyframes = listOf(
+                CameraKeyframe(frame = 0, x = 0.55f, y = 0.45f, zoom = 1.6f, rotation = 4f, easing = EasingType.LINEAR)
+            ),
+            layers = listOf(AnimationLayer(id = "layer_char", name = "Char", type = LayerType.CHARACTER)),
+            clips = listOf(movingClip)
+        )
+
+        // At frame 0: clip is at (0.2, 0.6), camera offset is (+0.05, -0.05) -> tracked focus (0.25, 0.55)
+        val camStart = KeyframeEvaluator.evaluateCamera(scene, globalFrame = 0)
+        assertEquals(0.25f, camStart.x, 0.001f)
+        assertEquals(0.55f, camStart.y, 0.001f)
+        assertEquals(1.6f, camStart.zoom, 0.001f)
+        assertEquals("Aarav Runner", camStart.trackedClipName)
+
+        // At frame 10: clip is at midpoint (0.5, 0.5), offset (+0.05, -0.05) -> tracked focus (0.55, 0.45)
+        val camMid = KeyframeEvaluator.evaluateCamera(scene, globalFrame = 10)
+        assertEquals(0.55f, camMid.x, 0.001f)
+        assertEquals(0.45f, camMid.y, 0.001f)
+
+        // Live drag delta preview shifts tracked focus immediately without mutating scene
+        val camDragging = KeyframeEvaluator.evaluateCamera(
+            scene = scene,
+            globalFrame = 10,
+            clipDeltaOverrideId = "clip_runner",
+            clipDeltaX = 0.1f,
+            clipDeltaY = -0.1f
+        )
+        assertEquals(0.65f, camDragging.x, 0.001f)
+        assertEquals(0.35f, camDragging.y, 0.001f)
+
+        // Verify cameraFocusClipId round-trips through Moshi JSON
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(AnimationScene::class.java)
+        val restored = adapter.fromJson(adapter.toJson(scene))
+        assertEquals("clip_runner", restored?.cameraFocusClipId)
+    }
 }

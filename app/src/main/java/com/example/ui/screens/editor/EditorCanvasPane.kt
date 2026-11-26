@@ -31,6 +31,7 @@ fun EditorCanvasPane(
     project: ProjectDocument,
     currentFrame: Int,
     playbackFrameFlow: kotlinx.coroutines.flow.StateFlow<Int>,
+    bitmapVersionFlow: kotlinx.coroutines.flow.StateFlow<Int>,
     isPlaying: Boolean,
     charactersById: Map<String, CharacterRigDefinition>,
     selectedClipId: String?,
@@ -44,10 +45,9 @@ fun EditorCanvasPane(
     brushWidthRatio: Float,
     sceneRenderer: SceneRenderer,
     onSelectClip: (String?) -> Unit,
-    onDragSelectedClip: (dxNorm: Float, dyNorm: Float) -> Unit,
-    onDragIkHandle: (IkHandleId, Float, Float, Float, Float) -> Unit = { _, _, _, _, _ -> },
-    onPanCamera: (Float, Float) -> Unit = { _, _ -> },
-    onCommitDrag: () -> Unit,
+    onCommitClipTranslation: (clipId: String, totalDxNorm: Float, totalDyNorm: Float) -> Unit,
+    onCommitIkPose: (clipId: String, finalOffsets: PoseKeyframeOffsets) -> Unit = { _, _ -> },
+    onCommitCameraPan: (totalDxNorm: Float, totalDyNorm: Float) -> Unit = { _, _ -> },
     onFinishStroke: (List<NormalizedPoint>) -> Unit,
     onBrushStyleChange: (String, Float) -> Unit,
     onExitDrawingMode: () -> Unit,
@@ -126,6 +126,7 @@ fun EditorCanvasPane(
             EditorCanvas(
                 project = project,
                 playbackFrameFlow = playbackFrameFlow,
+                bitmapVersionFlow = bitmapVersionFlow,
                 isPlaying = isPlaying,
                 charactersById = charactersById,
                 selectedClipId = selectedClipId,
@@ -137,11 +138,10 @@ fun EditorCanvasPane(
                 brushWidthRatio = brushWidthRatio,
                 sceneRenderer = sceneRenderer,
                 onSelectClip = onSelectClip,
-                onTranslateSelectedClip = onDragSelectedClip,
-                onDragIkHandle = onDragIkHandle,
-                onPanCamera = onPanCamera,
+                onCommitClipTranslation = onCommitClipTranslation,
+                onCommitIkPose = onCommitIkPose,
+                onCommitCameraPan = onCommitCameraPan,
                 onDragStateChanged = { dragging -> isDraggingObject = dragging },
-                onCommitTranslation = onCommitDrag,
                 onFinishStroke = onFinishStroke,
                 modifier = Modifier.fillMaxSize()
             )
@@ -336,10 +336,11 @@ fun EditorCanvasPane(
                         }
                     }
 
-                    // Camera Keyframe & Chroma Key Chip
+                    // Camera Keyframe, Focus Tracking & Chroma Key Chip
                     item {
                         val hasCamKfs = scene.cameraKeyframes.isNotEmpty()
                         val isChroma = scene.chromaKeyMode != ChromaKeyMode.NONE
+                        val isTracking = scene.cameraFocusClipId != null
                         Surface(
                             color = if (isCameraKeyMode) AmberKeyframe else StudioPanel,
                             shape = RoundedCornerShape(8.dp),
@@ -348,7 +349,7 @@ fun EditorCanvasPane(
                                 when {
                                     isCameraKeyMode -> AmberKeyframe
                                     isChroma -> EmeraldLayer
-                                    hasCamKfs -> ElectricCyan
+                                    isTracking || hasCamKfs -> ElectricCyan
                                     else -> StudioBorderSubtle
                                 }
                             ),
@@ -364,11 +365,16 @@ fun EditorCanvasPane(
                                 Icon(
                                     Icons.Rounded.Videocam,
                                     contentDescription = "Camera and Chroma Key",
-                                    tint = if (isCameraKeyMode) StudioObsidian else if (isChroma) EmeraldLayer else AmberKeyframe,
+                                    tint = if (isCameraKeyMode) StudioObsidian else if (isChroma) EmeraldLayer else if (isTracking) ElectricCyan else AmberKeyframe,
                                     modifier = Modifier.size(14.dp)
                                 )
                                 Text(
-                                    text = if (isChroma) "Chroma" else if (hasCamKfs) "Cam (${scene.cameraKeyframes.size})" else "Cam/Chroma",
+                                    text = when {
+                                        isChroma -> "Chroma"
+                                        isTracking -> "Cam Track"
+                                        hasCamKfs -> "Cam (${scene.cameraKeyframes.size})"
+                                        else -> "Cam/Chroma"
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (isCameraKeyMode) StudioObsidian else StudioTextPrimary
                                 )

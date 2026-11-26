@@ -107,13 +107,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         assetStorage = assetStorage
     )
 
-    val sceneRenderer = SceneRenderer { path, bundledKey ->
-        when {
-            !path.isNullOrBlank() -> assetStorage.loadBitmapFromFile(path)
-            !bundledKey.isNullOrBlank() -> assetStorage.loadBundledBackgroundBitmap(bundledKey)
-            else -> null
+    val sceneRenderer = SceneRenderer(
+        bitmapProvider = { path, bundledKey ->
+            assetStorage.getCachedOrRequestBitmap(path, bundledKey)
+        },
+        blockingBitmapProvider = { path, bundledKey ->
+            when {
+                !path.isNullOrBlank() -> assetStorage.loadBitmapFromFile(path)
+                !bundledKey.isNullOrBlank() -> assetStorage.loadBundledBackgroundBitmap(bundledKey)
+                else -> null
+            }
         }
-    }
+    )
+
+    val bitmapVersion: StateFlow<Int> get() = assetStorage.bitmapVersion
 
     private val exporter = AnimationExporter(application, sceneRenderer)
 
@@ -133,6 +140,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private var exportJob: Job? = null
     private var statusClearJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
+    @Volatile private var isAudioPrepared: Boolean = false
+
+    companion object {
+        private const val MAX_UNDO_HISTORY = 20
+    }
 
     init {
         viewModelScope.launch {
@@ -146,6 +158,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         hasLastRecoverableProject = true
                     )
                 }
+                prefetchActiveScene(last)
             }
         }
 
@@ -161,7 +174,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch {
             repository.characters.collect { chars ->
-                _uiState.update { it.copy(characters = chars, charactersById = chars.associateBy { c -> c.id }) }
+                val byId = chars.associateBy { c -> c.id }
+                _uiState.update { it.copy(characters = chars, charactersById = byId) }
+                assetStorage.prefetchSceneAssets(_uiState.value.project.activeScene, byId)
             }
         }
         viewModelScope.launch {
@@ -282,6 +297,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     canvasPanY = 0f
                 )
             }
+            prefetchActiveScene(saved)
             showStatus("Created \"${saved.name}\"")
         }
     }
@@ -304,6 +320,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     canvasPanY = 0f
                 )
             }
+            prefetchActiveScene(loaded)
         }
     }
 
@@ -320,6 +337,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     destination = StudioDestination.EDITOR
                 )
             }
+            prefetchActiveScene(last)
             showStatus("Recovered \"${last.name}\"")
         }
     }
@@ -566,21 +584,42 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(selectedClipId = clipId, selectedLayerId = layerId ?: it.selectedLayerId) }
     }
 
-    fun dragSelectedClipByNormalizedDelta(dx: Float, dy: Float) {
+    /** Commits a completed clip drag gesture once on finger lift (zero mid-drag ProjectDocument copies). */
+    fun commitClipTranslation(clipId: String, totalDx: Float, totalDy: Float) {
+        if (kotlin.math.abs(totalDx) < 0.0001f && kotlin.math.abs(totalDy) < 0.0001f) return
         val state = _uiState.value
-        val clipId = state.selectedClipId ?: return
-        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clipId, state.currentFrame) { kf ->
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clipId, frame) { kf ->
             kf.copy(
-                x = (kf.x + dx).coerceIn(0.02f, 0.98f),
-                y = (kf.y + dy).coerceIn(0.02f, 0.98f)
+                x = (kf.x + totalDx).coerceIn(0.02f, 0.98f),
+                y = (kf.y + totalDy).coerceIn(0.02f, 0.98f)
             )
         }
-        _uiState.update { it.copy(project = updated) }
+        commitProjectChange(updated)
     }
 
-    fun commitGestureSnapshot() {
-        pushUndoSnapshot(_uiState.value.project)
-        saveCurrentProject(silent = true)
+    /** Commits a completed Direct Stage IK limb/head drag once on finger lift. */
+    fun commitIkPoseOffsets(clipId: String, finalOffsets: PoseKeyframeOffsets) {
+        val state = _uiState.value
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clipId, frame) { kf ->
+            kf.copy(poseOffsets = finalOffsets)
+        }
+        commitProjectChange(updated)
+    }
+
+    /** Commits a completed stage camera pan drag once on finger lift. */
+    fun commitCameraPan(totalDx: Float, totalDy: Float) {
+        if (kotlin.math.abs(totalDx) < 0.0001f && kotlin.math.abs(totalDy) < 0.0001f) return
+        val state = _uiState.value
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.upsertCameraKeyframeAtFrame(state.project, frame) { cam ->
+            cam.copy(
+                x = (cam.x - totalDx).coerceIn(0.05f, 0.95f),
+                y = (cam.y - totalDy).coerceIn(0.05f, 0.95f)
+            )
+        }
+        commitProjectChange(updated)
     }
 
     fun updateSelectedClipTransform(updater: (TransformKeyframe) -> TransformKeyframe) {
@@ -846,23 +885,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         seekToFrame(target)
     }
 
-    fun panCameraByNormalizedDelta(dx: Float, dy: Float) {
-        val state = _uiState.value
-        val frame = _playbackFrame.value
-        val updated = ProjectMutator.upsertCameraKeyframeAtFrame(state.project, frame) { cam ->
-            cam.copy(
-                x = (cam.x - dx).coerceIn(0.1f, 0.9f),
-                y = (cam.y - dy).coerceIn(0.1f, 0.9f)
-            )
-        }
-        _uiState.update { it.copy(project = updated) }
-    }
-
     fun updateCameraAtCurrentFrame(updater: (CameraKeyframe) -> CameraKeyframe) {
         val state = _uiState.value
         val frame = _playbackFrame.value
         val updated = ProjectMutator.upsertCameraKeyframeAtFrame(state.project, frame, updater)
         commitProjectChange(updated)
+    }
+
+    fun setCameraFocusClip(clipId: String?) {
+        val updated = ProjectMutator.updateActiveScene(_uiState.value.project) { scene ->
+            scene.copy(cameraFocusClipId = clipId)
+        }
+        commitProjectChange(updated)
+        if (clipId == null) {
+            showStatus("Camera Focus Tracking OFF")
+        } else {
+            val clipName = updated.activeScene.clips.firstOrNull { it.id == clipId }?.name ?: "Character"
+            showStatus("Camera Tracking: $clipName")
+        }
     }
 
     fun deleteCameraKeyframeAtCurrentFrame() {
@@ -874,7 +914,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun resetAllCameraKeyframes() {
-        val updated = ProjectMutator.resetCameraKeyframes(_uiState.value.project)
+        val updated = ProjectMutator.updateActiveScene(ProjectMutator.resetCameraKeyframes(_uiState.value.project)) { scene ->
+            scene.copy(cameraFocusClipId = null)
+        }
         commitProjectChange(updated)
         showStatus("Camera reset to default 100% stage view")
     }
@@ -995,14 +1037,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         stopPlayback()
         val proj = _uiState.value.project
         if (index in proj.scenes.indices) {
+            val nextProj = proj.copy(activeSceneIndex = index)
             _playbackFrame.value = 0
             _uiState.update {
                 it.copy(
-                    project = proj.copy(activeSceneIndex = index),
+                    project = nextProj,
                     currentFrame = 0,
                     selectedClipId = null
                 )
             }
+            prefetchActiveScene(nextProj)
         }
     }
 
@@ -1182,31 +1226,53 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val audioClip = state.project.activeScene.clips.firstOrNull { !it.audioPath.isNullOrBlank() } ?: return
         val file = File(audioClip.audioPath!!)
         if (!file.exists()) return
+        val startFrameAtLaunch = _playbackFrame.value
+        val fps = state.project.fps.coerceAtLeast(1)
         runCatching {
             stopAudioPreview()
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(file.absolutePath)
-                prepare()
-                val seekMs = ((_playbackFrame.value - audioClip.startFrame).coerceAtLeast(0) * 1000) / state.project.fps.coerceAtLeast(1)
-                if (seekMs in 0 until duration) seekTo(seekMs)
-                start()
+            val player = MediaPlayer()
+            mediaPlayer = player
+            isAudioPrepared = false
+            player.setDataSource(file.absolutePath)
+            player.setOnPreparedListener { mp ->
+                if (mp === mediaPlayer && _uiState.value.isPlaying) {
+                    isAudioPrepared = true
+                    val currentF = _playbackFrame.value.coerceAtLeast(startFrameAtLaunch)
+                    val seekMs = ((currentF - audioClip.startFrame).coerceAtLeast(0) * 1000) / fps
+                    if (seekMs in 0 until mp.duration) {
+                        mp.seekTo(seekMs)
+                    }
+                    mp.start()
+                }
             }
+            player.setOnErrorListener { _, _, _ ->
+                isAudioPrepared = false
+                true
+            }
+            // Non-blocking async preparation so pressing Play never freezes the UI thread
+            player.prepareAsync()
         }
     }
 
     private fun restartAudioPreview() {
+        val mp = mediaPlayer ?: return
+        if (!isAudioPrepared) return
         runCatching {
-            mediaPlayer?.seekTo(0)
-            mediaPlayer?.start()
+            mp.seekTo(0)
+            mp.start()
         }
     }
 
     private fun stopAudioPreview() {
-        runCatching {
-            mediaPlayer?.stop()
-            mediaPlayer?.release()
-        }
+        isAudioPrepared = false
+        val mp = mediaPlayer
         mediaPlayer = null
+        if (mp != null) {
+            runCatching {
+                if (mp.isPlaying) mp.stop()
+            }
+            runCatching { mp.release() }
+        }
     }
 
     // --- Export ---
@@ -1269,17 +1335,27 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun commitProjectChange(newProject: ProjectDocument) {
-        pushUndoSnapshot(_uiState.value.project)
+        val current = _uiState.value.project
+        if (newProject == current) return
+        pushUndoSnapshot(current)
         _uiState.update {
             it.copy(project = newProject, canUndo = undoStack.isNotEmpty(), canRedo = false)
         }
+        prefetchActiveScene(newProject)
         saveCurrentProject(silent = true)
     }
 
     private fun pushUndoSnapshot(snapshot: ProjectDocument) {
+        if (undoStack.lastOrNull() == snapshot) return
         undoStack.addLast(snapshot)
-        if (undoStack.size > 30) undoStack.removeFirst()
+        while (undoStack.size > MAX_UNDO_HISTORY) {
+            undoStack.removeFirst()
+        }
         redoStack.clear()
+    }
+
+    private fun prefetchActiveScene(project: ProjectDocument) {
+        assetStorage.prefetchSceneAssets(project.activeScene, _uiState.value.charactersById)
     }
 
     private fun clearHistory() {
@@ -1300,5 +1376,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         super.onCleared()
         stopPlayback()
+        sceneRenderer.clearScaledCache()
+        assetStorage.shutdown()
     }
 }

@@ -116,6 +116,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
             EditorScreen(
                 state = state,
                 playbackFrameFlow = viewModel.playbackFrame,
+                bitmapVersionFlow = viewModel.bitmapVersion,
                 sceneRenderer = viewModel.sceneRenderer,
                 onBack = { viewModel.navigateBack() },
                 onUndo = { viewModel.undo() },
@@ -138,8 +139,9 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                     viewModel.importMediaUri(uri, preferredType = MediaAssetType.AUDIO, addImmediatelyToCanvas = true)
                 },
                 onSelectClip = { viewModel.selectClip(it) },
-                onDragSelectedClip = { dx, dy -> viewModel.dragSelectedClipByNormalizedDelta(dx, dy) },
-                onCommitDrag = { viewModel.commitGestureSnapshot() },
+                onCommitClipTranslation = { clipId, dx, dy -> viewModel.commitClipTranslation(clipId, dx, dy) },
+                onCommitIkPose = { clipId, offsets -> viewModel.commitIkPoseOffsets(clipId, offsets) },
+                onCommitCameraPan = { dx, dy -> viewModel.commitCameraPan(dx, dy) },
                 onFinishStroke = { pts -> viewModel.finishDrawingStroke(pts) },
                 onBrushStyleChange = { hex, w -> viewModel.setBrushStyle(hex, w) },
                 onToggleDrawingMode = { viewModel.toggleDrawingMode() },
@@ -179,16 +181,13 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                     viewModel.startExport(fmt, res, fps, dur)
                 },
                 onCancelExport = { viewModel.cancelExport() },
-                onDragIkHandle = { handle, nx, ny, w, h ->
-                    viewModel.dragIkHandleOnStage(handle, nx, ny, w, h)
-                },
-                onPanCamera = { dx, dy -> viewModel.panCameraByNormalizedDelta(dx, dy) },
                 onToggleIkPosingMode = { viewModel.toggleIkPosingMode() },
                 onToggleCameraKeyMode = { viewModel.toggleCameraKeyMode() },
                 onStepAdjacentKeyframe = { forward -> viewModel.stepToAdjacentKeyframe(forward) },
                 onStampPoseKey = { viewModel.stampPoseAndCameraKeyframe() },
                 onResetPoseAtCurrentFrame = { viewModel.resetSelectedClipPoseAtCurrentFrame() },
                 onSetChromaKeyMode = { mode -> viewModel.setSceneChromaKeyMode(mode) },
+                onSetCameraFocusClip = { clipId -> viewModel.setCameraFocusClip(clipId) },
                 onUpdateCamera = { mutator -> viewModel.updateCameraAtCurrentFrame(mutator) },
                 onDeleteCameraKeyframeAtFrame = { viewModel.deleteCameraKeyframeAtCurrentFrame() },
                 onResetAllCameraKeyframes = { viewModel.resetAllCameraKeyframes() },

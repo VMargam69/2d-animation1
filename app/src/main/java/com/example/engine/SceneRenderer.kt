@@ -1,6 +1,7 @@
 package com.example.engine
 
 import android.graphics.*
+import android.util.LruCache
 import com.example.model.*
 import kotlin.math.PI
 import kotlin.math.cos
@@ -8,14 +9,36 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
+ * Local drag preview state kept inside EditorCanvas during active finger gestures so
+ * moving clips, posing IK handles, or panning the camera renders at full refresh rate
+ * without copying ProjectDocument or triggering Compose recompositions.
+ */
+data class StageGesturePreview(
+    val draggedClipId: String? = null,
+    val clipDeltaX: Float = 0f,
+    val clipDeltaY: Float = 0f,
+    val ikClipId: String? = null,
+    val ikPoseOffsets: PoseKeyframeOffsets? = null,
+    val cameraDeltaX: Float = 0f,
+    val cameraDeltaY: Float = 0f
+) {
+    val isActive: Boolean
+        get() = draggedClipId != null || ikClipId != null || cameraDeltaX != 0f || cameraDeltaY != 0f
+}
+
+/**
  * High-performance 2D animation frame renderer with:
  * - Thread-local reusable Paint / Path / RectF pools (zero per-frame GC churn)
  * - Pre-scaled center-crop background bitmap cache (1:1 fast blit during playback & export)
+ * - Cached freehand stroke Paths & parsed colors (LruCache)
+ * - Offscreen cached onion-skin composite bitmap (1 blit per redraw/drag)
  * - Playback-aware fast path that skips heavy editor overlays while video is playing
  */
 class SceneRenderer(
-    private val bitmapProvider: (path: String?, bundledKey: String?) -> Bitmap?
+    private val bitmapProvider: (path: String?, bundledKey: String?) -> Bitmap?,
+    private val blockingBitmapProvider: ((path: String?, bundledKey: String?) -> Bitmap?)? = null
 ) {
+    constructor(bitmapProvider: (path: String?, bundledKey: String?) -> Bitmap?) : this(bitmapProvider, null)
 
     private class RenderScratch {
         val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
@@ -68,18 +91,53 @@ class SceneRenderer(
         val scaledBitmap: Bitmap
     )
 
+    private data class StrokeCacheKey(
+        val strokeId: String,
+        val pointCount: Int,
+        val colorHex: String,
+        val width: Int,
+        val height: Int
+    )
+
+    private data class CachedStroke(
+        val path: Path,
+        val colorInt: Int
+    )
+
+    private data class OnionCacheEntry(
+        val sceneId: String,
+        val frame: Int,
+        val width: Int,
+        val height: Int,
+        val clipsIdentity: Int,
+        val layersIdentity: Int,
+        val charsIdentity: Int,
+        val bitmap: Bitmap
+    )
+
     private val scratchLocal = ThreadLocal.withInitial { RenderScratch() }
     private val bgCacheLock = Any()
     private var cachedBg: ScaledBgEntry? = null
+    private val onionCacheLock = Any()
+    private var cachedOnion: OnionCacheEntry? = null
+    private val strokeCache = LruCache<StrokeCacheKey, CachedStroke>(256)
 
-    /** Creates an isolated [SceneRenderer] sharing the same bitmap loader but with its own export-sized background cache. */
-    fun createIndependentCopy(): SceneRenderer = SceneRenderer(bitmapProvider)
+    /** Creates an isolated [SceneRenderer] using blocking disk decode for background export threads. */
+    fun createIndependentCopy(): SceneRenderer = SceneRenderer(
+        bitmapProvider = blockingBitmapProvider ?: bitmapProvider,
+        blockingBitmapProvider = blockingBitmapProvider
+    )
 
     fun clearScaledCache() {
         synchronized(bgCacheLock) {
             cachedBg?.scaledBitmap?.recycle()
             cachedBg = null
         }
+        synchronized(onionCacheLock) {
+            cachedOnion?.bitmap?.recycle()
+            cachedOnion = null
+        }
+        strokeCache.evictAll()
     }
 
     fun renderFrame(
@@ -97,7 +155,8 @@ class SceneRenderer(
         isPlaying: Boolean = false,
         isIkPosingMode: Boolean = false,
         isCameraKeyMode: Boolean = false,
-        activeIkHandle: IkHandleId? = null
+        activeIkHandle: IkHandleId? = null,
+        gesturePreview: StageGesturePreview? = null
     ) {
         val w = width.toFloat().coerceAtLeast(1f)
         val h = height.toFloat().coerceAtLeast(1f)
@@ -118,8 +177,23 @@ class SceneRenderer(
         scratch.bgPaint.color = baseBgColor
         canvas.drawRect(0f, 0f, w, h, scratch.bgPaint)
 
-        // Apply Keyframed Stage Camera Transform (Pan, Zoom, Rotation)
-        val camera = KeyframeEvaluator.evaluateCamera(scene.cameraKeyframes, frame)
+        // Apply Keyframed Stage Camera Transform (Pan, Zoom, Rotation + optional Focus Tracking + live drag preview)
+        val rawCamera = KeyframeEvaluator.evaluateCamera(
+            scene = scene,
+            globalFrame = frame,
+            clipDeltaOverrideId = gesturePreview?.draggedClipId,
+            clipDeltaX = gesturePreview?.clipDeltaX ?: 0f,
+            clipDeltaY = gesturePreview?.clipDeltaY ?: 0f
+        )
+        val camera = if (gesturePreview != null && (gesturePreview.cameraDeltaX != 0f || gesturePreview.cameraDeltaY != 0f)) {
+            rawCamera.copy(
+                x = (rawCamera.x - gesturePreview.cameraDeltaX).coerceIn(0.05f, 0.95f),
+                y = (rawCamera.y - gesturePreview.cameraDeltaY).coerceIn(0.05f, 0.95f)
+            )
+        } else {
+            rawCamera
+        }
+
         canvas.save()
         if (!camera.isIdentity) {
             canvas.translate(w * 0.5f, h * 0.5f)
@@ -142,14 +216,12 @@ class SceneRenderer(
             .filter { it.isVisible }
             .sortedBy { it.orderIndex }
 
-        // 3. Onion Skinning (only when paused/scrubbing so live video playback stays locked at target FPS)
+        // 3. Cached Onion Skinning (1 previous + 1 next ghost composited once per frame change into offscreen cache)
         if (onionSkinEnabled && drawEditorOverlays && !isPlaying) {
-            drawGhostOffset(canvas, w, h, visibleLayers, scene, frame - 2, 0.16f, 0xFFF43F5E.toInt(), charactersById, scratch)
-            drawGhostOffset(canvas, w, h, visibleLayers, scene, frame - 1, 0.28f, 0xFFF43F5E.toInt(), charactersById, scratch)
-            drawGhostOffset(canvas, w, h, visibleLayers, scene, frame + 1, 0.20f, 0xFF10B981.toInt(), charactersById, scratch)
+            drawCachedOnionSkin(canvas, width, height, w, h, visibleLayers, scene, frame, charactersById, scratch)
         }
 
-        // 4. Current Frame Layers
+        // 4. Current Frame Layers (with zero-recomposition live gesture preview overrides)
         drawLayersAtFrame(
             canvas = canvas,
             intW = width,
@@ -163,6 +235,7 @@ class SceneRenderer(
             alphaMultiplier = 1f,
             tintOverlay = null,
             skipBackgroundLayers = isChromaActive,
+            gesturePreview = gesturePreview,
             scratch = scratch
         )
 
@@ -175,7 +248,11 @@ class SceneRenderer(
                 val selectedClip = scene.clips.firstOrNull { it.id == selectedClipId }
                 val layerVisible = visibleLayers.any { it.id == selectedClip?.layerId }
                 if (selectedClip != null && layerVisible && frame in selectedClip.startFrame until selectedClip.endFrame) {
-                    val eval = KeyframeEvaluator.evaluate(selectedClip, frame)
+                    val eval = applyGesturePreview(
+                        KeyframeEvaluator.evaluate(selectedClip, frame),
+                        selectedClip.id,
+                        gesturePreview
+                    )
                     drawSelectionGizmo(canvas, w, h, eval, scratch)
                     if (isIkPosingMode && selectedClip.characterId != null) {
                         val rig = charactersById[selectedClip.characterId]
@@ -199,31 +276,114 @@ class SceneRenderer(
 
         canvas.restore() // restore camera transform
 
-        if (drawEditorOverlays && !isPlaying && isCameraKeyMode) {
-            drawCameraViewfinderOverlay(canvas, w, h, camera, scratch)
+        if (drawEditorOverlays && !isPlaying && (isCameraKeyMode || camera.trackedClipName != null)) {
+            drawCameraViewfinderOverlay(canvas, w, h, camera, isCameraKeyMode, scratch)
         }
 
         canvas.restore()
     }
 
-    private fun drawGhostOffset(
+    private fun applyGesturePreview(
+        base: EvaluatedTransform,
+        clipId: String,
+        gesturePreview: StageGesturePreview?
+    ): EvaluatedTransform {
+        if (gesturePreview == null || !gesturePreview.isActive) return base
+        var out = base
+        if (gesturePreview.draggedClipId == clipId && (gesturePreview.clipDeltaX != 0f || gesturePreview.clipDeltaY != 0f)) {
+            out = out.copy(
+                x = (out.x + gesturePreview.clipDeltaX).coerceIn(0.02f, 0.98f),
+                y = (out.y + gesturePreview.clipDeltaY).coerceIn(0.02f, 0.98f)
+            )
+        }
+        if (gesturePreview.ikClipId == clipId && gesturePreview.ikPoseOffsets != null) {
+            out = out.copy(poseOffsets = gesturePreview.ikPoseOffsets)
+        }
+        return out
+    }
+
+    private fun drawCachedOnionSkin(
         canvas: Canvas,
+        intW: Int,
+        intH: Int,
         w: Float,
         h: Float,
         visibleLayers: List<AnimationLayer>,
         scene: AnimationScene,
-        ghostFrame: Int,
-        ghostAlpha: Float,
-        tintColor: Int,
+        frame: Int,
         charactersById: Map<String, CharacterRigDefinition>,
         scratch: RenderScratch
     ) {
-        if (ghostFrame in 0 until scene.durationFrames) {
-            drawLayersAtFrame(
-                canvas, w.toInt(), h.toInt(), w, h, visibleLayers, scene.clips, ghostFrame,
-                charactersById, alphaMultiplier = ghostAlpha, tintOverlay = tintColor,
-                skipBackgroundLayers = true, scratch = scratch
-            )
+        val targetW = intW.coerceIn(16, 1280)
+        val targetH = intH.coerceIn(16, 1280)
+        val clipsId = System.identityHashCode(scene.clips)
+        val layersId = System.identityHashCode(scene.layers)
+        val charsId = System.identityHashCode(charactersById)
+
+        val onionBmp = synchronized(onionCacheLock) {
+            val cur = cachedOnion
+            if (cur != null && !cur.bitmap.isRecycled &&
+                cur.sceneId == scene.id &&
+                cur.frame == frame &&
+                cur.width == targetW &&
+                cur.height == targetH &&
+                cur.clipsIdentity == clipsId &&
+                cur.layersIdentity == layersId &&
+                cur.charsIdentity == charsId
+            ) {
+                cur.bitmap
+            } else {
+                val bmp = if (cur != null && !cur.bitmap.isRecycled && cur.width == targetW && cur.height == targetH) {
+                    cur.bitmap.eraseColor(Color.TRANSPARENT)
+                    cur.bitmap
+                } else {
+                    cur?.bitmap?.recycle()
+                    runCatching { Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888) }.getOrNull()
+                }
+                if (bmp != null) {
+                    val offCanvas = Canvas(bmp)
+                    val tw = targetW.toFloat()
+                    val th = targetH.toFloat()
+                    // Render 1 previous frame (coral) + 1 next frame (emerald) once per frame change
+                    if (frame - 1 in 0 until scene.durationFrames) {
+                        drawLayersAtFrame(
+                            offCanvas, targetW, targetH, tw, th, visibleLayers, scene.clips, frame - 1,
+                            charactersById, alphaMultiplier = 0.26f, tintOverlay = 0xFFF43F5E.toInt(),
+                            skipBackgroundLayers = true, gesturePreview = null, scratch = scratch
+                        )
+                    }
+                    if (frame + 1 in 0 until scene.durationFrames) {
+                        drawLayersAtFrame(
+                            offCanvas, targetW, targetH, tw, th, visibleLayers, scene.clips, frame + 1,
+                            charactersById, alphaMultiplier = 0.20f, tintOverlay = 0xFF10B981.toInt(),
+                            skipBackgroundLayers = true, gesturePreview = null, scratch = scratch
+                        )
+                    }
+                    cachedOnion = OnionCacheEntry(
+                        sceneId = scene.id,
+                        frame = frame,
+                        width = targetW,
+                        height = targetH,
+                        clipsIdentity = clipsId,
+                        layersIdentity = layersId,
+                        charsIdentity = charsId,
+                        bitmap = bmp
+                    )
+                }
+                bmp
+            }
+        }
+
+        if (onionBmp != null && !onionBmp.isRecycled) {
+            val paint = scratch.bitmapPaint
+            paint.alpha = 255
+            paint.colorFilter = null
+            if (targetW == intW && targetH == intH) {
+                canvas.drawBitmap(onionBmp, 0f, 0f, paint)
+            } else {
+                scratch.rect.set(0f, 0f, w, h)
+                canvas.drawBitmap(onionBmp, null, scratch.rect, paint)
+            }
         }
     }
 
@@ -240,6 +400,7 @@ class SceneRenderer(
         alphaMultiplier: Float,
         tintOverlay: Int?,
         skipBackgroundLayers: Boolean,
+        gesturePreview: StageGesturePreview?,
         scratch: RenderScratch
     ) {
         val baseScale = min(w, h) / 420f
@@ -253,7 +414,11 @@ class SceneRenderer(
                 val clip = clips[clipIdx]
                 if (clip.layerId != layer.id || frame < clip.startFrame || frame >= clip.endFrame) continue
 
-                val transform = KeyframeEvaluator.evaluate(clip, frame)
+                val transform = applyGesturePreview(
+                    KeyframeEvaluator.evaluate(clip, frame),
+                    clip.id,
+                    gesturePreview
+                )
                 val effectiveAlpha = (transform.opacity * alphaMultiplier).coerceIn(0f, 1f)
                 if (effectiveAlpha <= 0.01f) continue
 
@@ -266,7 +431,7 @@ class SceneRenderer(
                 }
 
                 if (layer.type == LayerType.DRAWING) {
-                    drawStrokesClip(canvas, w, h, clip, effectiveAlpha, tintOverlay, scratch)
+                    drawStrokesClip(canvas, intW, intH, w, h, clip, effectiveAlpha, tintOverlay, scratch)
                     continue
                 }
 
@@ -440,6 +605,8 @@ class SceneRenderer(
 
     private fun drawStrokesClip(
         canvas: Canvas,
+        intW: Int,
+        intH: Int,
         w: Float,
         h: Float,
         clip: TimelineClip,
@@ -450,19 +617,33 @@ class SceneRenderer(
         val alphaInt = (alpha * 255).toInt()
         val minDim = min(w, h)
         val paint = scratch.strokePaint
-        val path = scratch.path
         for (strokeData in clip.drawingStrokes) {
             if (strokeData.points.size < 2) continue
-            val col = tintOverlay ?: ProceduralRigRenderer.parseColorSafe(strokeData.colorHex, 0xFF38BDF8.toInt())
+            val key = StrokeCacheKey(
+                strokeId = strokeData.id,
+                pointCount = strokeData.points.size,
+                colorHex = strokeData.colorHex,
+                width = intW,
+                height = intH
+            )
+            var cached = strokeCache.get(key)
+            if (cached == null) {
+                val builtPath = Path()
+                val pts = strokeData.points
+                for (idx in pts.indices) {
+                    val pt = pts[idx]
+                    val px = pt.x * w
+                    val py = pt.y * h
+                    if (idx == 0) builtPath.moveTo(px, py) else builtPath.lineTo(px, py)
+                }
+                val parsedCol = ProceduralRigRenderer.parseColorSafe(strokeData.colorHex, 0xFF38BDF8.toInt())
+                cached = CachedStroke(builtPath, parsedCol)
+                strokeCache.put(key, cached)
+            }
+            val col = tintOverlay ?: cached.colorInt
             paint.strokeWidth = (strokeData.strokeWidthRatio * minDim).coerceAtLeast(3f)
             paint.color = Color.argb(alphaInt, Color.red(col), Color.green(col), Color.blue(col))
-            path.reset()
-            strokeData.points.forEachIndexed { idx, pt ->
-                val px = pt.x * w
-                val py = pt.y * h
-                if (idx == 0) path.moveTo(px, py) else path.lineTo(px, py)
-            }
-            canvas.drawPath(path, paint)
+            canvas.drawPath(cached.path, paint)
         }
     }
 
@@ -615,6 +796,7 @@ class SceneRenderer(
         w: Float,
         h: Float,
         camera: EvaluatedCamera,
+        showFullViewfinder: Boolean,
         scratch: RenderScratch
     ) {
         val stroke = scratch.strokePaint
@@ -622,30 +804,37 @@ class SceneRenderer(
         stroke.color = 0xFFFACC15.toInt()
         val inset = min(w, h) * 0.04f
         val corner = min(w, h) * 0.06f
-
-        // Corner brackets
-        canvas.drawLine(inset, inset, inset + corner, inset, stroke)
-        canvas.drawLine(inset, inset, inset, inset + corner, stroke)
-        canvas.drawLine(w - inset, inset, w - inset - corner, inset, stroke)
-        canvas.drawLine(w - inset, inset, w - inset, inset + corner, stroke)
-        canvas.drawLine(inset, h - inset, inset + corner, h - inset, stroke)
-        canvas.drawLine(inset, h - inset, inset, h - inset - corner, stroke)
-        canvas.drawLine(w - inset, h - inset, w - inset - corner, h - inset, stroke)
-        canvas.drawLine(w - inset, h - inset, w - inset, h - inset - corner, stroke)
-
-        // Center crosshair
         val cx = w * 0.5f
         val cy = h * 0.5f
-        canvas.drawCircle(cx, cy, 10f, stroke)
-        canvas.drawLine(cx - 18f, cy, cx + 18f, cy, stroke)
-        canvas.drawLine(cx, cy - 18f, cx, cy + 18f, stroke)
 
-        // HUD status badge
+        if (showFullViewfinder) {
+            // Corner brackets
+            canvas.drawLine(inset, inset, inset + corner, inset, stroke)
+            canvas.drawLine(inset, inset, inset, inset + corner, stroke)
+            canvas.drawLine(w - inset, inset, w - inset - corner, inset, stroke)
+            canvas.drawLine(w - inset, inset, w - inset, inset + corner, stroke)
+            canvas.drawLine(inset, h - inset, inset + corner, h - inset, stroke)
+            canvas.drawLine(inset, h - inset, inset, h - inset - corner, stroke)
+            canvas.drawLine(w - inset, h - inset, w - inset - corner, h - inset, stroke)
+            canvas.drawLine(w - inset, h - inset, w - inset, h - inset - corner, stroke)
+
+            // Center crosshair
+            canvas.drawCircle(cx, cy, 10f, stroke)
+            canvas.drawLine(cx - 18f, cy, cx + 18f, cy, stroke)
+            canvas.drawLine(cx, cy - 18f, cx, cy + 18f, stroke)
+        }
+
+        // HUD status badge (Zoom/Coords + optional Focus Tracking subject)
         val label = scratch.textPaint
         label.textSize = (min(w, h) * 0.024f).coerceIn(16f, 24f)
-        label.color = 0xFFFACC15.toInt()
+        label.color = if (camera.trackedClipName != null) 0xFF38BDF8.toInt() else 0xFFFACC15.toInt()
         val zoomPct = (camera.zoom * 100).toInt()
-        canvas.drawText("CAM ${zoomPct}% • (${"%.2f".format(camera.x)}, ${"%.2f".format(camera.y)})", cx, inset + label.textSize + 4f, label)
+        val hudText = if (camera.trackedClipName != null) {
+            "TRACKING: ${camera.trackedClipName.take(18)} • ${zoomPct}%"
+        } else {
+            "CAM ${zoomPct}% • (${"%.2f".format(camera.x)}, ${"%.2f".format(camera.y)})"
+        }
+        canvas.drawText(hudText, cx, inset + label.textSize + 4f, label)
     }
 
     private fun drawSubtleStageGrid(canvas: Canvas, w: Float, h: Float, scratch: RenderScratch) {

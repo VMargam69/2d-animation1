@@ -6,12 +6,22 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.LruCache
+import com.example.model.AnimationScene
+import com.example.model.CharacterRigDefinition
 import com.example.model.MediaAssetType
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class LocalAssetStorage(private val context: Context) {
 
@@ -19,9 +29,16 @@ class LocalAssetStorage(private val context: Context) {
         File(context.filesDir, "offline_media_assets").apply { mkdirs() }
     }
 
-    private val bitmapCache = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
+    private val bitmapCache = object : LruCache<String, Bitmap>(28 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
+
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inFlightLoads = ConcurrentHashMap.newKeySet<String>()
+
+    private val _bitmapVersion = MutableStateFlow(0)
+    /** Increments whenever an async background bitmap decode finishes so Compose Canvas redraws without blocking the UI thread. */
+    val bitmapVersion: StateFlow<Int> = _bitmapVersion.asStateFlow()
 
     data class ImportedAssetResult(
         val filePath: String,
@@ -78,11 +95,98 @@ class LocalAssetStorage(private val context: Context) {
 
     fun deleteOfflineFile(path: String?) {
         if (path.isNullOrBlank()) return
-        bitmapCache.remove("file:$path")
+        val exactKey = "file:$path"
+        val keyPrefix = "file:$path:"
+        bitmapCache.snapshot().keys.forEach { key ->
+            if (key == exactKey || key.startsWith(keyPrefix)) {
+                bitmapCache.remove(key)
+            }
+        }
         runCatching {
             val file = File(path)
             if (file.exists() && file.parentFile?.absolutePath == assetsDir.absolutePath) {
                 file.delete()
+            }
+        }
+    }
+
+    /**
+     * Non-blocking bitmap lookup for the UI draw thread.
+     * Returns immediately if already decoded in [bitmapCache]; otherwise schedules a deduplicated
+     * decode on [Dispatchers.IO] and bumps [bitmapVersion] once ready so the Canvas invalidates smoothly.
+     */
+    fun getCachedOrRequestBitmap(
+        path: String?,
+        bundledKey: String?,
+        maxDimension: Int = 1280
+    ): Bitmap? {
+        if (!path.isNullOrBlank()) {
+            val cacheKey = "file:$path:$maxDimension"
+            bitmapCache.get(cacheKey)?.let { if (!it.isRecycled) return it }
+            if (inFlightLoads.add(cacheKey)) {
+                ioScope.launch {
+                    try {
+                        val decoded = loadBitmapFromFile(path, maxDimension)
+                        if (decoded != null) {
+                            _bitmapVersion.value = _bitmapVersion.value + 1
+                        }
+                    } finally {
+                        inFlightLoads.remove(cacheKey)
+                    }
+                }
+            }
+            return null
+        }
+        if (!bundledKey.isNullOrBlank()) {
+            val resId = BuiltInCatalog.bundledBackgroundDrawableRes(bundledKey) ?: return null
+            val cacheKey = "res:$resId"
+            bitmapCache.get(cacheKey)?.let { if (!it.isRecycled) return it }
+            if (inFlightLoads.add(cacheKey)) {
+                ioScope.launch {
+                    try {
+                        val decoded = loadBundledBackgroundBitmap(bundledKey)
+                        if (decoded != null) {
+                            _bitmapVersion.value = _bitmapVersion.value + 1
+                        }
+                    } finally {
+                        inFlightLoads.remove(cacheKey)
+                    }
+                }
+            }
+            return null
+        }
+        return null
+    }
+
+    /** Proactively decodes all bitmaps referenced by [scene] on Dispatchers.IO so playback & scrubbing never stall. */
+    fun prefetchSceneAssets(
+        scene: AnimationScene,
+        charactersById: Map<String, CharacterRigDefinition>
+    ) {
+        ioScope.launch {
+            var loadedAny = false
+            if (!scene.backgroundImagePath.isNullOrBlank()) {
+                if (loadBitmapFromFile(scene.backgroundImagePath) != null) loadedAny = true
+            } else if (!scene.backgroundBundledKey.isNullOrBlank()) {
+                if (loadBundledBackgroundBitmap(scene.backgroundBundledKey) != null) loadedAny = true
+            }
+            for (clip in scene.clips) {
+                if (!clip.imagePath.isNullOrBlank()) {
+                    if (loadBitmapFromFile(clip.imagePath) != null) loadedAny = true
+                }
+                if (!clip.bundledBgKey.isNullOrBlank()) {
+                    if (loadBundledBackgroundBitmap(clip.bundledBgKey) != null) loadedAny = true
+                }
+                if (!clip.customPropImagePath.isNullOrBlank()) {
+                    if (loadBitmapFromFile(clip.customPropImagePath) != null) loadedAny = true
+                }
+                val rigPath = clip.characterId?.let { charactersById[it]?.customImagePath }
+                if (!rigPath.isNullOrBlank()) {
+                    if (loadBitmapFromFile(rigPath) != null) loadedAny = true
+                }
+            }
+            if (loadedAny) {
+                _bitmapVersion.value = _bitmapVersion.value + 1
             }
         }
     }
@@ -136,8 +240,13 @@ class LocalAssetStorage(private val context: Context) {
                 bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
             bitmapCache.put("file:${outFile.absolutePath}:1280", bmp)
+            _bitmapVersion.value = _bitmapVersion.value + 1
             outFile.absolutePath
         }.getOrNull()
+    }
+
+    fun shutdown() {
+        ioScope.cancel()
     }
 
     private fun queryDisplayName(uri: Uri): String? {

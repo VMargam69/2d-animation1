@@ -1064,9 +1064,17 @@ object ProceduralRigRenderer {
         }
     }
 
+    private val colorParseCache = java.util.concurrent.ConcurrentHashMap<String, Int>(64)
+
     fun parseColorSafe(hex: String, fallback: Int): Int {
+        colorParseCache[hex]?.let { return it }
         return try {
-            Color.parseColor(hex)
+            val parsed = Color.parseColor(hex)
+            if (colorParseCache.size > 512) {
+                colorParseCache.clear()
+            }
+            colorParseCache[hex] = parsed
+            parsed
         } catch (_: Exception) {
             fallback
         }

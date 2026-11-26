@@ -1,5 +1,6 @@
 package com.example.engine
 
+import com.example.model.AnimationScene
 import com.example.model.CameraKeyframe
 import com.example.model.EasingType
 import com.example.model.FacialExpression
@@ -26,7 +27,8 @@ data class EvaluatedCamera(
     val x: Float = 0.5f,
     val y: Float = 0.5f,
     val zoom: Float = 1.0f,
-    val rotation: Float = 0f
+    val rotation: Float = 0f,
+    val trackedClipName: String? = null
 ) {
     val isIdentity: Boolean
         get() = kotlin.math.abs(x - 0.5f) < 0.0005f &&
@@ -39,7 +41,7 @@ object KeyframeEvaluator {
 
     fun evaluate(clip: TimelineClip, globalFrame: Int): EvaluatedTransform {
         val localFrame = (globalFrame - clip.startFrame).coerceAtLeast(0)
-        val sorted = clip.keyframes.sortedBy { it.frame }
+        val sorted = ensureSortedTransformKeyframes(clip.keyframes)
         val base = evaluateKeyframes(sorted, localFrame)
         return applyTransitions(base, clip, localFrame)
     }
@@ -79,18 +81,22 @@ object KeyframeEvaluator {
 
         val pPose = prev.poseOffsets
         val nPose = next.poseOffsets
-        val interpPose = PoseKeyframeOffsets(
-            headNodOffset = lerp(pPose.headNodOffset, nPose.headNodOffset, t),
-            torsoTiltOffset = lerp(pPose.torsoTiltOffset, nPose.torsoTiltOffset, t),
-            leftArmOffset = lerp(pPose.leftArmOffset, nPose.leftArmOffset, t),
-            leftForearmOffset = lerp(pPose.leftForearmOffset, nPose.leftForearmOffset, t),
-            rightArmOffset = lerp(pPose.rightArmOffset, nPose.rightArmOffset, t),
-            rightForearmOffset = lerp(pPose.rightForearmOffset, nPose.rightForearmOffset, t),
-            leftLegOffset = lerp(pPose.leftLegOffset, nPose.leftLegOffset, t),
-            leftKneeOffset = lerp(pPose.leftKneeOffset, nPose.leftKneeOffset, t),
-            rightLegOffset = lerp(pPose.rightLegOffset, nPose.rightLegOffset, t),
-            rightKneeOffset = lerp(pPose.rightKneeOffset, nPose.rightKneeOffset, t)
-        )
+        val interpPose = if (!pPose.hasCustomOffsets && !nPose.hasCustomOffsets) {
+            pPose
+        } else {
+            PoseKeyframeOffsets(
+                headNodOffset = lerp(pPose.headNodOffset, nPose.headNodOffset, t),
+                torsoTiltOffset = lerp(pPose.torsoTiltOffset, nPose.torsoTiltOffset, t),
+                leftArmOffset = lerp(pPose.leftArmOffset, nPose.leftArmOffset, t),
+                leftForearmOffset = lerp(pPose.leftForearmOffset, nPose.leftForearmOffset, t),
+                rightArmOffset = lerp(pPose.rightArmOffset, nPose.rightArmOffset, t),
+                rightForearmOffset = lerp(pPose.rightForearmOffset, nPose.rightForearmOffset, t),
+                leftLegOffset = lerp(pPose.leftLegOffset, nPose.leftLegOffset, t),
+                leftKneeOffset = lerp(pPose.leftKneeOffset, nPose.leftKneeOffset, t),
+                rightLegOffset = lerp(pPose.rightLegOffset, nPose.rightLegOffset, t),
+                rightKneeOffset = lerp(pPose.rightKneeOffset, nPose.rightKneeOffset, t)
+            )
+        }
 
         return EvaluatedTransform(
             x = lerp(prev.x, next.x, t),
@@ -104,9 +110,36 @@ object KeyframeEvaluator {
         )
     }
 
+    /**
+     * Evaluates scene camera including optional Focus Tracking on [AnimationScene.cameraFocusClipId].
+     * When tracking a character clip, the camera follows the character's animated (x, y) while
+     * preserving keyframed zoom, roll, and framing offset (baseCam.x - 0.5f, baseCam.y - 0.5f).
+     */
+    fun evaluateCamera(
+        scene: AnimationScene,
+        globalFrame: Int,
+        clipDeltaOverrideId: String? = null,
+        clipDeltaX: Float = 0f,
+        clipDeltaY: Float = 0f
+    ): EvaluatedCamera {
+        val base = evaluateCamera(scene.cameraKeyframes, globalFrame)
+        val focusId = scene.cameraFocusClipId ?: return base
+        val targetClip = scene.clips.firstOrNull { it.id == focusId } ?: return base
+        val eval = evaluate(targetClip, globalFrame)
+        val tx = (eval.x + if (targetClip.id == clipDeltaOverrideId) clipDeltaX else 0f).coerceIn(0.02f, 0.98f)
+        val ty = (eval.y + if (targetClip.id == clipDeltaOverrideId) clipDeltaY else 0f).coerceIn(0.02f, 0.98f)
+        val offsetX = base.x - 0.5f
+        val offsetY = base.y - 0.5f
+        return base.copy(
+            x = (tx + offsetX).coerceIn(0.05f, 0.95f),
+            y = (ty + offsetY).coerceIn(0.05f, 0.95f),
+            trackedClipName = targetClip.name
+        )
+    }
+
     fun evaluateCamera(cameraKeyframes: List<CameraKeyframe>, globalFrame: Int): EvaluatedCamera {
         if (cameraKeyframes.isEmpty()) return EvaluatedCamera()
-        val sorted = cameraKeyframes.sortedBy { it.frame }
+        val sorted = ensureSortedCameraKeyframes(cameraKeyframes)
         val first = sorted.first()
         if (sorted.size == 1 || globalFrame <= first.frame) {
             return EvaluatedCamera(first.x, first.y, first.zoom.coerceIn(0.35f, 3.5f), first.rotation)
@@ -142,7 +175,7 @@ object KeyframeEvaluator {
     }
 
     fun sampleMotionPath(clip: TimelineClip, steps: Int = 24): List<NormalizedPoint> {
-        val sorted = clip.keyframes.sortedBy { it.frame }
+        val sorted = ensureSortedTransformKeyframes(clip.keyframes)
         if (sorted.size < 2) return sorted.map { NormalizedPoint(it.x, it.y) }
         val startF = sorted.first().frame
         val endF = sorted.last().frame
@@ -154,6 +187,26 @@ object KeyframeEvaluator {
             result.add(NormalizedPoint(eval.x, eval.y))
         }
         return result
+    }
+
+    private fun ensureSortedTransformKeyframes(list: List<TransformKeyframe>): List<TransformKeyframe> {
+        if (list.size <= 1) return list
+        for (i in 0 until list.size - 1) {
+            if (list[i].frame > list[i + 1].frame) {
+                return list.sortedBy { it.frame }
+            }
+        }
+        return list
+    }
+
+    private fun ensureSortedCameraKeyframes(list: List<CameraKeyframe>): List<CameraKeyframe> {
+        if (list.size <= 1) return list
+        for (i in 0 until list.size - 1) {
+            if (list[i].frame > list[i + 1].frame) {
+                return list.sortedBy { it.frame }
+            }
+        }
+        return list
     }
 
     private fun applyTransitions(
