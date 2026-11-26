@@ -346,12 +346,7 @@ fun CharacterLibraryScreen(
                                 bitmapVersion = bitmapVersion,
                                 onSelect = { onSelectCharacter(character) },
                                 onEdit = {
-                                    if (character.spriteAtlasRig != null || character.skeletonRig?.rigMode == CustomRigMode.ATLAS_RIG_PRO) {
-                                        onEditAtlasCharacter(character)
-                                    } else {
-                                        isCreatingNew = false
-                                        editingCharacter = character
-                                    }
+                                    onEditAtlasCharacter(character)
                                 },
                                 onTogglePin = { onTogglePin(character) }
                             )

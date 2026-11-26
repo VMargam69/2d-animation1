@@ -304,6 +304,7 @@ fun LiveRigPreviewPanel(
     poseTemplate: AtlasPoseTemplate,
     testAnimation: MakerTestAnimation,
     liveSlices: Map<AtlasPartSlot, Bitmap>,
+    skipFaceOverlays: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var previewOffset by remember { mutableStateOf(Offset.Zero) }
@@ -365,7 +366,8 @@ fun LiveRigPreviewPanel(
                     handPose = testAnimation.handPose,
                     blinkOverride = testAnimation.blinkOverride,
                     mouthSlotOverride = testAnimation.mouthSlotOverride,
-                    drawGhostFallbackWhenEmpty = true
+                    drawGhostFallbackWhenEmpty = true,
+                    skipFaceOverlays = skipFaceOverlays
                 )
                 nc.restore()
             }

@@ -184,7 +184,8 @@ data class SpriteAtlasRigConfig(
     val importedFullSheetPath: String? = null,
     val inlineAtlasSvg: String? = null,
     val placements: Map<String, AtlasPartPlacement> = emptyMap(),
-    val metadataJsonPath: String? = null
+    val metadataJsonPath: String? = null,
+    val faceBakedInHead: Boolean = false
 ) {
     fun placementFor(slot: AtlasPartSlot): AtlasPartPlacement =
         placements[slot.id] ?: AtlasPartPlacement(slotId = slot.id)
@@ -227,7 +228,8 @@ data class FrameCraftCharacterCode(
     val atlasFile: String? = null,
     val atlasSvg: String? = null,
     val slots: Map<String, CharacterCodeSlot> = emptyMap(),
-    val animations: List<String> = listOf("idle", "walk", "run", "talk1", "mth1", "mth2", "mth3", "mth4")
+    val animations: List<String> = listOf("idle", "walk", "run", "talk1", "mth1", "mth2", "mth3", "mth4"),
+    val faceBakedInHead: Boolean = false
 )
 
 object CharacterCodeCodec {
@@ -294,7 +296,8 @@ object CharacterCodeCodec {
             atlasFile = atlasFileName,
             atlasSvg = inlineSvgAtlas ?: config.inlineAtlasSvg,
             slots = slotsMap,
-            animations = listOf("idle", "walk", "run", "eyeclose", "talk1", "talk2", "mth1", "mth2", "mth3", "mth4")
+            animations = listOf("idle", "walk", "run", "eyeclose", "talk1", "talk2", "mth1", "mth2", "mth3", "mth4"),
+            faceBakedInHead = config.faceBakedInHead
         )
     }
 
@@ -326,7 +329,8 @@ object CharacterCodeCodec {
             renderMode = if (code.renderMode.equals("SVG", ignoreCase = true)) "SVG" else "PNG",
             importedFullSheetPath = resolvedAtlasPath,
             inlineAtlasSvg = code.atlasSvg,
-            placements = placements
+            placements = placements,
+            faceBakedInHead = code.faceBakedInHead
         )
     }
 }

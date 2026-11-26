@@ -72,6 +72,8 @@ fun TimelinePanel(
         newTrimStartMs: Long,
         newTrimEndMs: Long
     ) -> Unit = { _, _, _, _, _ -> },
+    waveformSensitivity: Float = 1.0f,
+    onWaveformSensitivityChange: (Float) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scene = project.activeScene
@@ -101,6 +103,10 @@ fun TimelinePanel(
     val verticalScroll = rememberScrollState()
     var sceneDropdownOpen by remember { mutableStateOf(false) }
     var isLayerRailCollapsed by remember { mutableStateOf(false) }
+    var showSensitivitySlider by remember { mutableStateOf(false) }
+    val hasAudioTrack = remember(scene.layers, scene.clips) {
+        scene.layers.any { it.type == LayerType.AUDIO } || scene.clips.any { !it.audioPath.isNullOrBlank() }
+    }
     val layerRailWidth by animateDpAsState(
         targetValue = if (isLayerRailCollapsed) 40.dp else 116.dp,
         label = "timeline_layer_rail_width"
@@ -344,6 +350,49 @@ fun TimelinePanel(
                             }
                         }
 
+                        if (hasAudioTrack) {
+                            Surface(
+                                color = if (showSensitivitySlider || waveformSensitivity != 1.0f) {
+                                    EmeraldLayer.copy(alpha = 0.2f)
+                                } else {
+                                    StudioPanel
+                                },
+                                shape = RoundedCornerShape(7.dp),
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (showSensitivitySlider || waveformSensitivity != 1.0f) {
+                                        EmeraldLayer
+                                    } else {
+                                        StudioBorderSubtle
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .height(26.dp)
+                                    .clickable { showSensitivitySlider = !showSensitivitySlider }
+                                    .testTag("timeline_waveform_sensitivity_toggle")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.GraphicEq,
+                                        contentDescription = "Waveform sensitivity",
+                                        tint = if (showSensitivitySlider || waveformSensitivity != 1.0f) EmeraldLayer else StudioTextSecondary,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text(
+                                        text = String.format(Locale.US, "%.1fx", waveformSensitivity),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (showSensitivitySlider || waveformSensitivity != 1.0f) EmeraldLayer else StudioTextPrimary,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
@@ -381,6 +430,76 @@ fun TimelinePanel(
                                     modifier = Modifier.size(13.dp)
                                 )
                             }
+                        }
+                    }
+                }
+            }
+
+            if (hasAudioTrack && showSensitivitySlider) {
+                HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(34.dp)
+                        .background(StudioPanel)
+                        .padding(horizontal = 10.dp)
+                        .testTag("timeline_waveform_sensitivity_bar"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.GraphicEq,
+                        contentDescription = null,
+                        tint = EmeraldLayer,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = "Waveform Gain",
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = StudioTextSecondary
+                    )
+                    Slider(
+                        value = waveformSensitivity.coerceIn(0.4f, 3.0f),
+                        onValueChange = { raw ->
+                            val snapped = (raw * 10f).toInt() / 10f
+                            onWaveformSensitivityChange(snapped.coerceIn(0.4f, 3.0f))
+                        },
+                        valueRange = 0.4f..3.0f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = EmeraldLayer,
+                            activeTrackColor = EmeraldLayer,
+                            inactiveTrackColor = StudioBorderSubtle
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("timeline_waveform_sensitivity_slider")
+                    )
+                    Text(
+                        text = String.format(Locale.US, "%.1fx", waveformSensitivity),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = EmeraldLayer
+                    )
+                    Surface(
+                        color = StudioCard,
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, StudioBorderSubtle),
+                        modifier = Modifier
+                            .height(22.dp)
+                            .clickable { onWaveformSensitivityChange(1.0f) }
+                            .testTag("timeline_waveform_sensitivity_reset")
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        ) {
+                            Text(
+                                text = "1.0x",
+                                fontSize = 10.sp,
+                                color = StudioTextSecondary,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     }
                 }
@@ -669,7 +788,8 @@ fun TimelinePanel(
                                                 currentFrame = currentFrame,
                                                 onSelectClip = onSelectClip,
                                                 onSelectKeyframeNode = onSelectKeyframeNode,
-                                                onTrimAudioClip = onTrimAudioClip
+                                                onTrimAudioClip = onTrimAudioClip,
+                                                waveformSensitivity = waveformSensitivity
                                             )
                                         } else {
                                             val clipOffsetX = frameWidthDp * clip.startFrame

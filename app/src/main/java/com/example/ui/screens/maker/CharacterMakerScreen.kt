@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -100,15 +101,16 @@ fun CharacterMakerScreen(
     var importedSheetSlices by remember { mutableStateOf<Map<AtlasPartSlot, Bitmap>>(emptyMap()) }
     var individualPartBitmaps by remember { mutableStateOf<Map<AtlasPartSlot, Bitmap>>(emptyMap()) }
 
-    // Async load imported full sprite sheet + slice cache on Dispatchers.IO
-    LaunchedEffect(config.importedFullSheetPath) {
+    // Async load imported full sprite sheet + slice cache on Dispatchers.IO (high-DPI for SVG & PNG)
+    LaunchedEffect(config.importedFullSheetPath, selectedResolution) {
         val path = config.importedFullSheetPath
         if (path.isNullOrBlank()) {
             importedSheetBitmap = null
             importedSheetSlices = emptyMap()
         } else {
+            val targetPx = selectedResolution.px.coerceIn(2048, 4096)
             val loaded = withContext(Dispatchers.IO) {
-                val bmp = assetStorage.loadBitmapFromFile(path, maxDimension = 2048)
+                val bmp = assetStorage.loadBitmapFromFile(path, maxDimension = targetPx)
                 val slices = bmp?.let { SpriteAtlasEngine.sliceAtlasIntoParts(it) } ?: emptyMap()
                 bmp to slices
             }
@@ -155,7 +157,7 @@ fun CharacterMakerScreen(
         merged
     }
 
-    // Zero-permission SAF OpenDocument picker supporting BOTH transparent PNG and vector SVG parts
+    // Zero-permission SAF OpenDocument picker supporting BOTH transparent PNG/WebP and vector SVG parts
     val partAssetPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -164,14 +166,19 @@ fun CharacterMakerScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             isBusy = true
-            val imported = assetStorage.importUriToOfflineStorage(uri, MediaAssetType.IMAGE)
+            val imported = assetStorage.importUriToOfflineStorage(uri, preferredType = null)
             if (imported != null) {
-                val isSvg = SvgAtlasRenderer.isSvgPath(imported.filePath)
+                val isSvg = SvgAtlasRenderer.isSvgPath(imported.filePath) ||
+                    imported.mimeType.contains("svg", ignoreCase = true)
+                val inlineSvg = if (isSvg) {
+                    withContext(Dispatchers.IO) { assetStorage.readSvgTextFromPath(imported.filePath) }
+                } else null
                 val cur = config.placementFor(targetSlot)
                 config = config.copy(
                     renderMode = if (isSvg) "SVG" else config.renderMode,
                     placements = config.placements + (targetSlot.id to cur.copy(
                         partImagePath = imported.filePath,
+                        svgInline = inlineSvg,
                         visible = true,
                         locked = false,
                         offsetX = 0f,
@@ -189,24 +196,41 @@ fun CharacterMakerScreen(
         }
     }
 
-    // Zero-permission SAF OpenDocument picker for ImportTex (full 2048/4096 PNG or crisp SVG atlas)
+    // Zero-permission SAF OpenDocument picker for ImportTex (full 2048/4096 PNG/WebP or crisp SVG atlas)
     val fullSheetPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             isBusy = true
-            val imported = assetStorage.importUriToOfflineStorage(uri, MediaAssetType.IMAGE)
+            val imported = assetStorage.importUriToOfflineStorage(uri, preferredType = null)
             if (imported != null) {
-                val isSvg = SvgAtlasRenderer.isSvgPath(imported.filePath)
+                val isSvg = SvgAtlasRenderer.isSvgPath(imported.filePath) ||
+                    imported.mimeType.contains("svg", ignoreCase = true)
+                val cleanedImportedName = imported.displayName
+                    .replace(Regex("[_\\-]+"), " ")
+                    .trim()
+                val shouldAdoptImportedName = config.textureName.isBlank() ||
+                    config.textureName.equals("CustomHero", ignoreCase = true) ||
+                    (existingCharacter != null && !existingCharacter.isCustom &&
+                        config.textureName.equals(existingCharacter.name, ignoreCase = true))
+                val resolvedName = if (shouldAdoptImportedName && cleanedImportedName.isNotBlank()) {
+                    cleanedImportedName
+                } else {
+                    config.textureName.ifBlank { cleanedImportedName.ifBlank { "CustomHero" } }
+                }
                 if (isSvg) {
+                    val inlineSvg = withContext(Dispatchers.IO) {
+                        assetStorage.readSvgTextFromPath(imported.filePath)
+                    }
                     showImportedSheet = true
                     config = config.copy(
                         importedFullSheetPath = imported.filePath,
+                        inlineAtlasSvg = inlineSvg,
                         renderMode = "SVG",
-                        textureName = config.textureName.ifBlank { imported.displayName }
+                        textureName = resolvedName
                     )
-                    statusBanner = "Imported crisp HD SVG sprite sheet (${selectedResolution.label})"
+                    statusBanner = "Imported crisp HD SVG sprite sheet \"$resolvedName\" (${selectedResolution.label})"
                 } else {
                     val (w, h) = assetStorage.inspectImageDimensions(imported.filePath)
                     val validation = SpriteAtlasEngine.validateAtlasDimensions(w, h)
@@ -214,8 +238,10 @@ fun CharacterMakerScreen(
                     showImportedSheet = true
                     config = config.copy(
                         importedFullSheetPath = imported.filePath,
+                        inlineAtlasSvg = null,
+                        renderMode = "PNG",
                         resolutionPx = validation.recommendedResolution.px,
-                        textureName = config.textureName.ifBlank { imported.displayName }
+                        textureName = resolvedName
                     )
                     statusBanner = validation.message
                 }
@@ -271,33 +297,61 @@ fun CharacterMakerScreen(
                 }
 
                 if (saveToLibraryAfter) {
-                    val baseId = existingCharacter?.id ?: UUID.randomUUID().toString()
+                    val editingBundled = existingCharacter != null && !existingCharacter.isCustom
+                    val baseId = if (existingCharacter != null && existingCharacter.isCustom) {
+                        existingCharacter.id
+                    } else {
+                        "custom_${UUID.randomUUID().toString().take(12)}"
+                    }
+                    val finalCharName = if (editingBundled &&
+                        cleanConfig.textureName.equals(existingCharacter?.name, ignoreCase = true)
+                    ) {
+                        "${cleanConfig.textureName} Custom"
+                    } else {
+                        cleanConfig.textureName
+                    }
                     val updatedAtlasCfg = cleanConfig.copy(
+                        textureName = finalCharName,
                         importedFullSheetPath = result.internalPath
                     )
-                    val draftChar = (existingCharacter ?: CharacterRigDefinition(
+                    val draftChar = (if (editingBundled) null else existingCharacter ?: CharacterRigDefinition(
                         id = baseId,
-                        name = cleanConfig.textureName,
+                        name = finalCharName,
                         category = CharacterCategory.LATEST,
                         isCustom = true,
                         isLatest = true
-                    )).copy(
-                        name = cleanConfig.textureName,
+                    ) ?: CharacterRigDefinition(
+                        id = baseId,
+                        name = finalCharName,
+                        category = CharacterCategory.LATEST,
                         isCustom = true,
-                        isLatest = true,
-                        customImagePath = result.internalPath,
-                        supportedOrientations = listOf(
-                            cleanConfig.poseTemplate.defaultOrientation,
-                            CharacterOrientation.FRONT,
-                            CharacterOrientation.THREE_QUARTER_FRONT,
-                            CharacterOrientation.SIDE
-                        ).distinct(),
-                        skeletonRig = (existingCharacter?.skeletonRig ?: SkeletonRigConfig()).copy(
-                            enabled = true,
-                            rigMode = CustomRigMode.ATLAS_RIG_PRO
-                        ),
-                        spriteAtlasRig = updatedAtlasCfg
-                    )
+                        isLatest = true
+                    )).let { base ->
+                        (base ?: CharacterRigDefinition(
+                            id = baseId,
+                            name = finalCharName,
+                            category = CharacterCategory.LATEST,
+                            isCustom = true,
+                            isLatest = true
+                        )).copy(
+                            id = baseId,
+                            name = finalCharName,
+                            isCustom = true,
+                            isLatest = true,
+                            customImagePath = result.internalPath,
+                            supportedOrientations = listOf(
+                                cleanConfig.poseTemplate.defaultOrientation,
+                                CharacterOrientation.FRONT,
+                                CharacterOrientation.THREE_QUARTER_FRONT,
+                                CharacterOrientation.SIDE
+                            ).distinct(),
+                            skeletonRig = (existingCharacter?.skeletonRig ?: SkeletonRigConfig()).copy(
+                                enabled = true,
+                                rigMode = CustomRigMode.ATLAS_RIG_PRO
+                            ),
+                            spriteAtlasRig = updatedAtlasCfg
+                        )
+                    }
                     val jsonPath = assetStorage.saveAtlasRigMetadataJson(draftChar)
                     val finalChar = draftChar.copy(
                         spriteAtlasRig = updatedAtlasCfg.copy(metadataJsonPath = jsonPath)
@@ -334,7 +388,7 @@ fun CharacterMakerScreen(
                 },
                 isBusy = isBusy,
                 onImportTex = {
-                    fullSheetPicker.launch(arrayOf("image/png", "image/svg+xml", "image/webp", "image/*"))
+                    fullSheetPicker.launch(arrayOf("image/png", "image/webp", "image/svg+xml"))
                 },
                 onExportTex = { runExportAtlas(saveToLibraryAfter = false) },
                 onOpenCodeDialog = { showCodeDialog = true },
@@ -407,6 +461,7 @@ fun CharacterMakerScreen(
                             showBgGuide = showBgGuide,
                             showChartGrid = showChartGrid,
                             showImportedSheet = showImportedSheet,
+                            faceBakedInHead = config.faceBakedInHead,
                             selectedSlotLocked = selectedIsLocked,
                             hasSelectedSlot = selectedSlot != null,
                             canResetSelectedPart = isDragPartMode && selectedSlot != null && !selectedIsLocked,
@@ -414,6 +469,15 @@ fun CharacterMakerScreen(
                             onToggleBg = { showBgGuide = !showBgGuide },
                             onToggleChart = { showChartGrid = !showChartGrid },
                             onToggleImg = { showImportedSheet = !showImportedSheet },
+                            onToggleFaceBaked = {
+                                val next = !config.faceBakedInHead
+                                config = config.copy(faceBakedInHead = next)
+                                statusBanner = if (next) {
+                                    "Face Baked in Head ON — separate eye/brow/mouth overlays hidden"
+                                } else {
+                                    "Face Baked in Head OFF — separate eye/brow/mouth slots active"
+                                }
+                            },
                             onToggleLockSelectedPart = {
                                 selectedSlot?.let { slot ->
                                     val cur = config.placementFor(slot)
@@ -441,6 +505,7 @@ fun CharacterMakerScreen(
                                 poseTemplate = config.poseTemplate,
                                 testAnimation = testAnimation,
                                 liveSlices = livePreviewSlices,
+                                skipFaceOverlays = config.faceBakedInHead,
                                 modifier = Modifier
                                     .width(220.dp)
                                     .fillMaxHeight()
@@ -498,7 +563,7 @@ fun CharacterMakerScreen(
                             },
                             onImportSlotPng = { slot ->
                                 pendingImportSlot = slot
-                                partAssetPicker.launch(arrayOf("image/png", "image/svg+xml", "image/webp", "image/*"))
+                                partAssetPicker.launch(arrayOf("image/png", "image/webp", "image/svg+xml"))
                             },
                             onClearSlotPng = { slot ->
                                 val cur = config.placementFor(slot)
@@ -531,6 +596,7 @@ fun CharacterMakerScreen(
                                 showBgGuide = showBgGuide,
                                 showChartGrid = showChartGrid,
                                 showImportedSheet = showImportedSheet,
+                                faceBakedInHead = config.faceBakedInHead,
                                 selectedSlotLocked = selectedIsLocked,
                                 hasSelectedSlot = selectedSlot != null,
                                 canResetSelectedPart = isDragPartMode && selectedSlot != null && !selectedIsLocked,
@@ -538,6 +604,15 @@ fun CharacterMakerScreen(
                                 onToggleBg = { showBgGuide = !showBgGuide },
                                 onToggleChart = { showChartGrid = !showChartGrid },
                                 onToggleImg = { showImportedSheet = !showImportedSheet },
+                                onToggleFaceBaked = {
+                                    val next = !config.faceBakedInHead
+                                    config = config.copy(faceBakedInHead = next)
+                                    statusBanner = if (next) {
+                                        "Face Baked in Head ON — separate eye/brow/mouth overlays hidden"
+                                    } else {
+                                        "Face Baked in Head OFF — separate eye/brow/mouth slots active"
+                                    }
+                                },
                                 onToggleLockSelectedPart = {
                                     selectedSlot?.let { slot ->
                                         val cur = config.placementFor(slot)
@@ -565,6 +640,7 @@ fun CharacterMakerScreen(
                                     poseTemplate = config.poseTemplate,
                                     testAnimation = testAnimation,
                                     liveSlices = livePreviewSlices,
+                                    skipFaceOverlays = config.faceBakedInHead,
                                     modifier = Modifier
                                         .weight(0.42f)
                                         .fillMaxHeight()
@@ -623,7 +699,7 @@ fun CharacterMakerScreen(
                             },
                             onImportSlotPng = { slot ->
                                 pendingImportSlot = slot
-                                partAssetPicker.launch(arrayOf("image/png", "image/svg+xml", "image/webp", "image/*"))
+                                partAssetPicker.launch(arrayOf("image/png", "image/webp", "image/svg+xml"))
                             },
                             onClearSlotPng = { slot ->
                                 val cur = config.placementFor(slot)
@@ -876,6 +952,7 @@ private fun LeftToggleRail(
     showBgGuide: Boolean,
     showChartGrid: Boolean,
     showImportedSheet: Boolean,
+    faceBakedInHead: Boolean,
     selectedSlotLocked: Boolean,
     hasSelectedSlot: Boolean,
     canResetSelectedPart: Boolean,
@@ -883,6 +960,7 @@ private fun LeftToggleRail(
     onToggleBg: () -> Unit,
     onToggleChart: () -> Unit,
     onToggleImg: () -> Unit,
+    onToggleFaceBaked: () -> Unit,
     onToggleLockSelectedPart: () -> Unit,
     onResetSelectedPart: () -> Unit
 ) {
@@ -895,6 +973,7 @@ private fun LeftToggleRail(
         Column(
             modifier = Modifier
                 .fillMaxHeight()
+                .verticalScroll(rememberScrollState())
                 .padding(vertical = 6.dp, horizontal = 4.dp),
             verticalArrangement = Arrangement.spacedBy(5.dp),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -930,6 +1009,14 @@ private fun LeftToggleRail(
                 accentColor = Color(0xFFA78BFA),
                 testTag = "maker_toggle_img",
                 onClick = onToggleImg
+            )
+            RailToggleButton(
+                label = if (faceBakedInHead) "Baked" else "Face",
+                icon = if (faceBakedInHead) Icons.Rounded.FaceRetouchingOff else Icons.Rounded.Face,
+                active = faceBakedInHead,
+                accentColor = Color(0xFFF472B6),
+                testTag = "maker_toggle_face_baked",
+                onClick = onToggleFaceBaked
             )
             if (hasSelectedSlot) {
                 HorizontalDivider(color = StudioBorderSubtle, modifier = Modifier.padding(vertical = 1.dp))

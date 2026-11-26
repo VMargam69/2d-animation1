@@ -225,6 +225,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                     viewModel.trimAudioClip(clipId, startF, durF, trimStartMs, trimEndMs)
                 },
                 onResetAudioTrim = { viewModel.resetSelectedAudioTrim() },
+                onWaveformSensitivityChange = { viewModel.setWaveformSensitivity(it) },
                 onSaveWaveformJsonToProject = { clipName, json, onRes ->
                     viewModel.saveWaveformJsonToProject(clipName, json, onRes)
                 },

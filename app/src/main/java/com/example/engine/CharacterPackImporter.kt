@@ -198,8 +198,9 @@ object CharacterPackImporter {
         val lowerName = displayName.lowercase()
 
         val packsRoot = File(context.filesDir, "custom_characters").apply { mkdirs() }
-        val packId = "pack_${UUID.randomUUID().toString().take(10)}"
+        val packId = "pack_${UUID.randomUUID().toString().take(12)}"
         val packDir = File(packsRoot, packId).apply { mkdirs() }
+        val cleanFileBase = cleanFileBasename(displayName)
 
         return try {
             when {
@@ -212,19 +213,19 @@ object CharacterPackImporter {
                         packDir.deleteRecursively()
                         return CharacterPackImportResult(null, err.message ?: "Invalid .zip character pack.")
                     }
-                    buildCharacterFromExtractedFiles(packDir, packId, displayName.substringBeforeLast('.'), files)
+                    buildCharacterFromExtractedFiles(packDir, packId, cleanFileBase, files)
                 }
 
                 lowerName.endsWith(".json") || mime.contains("json") || mime.startsWith("text/") -> {
                     val jsonText = resolver.openInputStream(uri)?.use { readBoundedText(it) }
                         ?: return CharacterPackImportResult(null, "Could not read character code file.")
-                    importFromCharacterCodeString(packDir, packId, jsonText)
+                    importFromCharacterCodeString(packDir, packId, jsonText, fallbackFileName = cleanFileBase)
                 }
 
                 lowerName.endsWith(".svg") || mime.contains("svg") -> {
                     val svgText = resolver.openInputStream(uri)?.use { readBoundedText(it) }
                         ?: return CharacterPackImportResult(null, "Could not read SVG atlas.")
-                    importFromRawSvgAtlas(packDir, packId, displayName.substringBeforeLast('.'), svgText)
+                    importFromRawSvgAtlas(packDir, packId, cleanFileBase, svgText)
                 }
 
                 else -> {
@@ -238,14 +239,77 @@ object CharacterPackImporter {
         }
     }
 
+    /** Strips compound extensions like `.fcchar.json`, `.svg`, `.zip` and normalizes underscores/hyphens. */
+    internal fun cleanFileBasename(rawDisplayName: String?): String {
+        if (rawDisplayName.isNullOrBlank()) return ""
+        val trimmed = rawDisplayName.trim()
+        val stripped = when {
+            trimmed.endsWith(".fcchar.json", ignoreCase = true) -> trimmed.dropLast(".fcchar.json".length)
+            trimmed.endsWith(".rig.json", ignoreCase = true) -> trimmed.dropLast(".rig.json".length)
+            trimmed.contains('.') -> trimmed.substringBeforeLast('.')
+            else -> trimmed
+        }
+        return stripped
+            .replace(Regex("[_\\-]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    /**
+     * Resolves an imported character's display title from JSON `name` or cleaned file basename,
+     * never falling back to a hardcoded bundled character name.
+     */
+    internal fun resolveImportedCharacterName(
+        jsonName: String?,
+        fallbackFileName: String?,
+        defaultFallback: String = "Imported Character"
+    ): String {
+        val cleanJson = jsonName?.trim().orEmpty()
+        val cleanFile = cleanFileBasename(fallbackFileName)
+        val isGenericJson = cleanJson.isBlank() ||
+            cleanJson.equals("CustomHero", ignoreCase = true) ||
+            cleanJson.equals("Untitled", ignoreCase = true)
+        return when {
+            !isGenericJson -> cleanJson
+            cleanFile.isNotBlank() -> cleanFile
+            cleanJson.isNotBlank() -> cleanJson
+            else -> defaultFallback
+        }
+    }
+
+    /** Guarantees a unique character title in the library by appending `(2)`, `(3)`, ... when needed. */
+    internal fun ensureUniqueCharacterName(baseName: String, existingNames: Collection<String>): String {
+        val trimmed = baseName.trim().ifBlank { "Imported Character" }
+        val normalized = existingNames.map { it.trim().lowercase() }.toSet()
+        if (trimmed.lowercase() !in normalized) return trimmed
+        var suffix = 2
+        while (true) {
+            val candidate = "$trimmed ($suffix)"
+            if (candidate.lowercase() !in normalized) return candidate
+            suffix++
+        }
+    }
+
     fun importFromCharacterCodeString(
         packDir: File,
         packId: String,
-        rawCodeJson: String
+        rawCodeJson: String,
+        fallbackFileName: String? = null
     ): CharacterPackImportResult {
         val code = CharacterCodeCodec.fromJson(rawCodeJson)
             ?: return CharacterPackImportResult(null, "Invalid FrameCraft .fcchar.json schema.")
         if (!packDir.exists()) packDir.mkdirs()
+
+        val resolvedName = resolveImportedCharacterName(
+            jsonName = code.name,
+            fallbackFileName = fallbackFileName,
+            defaultFallback = "Imported Character"
+        )
+        val uniqueId = if (packId.isBlank() || packId.startsWith("bundled_")) {
+            "pack_${UUID.randomUUID().toString().take(12)}"
+        } else {
+            packId
+        }
 
         // If inline atlas SVG or slot SVG paths are included, save a clean atlas.svg offline
         val slotSvgs = LinkedHashMap<AtlasPartSlot, String>()
@@ -262,7 +326,7 @@ object CharacterPackImporter {
                 File(packDir, "atlas.svg").apply { writeText(baseAtlasSvg, Charsets.UTF_8) }
             }
             baseAtlasSvg != null || slotSvgs.isNotEmpty() -> {
-                val draftConfig = CharacterCodeCodec.toRigConfig(code)
+                val draftConfig = CharacterCodeCodec.toRigConfig(code).copy(textureName = resolvedName)
                 val composed = SvgAtlasRenderer.composeCleanAtlasSvg(draftConfig, slotSvgs, baseAtlasSvg)
                 File(packDir, "atlas.svg").apply { writeText(composed, Charsets.UTF_8) }
             }
@@ -273,16 +337,17 @@ object CharacterPackImporter {
             code = code,
             resolvedAtlasPath = resolvedAtlasFile?.absolutePath
         ).copy(
+            textureName = resolvedName,
             renderMode = if (resolvedAtlasFile != null || code.renderMode.equals("SVG", true)) "SVG" else "PNG"
         )
         val jsonOut = File(packDir, "character.fcchar.json")
-        jsonOut.writeText(CharacterCodeCodec.toJson(code), Charsets.UTF_8)
+        jsonOut.writeText(CharacterCodeCodec.toJson(code.copy(id = uniqueId, name = resolvedName)), Charsets.UTF_8)
 
         val category = runCatching { CharacterCategory.valueOf(code.category.uppercase()) }
             .getOrDefault(CharacterCategory.LATEST)
         val charDef = CharacterRigDefinition(
-            id = packId,
-            name = rigConfig.textureName,
+            id = uniqueId,
+            name = resolvedName,
             category = category,
             bodyType = CharacterBodyType.HUMANOID,
             supportedOrientations = listOf(
@@ -410,12 +475,21 @@ object CharacterPackImporter {
             resolvedSlots.values.any { it.endsWith(".svg", true) } ||
             parsedCode?.renderMode.equals("SVG", true)
 
+        val resolvedName = resolveImportedCharacterName(
+            jsonName = parsedCode?.name,
+            fallbackFileName = fallbackName,
+            defaultFallback = "Imported Character"
+        )
+
         val rigConfig = if (parsedCode != null) {
             CharacterCodeCodec.toRigConfig(
                 code = parsedCode,
                 resolvedAtlasPath = atlasFile?.absolutePath,
                 resolvedSlotPaths = resolvedSlots
-            ).copy(renderMode = if (isSvgPack) "SVG" else "PNG")
+            ).copy(
+                textureName = resolvedName,
+                renderMode = if (isSvgPack) "SVG" else "PNG"
+            )
         } else {
             val placements = resolvedSlots.mapValues { (slotId, path) ->
                 AtlasPartPlacement(slotId = slotId, partImagePath = path, visible = true)
@@ -423,7 +497,7 @@ object CharacterPackImporter {
             SpriteAtlasRigConfig(
                 poseTemplate = AtlasPoseTemplate.THREE_QUARTER_FRONT,
                 resolutionPx = 2048,
-                textureName = fallbackName.ifBlank { "ImportedPack" },
+                textureName = resolvedName,
                 renderMode = if (isSvgPack) "SVG" else "PNG",
                 importedFullSheetPath = atlasFile?.absolutePath,
                 placements = placements
@@ -434,9 +508,15 @@ object CharacterPackImporter {
             runCatching { CharacterCategory.valueOf(raw.uppercase()) }.getOrNull()
         } ?: CharacterCategory.LATEST
 
+        val uniqueId = if (packId.isBlank() || packId.startsWith("bundled_")) {
+            "pack_${UUID.randomUUID().toString().take(12)}"
+        } else {
+            packId
+        }
+
         val charDef = CharacterRigDefinition(
-            id = packId,
-            name = rigConfig.textureName,
+            id = uniqueId,
+            name = resolvedName,
             category = category,
             bodyType = CharacterBodyType.HUMANOID,
             supportedOrientations = listOf(

@@ -844,4 +844,101 @@ class AnimationEngineTest {
         assertEquals(0L, resetClip.audioTrimEndMs)
         assertEquals(48, resetClip.durationFrames)
     }
+
+    @Test
+    fun `svg atlas composer resolves dynamic viewBox and preserveAspectRatio without hardcoding 256`() {
+        val headSvg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><circle cx="256" cy="256" r="200" fill="#F5C6A5"/></svg>"""
+        val chestSvg = """<svg xmlns="http://www.w3.org/2000/svg" width="300px" height="400px"><rect width="300" height="400" fill="#38BDF8"/></svg>"""
+
+        assertEquals("0 0 512 512", com.example.engine.SvgAtlasRenderer.extractSvgViewBox(headSvg))
+        assertEquals("0 0 300 400", com.example.engine.SvgAtlasRenderer.extractSvgViewBox(chestSvg))
+
+        val config = SpriteAtlasRigConfig(
+            resolutionPx = 2048,
+            textureName = "DynamicSvgHero",
+            renderMode = "SVG",
+            faceBakedInHead = true
+        )
+        val composed = com.example.engine.SvgAtlasRenderer.composeCleanAtlasSvg(
+            config = config,
+            partSvgStringsBySlot = mapOf(
+                AtlasPartSlot.HEAD to headSvg,
+                AtlasPartSlot.CHEST_BODY to chestSvg
+            )
+        )
+        assertTrue("Expected dynamic 512 viewBox on HEAD slot", composed.contains("""viewBox="0 0 512 512" preserveAspectRatio="xMidYMid meet""""))
+        assertTrue("Expected derived 300x400 viewBox on CHEST_BODY slot", composed.contains("""viewBox="0 0 300 400" preserveAspectRatio="xMidYMid meet""""))
+
+        // Verify faceBakedInHead persists through CharacterCodeCodec JSON round-trip
+        val code = CharacterCodeCodec.fromRigConfig(config)
+        val parsed = CharacterCodeCodec.fromJson(CharacterCodeCodec.toJson(code))
+        assertNotNull(parsed)
+        assertTrue(parsed!!.faceBakedInHead)
+        assertTrue(CharacterCodeCodec.toRigConfig(parsed).faceBakedInHead)
+    }
+
+    @Test
+    fun `character importer resolves clean unique names and never defaults to Arjun HD`() {
+        assertEquals("Rohan Ninja", com.example.engine.CharacterPackImporter.cleanFileBasename("Rohan_Ninja.fcchar.json"))
+        assertEquals("Cyber Girl", com.example.engine.CharacterPackImporter.cleanFileBasename("Cyber-Girl.svg"))
+
+        val fromFile = com.example.engine.CharacterPackImporter.resolveImportedCharacterName(
+            jsonName = "CustomHero",
+            fallbackFileName = "village_elder_v2.svg"
+        )
+        assertEquals("village elder v2", fromFile)
+        assertNotEquals("Arjun HD (SVG)", fromFile)
+
+        val unique = com.example.engine.CharacterPackImporter.ensureUniqueCharacterName(
+            baseName = "Arjun HD (SVG)",
+            existingNames = listOf("Arjun HD (SVG)", "Maya HD (SVG)", "Arjun HD (SVG) (2)")
+        )
+        assertEquals("Arjun HD (SVG) (3)", unique)
+    }
+
+    @Test
+    fun `project audioSyncTracks schema round-trips phoneme mappings, volume curve, and waveform sensitivity`() {
+        // Quiet 0.25f speech burst -> at 1.0x sensitivity maps to EE/MTH2, at 2.8x sensitivity boosts to 0.70f (AA/MTH4)
+        val amps = FloatArray(48) { idx -> if (idx in 12..35) 0.25f else 0.02f }
+        val wf = com.example.engine.AudioWaveformData(amplitudes = amps, durationMs = 2000L)
+
+        assertEquals(0.25f, com.example.engine.AudioWaveformJsonCodec.scaleAmplitude(0.25f, 1.0f), 0.001f)
+        assertEquals(0.70f, com.example.engine.AudioWaveformJsonCodec.scaleAmplitude(0.25f, 2.8f), 0.001f)
+        assertEquals(1.0f, com.example.engine.AudioWaveformJsonCodec.scaleAmplitude(0.6f, 3.0f), 0.001f)
+        assertEquals(-1f, com.example.engine.AudioWaveformJsonCodec.scaleAmplitude(-1f, 2.5f), 0.001f)
+
+        val audioClip = TimelineClip(
+            id = "aud_sync_1",
+            layerId = "audio_layer",
+            name = "Whisper Dialogue",
+            audioPath = "/tmp/whisper.wav",
+            startFrame = 0,
+            durationFrames = 48
+        )
+        val baseProject = ProjectDocument(name = "Sync Schema Test", fps = 24)
+        val syncMeta = com.example.engine.AudioWaveformJsonCodec.buildAudioSyncMetadata(
+            project = baseProject,
+            audioClip = audioClip,
+            waveform = wf,
+            sensitivity = 2.8f,
+            volumeCurveSamples = 16
+        )
+
+        assertEquals("aud_sync_1", syncMeta.clipId)
+        assertEquals(2.8f, syncMeta.waveformSensitivity, 0.001f)
+        assertEquals(16, syncMeta.volumeCurve.size)
+        assertTrue("Expected boosted phoneme mappings on quiet speech", syncMeta.phonemeMappings.any { it.phoneme == "AA" || it.phoneme == "OH" })
+        assertTrue("Expected volume curve timestamps to increase over duration", syncMeta.volumeCurve.last().timeMs > syncMeta.volumeCurve.first().timeMs)
+
+        // Verify full ProjectDocument Moshi round-trip with audioSyncTracks
+        val projectWithSync = baseProject.copy(audioSyncTracks = listOf(syncMeta))
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(projectWithSync))
+        assertNotNull(restored)
+        assertEquals(1, restored!!.audioSyncTracks.size)
+        assertEquals(2.8f, restored.audioSyncTracks.first().waveformSensitivity, 0.001f)
+        assertEquals(16, restored.audioSyncTracks.first().volumeCurve.size)
+        assertEquals(syncMeta.phonemeMappings.size, restored.audioSyncTracks.first().phonemeMappings.size)
+    }
 }

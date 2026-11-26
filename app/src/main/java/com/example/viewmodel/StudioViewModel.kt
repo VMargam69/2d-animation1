@@ -79,6 +79,7 @@ data class StudioUiState(
     val canvasPanX: Float = 0f,
     val canvasPanY: Float = 0f,
     val timelineZoom: Float = 1f,
+    val waveformSensitivity: Float = 1.0f,
     val isDrawingMode: Boolean = false,
     val isIkPosingMode: Boolean = false,
     val isCameraKeyMode: Boolean = false,
@@ -1284,6 +1285,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun setWaveformSensitivity(sensitivity: Float) {
+        val clamped = sensitivity.coerceIn(
+            com.example.engine.AudioWaveformJsonCodec.MIN_SENSITIVITY,
+            com.example.engine.AudioWaveformJsonCodec.MAX_SENSITIVITY
+        )
+        _uiState.update { it.copy(waveformSensitivity = clamped) }
+    }
+
+    private fun refreshAudioSyncTracks(project: ProjectDocument, sensitivity: Float): ProjectDocument {
+        val audioClips = project.activeScene.clips.filter { !it.audioPath.isNullOrBlank() }
+        if (audioClips.isEmpty()) return project
+        val updatedById = project.audioSyncTracks.associateBy { it.clipId }.toMutableMap()
+        for (clip in audioClips) {
+            val cachedWaveform = com.example.engine.AudioWaveformExtractor.getCached(clip.audioPath)
+            updatedById[clip.id] = com.example.engine.AudioWaveformJsonCodec.buildAudioSyncMetadata(
+                project = project,
+                audioClip = clip,
+                waveform = cachedWaveform,
+                sensitivity = sensitivity
+            )
+        }
+        return project.copy(audioSyncTracks = updatedById.values.toList())
+    }
+
     fun trimAudioClip(
         clipId: String,
         newStartFrame: Int,
@@ -1292,7 +1317,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         newTrimEndMs: Long
     ) {
         stopPlayback()
-        val updated = ProjectMutator.trimAudioClip(
+        val trimmed = ProjectMutator.trimAudioClip(
             project = _uiState.value.project,
             clipId = clipId,
             newStartFrame = newStartFrame,
@@ -1300,6 +1325,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             newTrimStartMs = newTrimStartMs,
             newTrimEndMs = newTrimEndMs
         )
+        val updated = refreshAudioSyncTracks(trimmed, _uiState.value.waveformSensitivity)
         commitProjectChange(updated)
         val startSec = newTrimStartMs / 1000f
         val endSec = if (newTrimEndMs > 0L) newTrimEndMs / 1000f else (newTrimStartMs + (newDurationFrames * 1000L / updated.fps.coerceAtLeast(1))) / 1000f
@@ -1313,21 +1339,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             ?: scene.clips.firstOrNull { !it.audioPath.isNullOrBlank() }
             ?: return
         val fullDurationMs = com.example.engine.AudioWaveformExtractor.getCached(targetClip.audioPath)?.durationMs ?: 0L
-        val updated = ProjectMutator.resetAudioTrim(
+        val reset = ProjectMutator.resetAudioTrim(
             project = _uiState.value.project,
             clipId = targetClip.id,
             fullAudioDurationMs = fullDurationMs
         )
+        val updated = refreshAudioSyncTracks(reset, _uiState.value.waveformSensitivity)
         commitProjectChange(updated)
         showStatus("Reset audio trim to full clip")
     }
 
     fun saveWaveformJsonToProject(clipName: String, jsonContent: String, onResult: (String) -> Unit) {
-        val projectId = _uiState.value.project.id
+        val currentProject = _uiState.value.project
+        val syncedProject = refreshAudioSyncTracks(currentProject, _uiState.value.waveformSensitivity)
+        if (syncedProject != currentProject) {
+            commitProjectChange(syncedProject)
+        }
         viewModelScope.launch {
-            val savedFile = assetStorage.saveProjectWaveformSidecar(projectId, clipName, jsonContent)
+            val savedFile = assetStorage.saveProjectWaveformSidecar(syncedProject.id, clipName, jsonContent)
             if (savedFile != null) {
-                showStatus("Saved ${savedFile.name} to project")
+                showStatus("Saved ${savedFile.name} & project audio-sync metadata")
                 onResult("Saved to project: ${savedFile.name}")
             } else {
                 onResult("Could not save waveform JSON to project")

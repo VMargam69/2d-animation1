@@ -48,6 +48,7 @@ import java.util.Locale
 fun WaveformExportDialog(
     project: ProjectDocument,
     audioClip: TimelineClip,
+    waveformSensitivity: Float = 1.0f,
     onSaveToProject: (clipName: String, json: String, onResult: (String) -> Unit) -> Unit,
     onSaveToSafUri: (uri: Uri, json: String, onResult: (String) -> Unit) -> Unit,
     onDismiss: () -> Unit
@@ -71,13 +72,14 @@ fun WaveformExportDialog(
     var exportModel by remember { mutableStateOf<WaveformLipSyncExport?>(null) }
     var jsonText by remember { mutableStateOf("") }
 
-    LaunchedEffect(project, audioClip, waveform, prettyFormat) {
+    LaunchedEffect(project, audioClip, waveform, waveformSensitivity, prettyFormat) {
         val (model, serialized) = withContext(Dispatchers.Default) {
             val built = AudioWaveformJsonCodec.buildExport(
                 project = project,
                 scene = project.activeScene,
                 audioClip = audioClip,
-                waveform = waveform
+                waveform = waveform,
+                sensitivity = waveformSensitivity
             )
             built to AudioWaveformJsonCodec.toJson(built, pretty = prettyFormat)
         }

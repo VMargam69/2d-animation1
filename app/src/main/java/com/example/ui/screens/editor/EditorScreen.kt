@@ -106,6 +106,7 @@ fun EditorScreen(
         newTrimEndMs: Long
     ) -> Unit = { _, _, _, _, _ -> },
     onResetAudioTrim: () -> Unit = {},
+    onWaveformSensitivityChange: (Float) -> Unit = {},
     onSaveWaveformJsonToProject: (clipName: String, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> },
     onWriteWaveformJsonToSafUri: (uri: Uri, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> }
 ) {
@@ -251,6 +252,9 @@ fun EditorScreen(
                             onToggleLayerVisibility = onToggleLayerVisibility,
                             onToggleLayerLock = onToggleLayerLock,
                             onOpenLayerManager = { onOpenSheet(ActiveEditorSheet.LAYER_MANAGER) },
+                            onTrimAudioClip = onTrimAudioClip,
+                            waveformSensitivity = state.waveformSensitivity,
+                            onWaveformSensitivityChange = onWaveformSensitivityChange,
                             modifier = Modifier
                                 .weight(0.42f)
                                 .fillMaxHeight()
@@ -349,6 +353,8 @@ fun EditorScreen(
                             onToggleLayerLock = onToggleLayerLock,
                             onOpenLayerManager = { onOpenSheet(ActiveEditorSheet.LAYER_MANAGER) },
                             onTrimAudioClip = onTrimAudioClip,
+                            waveformSensitivity = state.waveformSensitivity,
+                            onWaveformSensitivityChange = onWaveformSensitivityChange,
                             modifier = Modifier
                                 .weight(1f - canvasSplitFraction)
                                 .fillMaxWidth()
@@ -594,6 +600,7 @@ fun EditorScreen(
                 WaveformExportDialog(
                     project = state.project,
                     audioClip = targetAudio,
+                    waveformSensitivity = state.waveformSensitivity,
                     onSaveToProject = onSaveWaveformJsonToProject,
                     onSaveToSafUri = onWriteWaveformJsonToSafUri,
                     onDismiss = onCloseSheet

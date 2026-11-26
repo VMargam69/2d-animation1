@@ -53,7 +53,8 @@ object SpriteAtlasRigRenderer {
         propAttachment: PropAttachmentPoint = PropAttachmentPoint.RIGHT_HAND,
         customPropBitmap: Bitmap? = null,
         propScale: Float = 1.0f,
-        drawGhostFallbackWhenEmpty: Boolean = false
+        drawGhostFallbackWhenEmpty: Boolean = false,
+        skipFaceOverlays: Boolean = false
     ) {
         val s = rigScale
         val alphaInt = (alpha.coerceIn(0f, 1f) * 255).toInt()
@@ -92,13 +93,13 @@ object SpriteAtlasRigRenderer {
         scratch.shadowPaint.color = Color.argb((alphaInt * 0.28f).toInt(), 0, 0, 0)
         canvas.drawOval(RectF(-34f * s, 77f * s, 34f * s, 90f * s), scratch.shadowPaint)
 
-        // 2. HAIR_BACK (attached to head bone, drawn behind torso & back limbs)
+        // 2. HAIR_BACK (attached to head neck pivot so hair rotates cleanly with head)
         val hairBackBmp = slices[AtlasPartSlot.HAIR_BACK]
         if (hairBackBmp != null && !hairBackBmp.isRecycled) {
             canvas.save()
-            canvas.translate(0f, -66f * s)
+            canvas.translate(0f, -36f * s)
             canvas.rotate(pose.headNodDeg)
-            drawBitmapAnchored(canvas, hairBackBmp, 74f * s, 74f * s, 0.50f, 0.45f, paint, scratch.dst)
+            drawBitmapAnchored(canvas, hairBackBmp, 74f * s, 74f * s, 0.50f, 0.78f, paint, scratch.dst)
             canvas.restore()
         }
 
@@ -164,105 +165,110 @@ object SpriteAtlasRigRenderer {
         }
 
         // 6. HEAD + Facial Feature Stack + HAIR_FRONT + ACCESSORY
+        // Anchored directly to CHEST_BODY's top-neck pivot (-36f * s) so chin/neck never detaches from torso
         canvas.save()
-        canvas.translate(0f, -64f * s)
+        canvas.translate(0f, -36f * s)
         canvas.rotate(pose.headNodDeg)
 
         val headBmp = slices[AtlasPartSlot.HEAD]
         if (headBmp != null && !headBmp.isRecycled) {
-            drawBitmapAnchored(canvas, headBmp, 64f * s, 68f * s, 0.50f, 0.72f, paint, scratch.dst)
+            drawBitmapAnchored(canvas, headBmp, 64f * s, 68f * s, 0.50f, 0.86f, paint, scratch.dst)
         } else if (showGuide) {
             drawGhostHead(canvas, s, alphaInt, scratch)
         }
 
-        // Eyes (Eye White -> Eyeball -> Eyelid / Blink)
-        val eyeWhite = slices[AtlasPartSlot.EYE_WHITE]
-        val eyeball = slices[AtlasPartSlot.EYEBALL]
-        val eyelid = slices[AtlasPartSlot.EYELID]
-        val eyeY = -12f * s
-        val eyeOffsets = if (isBackSide) {
-            listOf(faceShiftX)
-        } else if (isThreeQuarter) {
-            listOf(-8f * s + faceShiftX, 11f * s + faceShiftX)
-        } else {
-            listOf(-11f * s, 11f * s)
-        }
-
-        for (ex in eyeOffsets) {
-            canvas.save()
-            canvas.translate(ex, eyeY)
-            if (isBlinking) {
-                if (eyelid != null && !eyelid.isRecycled) {
-                    drawBitmapAnchored(canvas, eyelid, 16f * s, 9f * s, 0.50f, 0.50f, paint, scratch.dst)
-                } else if (eyeWhite != null || eyeball != null) {
-                    // Clean blink line when eyes exist but eyelid slice wasn't provided
-                    scratch.guideStroke.color = Color.argb(alphaInt, 24, 24, 36)
-                    scratch.guideStroke.strokeWidth = 2.4f * s
-                    canvas.drawLine(-6f * s, 0f, 6f * s, 0f, scratch.guideStroke)
-                }
+        if (!skipFaceOverlays) {
+            // Eyes (Eye White -> Eyeball -> Eyelid / Blink) — only draw if at least one eye slice exists
+            val eyeWhite = slices[AtlasPartSlot.EYE_WHITE]?.takeIf { !it.isRecycled }
+            val eyeball = slices[AtlasPartSlot.EYEBALL]?.takeIf { !it.isRecycled }
+            val eyelid = slices[AtlasPartSlot.EYELID]?.takeIf { !it.isRecycled }
+            val hasAnyEyeSlice = eyeWhite != null || eyeball != null || eyelid != null
+            val eyeY = -27f * s
+            val eyeOffsets = if (isBackSide) {
+                listOf(faceShiftX)
+            } else if (isThreeQuarter) {
+                listOf(-8f * s + faceShiftX, 11f * s + faceShiftX)
             } else {
-                if (eyeWhite != null && !eyeWhite.isRecycled) {
-                    drawBitmapAnchored(canvas, eyeWhite, 15f * s, 12f * s, 0.50f, 0.50f, paint, scratch.dst)
-                }
-                if (eyeball != null && !eyeball.isRecycled) {
-                    val lookX = if (isThreeQuarter || isBackSide) 1.5f * s else 0f
+                listOf(-11f * s, 11f * s)
+            }
+
+            if (hasAnyEyeSlice) {
+                for (ex in eyeOffsets) {
                     canvas.save()
-                    canvas.translate(lookX, 0f)
-                    drawBitmapAnchored(canvas, eyeball, 9.5f * s, 9.5f * s, 0.50f, 0.50f, paint, scratch.dst)
-                    canvas.restore()
-                }
-                if (eyelid != null && !eyelid.isRecycled) {
-                    canvas.save()
-                    canvas.translate(0f, -4.5f * s)
-                    drawBitmapAnchored(canvas, eyelid, 16f * s, 7f * s, 0.50f, 0.50f, paint, scratch.dst)
+                    canvas.translate(ex, eyeY)
+                    if (isBlinking) {
+                        if (eyelid != null) {
+                            drawBitmapAnchored(canvas, eyelid, 16f * s, 9f * s, 0.50f, 0.50f, paint, scratch.dst)
+                        } else if (eyeWhite != null || eyeball != null) {
+                            // Clean blink line when eyes exist but eyelid slice wasn't provided
+                            scratch.guideStroke.color = Color.argb(alphaInt, 24, 24, 36)
+                            scratch.guideStroke.strokeWidth = 2.4f * s
+                            canvas.drawLine(-6f * s, 0f, 6f * s, 0f, scratch.guideStroke)
+                        }
+                    } else {
+                        if (eyeWhite != null) {
+                            drawBitmapAnchored(canvas, eyeWhite, 15f * s, 12f * s, 0.50f, 0.50f, paint, scratch.dst)
+                        }
+                        if (eyeball != null) {
+                            val lookX = if (isThreeQuarter || isBackSide) 1.5f * s else 0f
+                            canvas.save()
+                            canvas.translate(lookX, 0f)
+                            drawBitmapAnchored(canvas, eyeball, 9.5f * s, 9.5f * s, 0.50f, 0.50f, paint, scratch.dst)
+                            canvas.restore()
+                        }
+                        if (eyelid != null) {
+                            canvas.save()
+                            canvas.translate(0f, -4.5f * s)
+                            drawBitmapAnchored(canvas, eyelid, 16f * s, 7f * s, 0.50f, 0.50f, paint, scratch.dst)
+                            canvas.restore()
+                        }
+                    }
                     canvas.restore()
                 }
             }
-            canvas.restore()
-        }
 
-        // Eyebrow Expression Swap (Happy / Angry / Idle / Scared)
-        val browBmp = resolveEyebrowBitmap(slices, pose.facialExpression, pose.happySmile)
-        if (browBmp != null && !browBmp.isRecycled) {
-            val browY = -22f * s
-            if (isBackSide) {
-                canvas.save()
-                canvas.translate(faceShiftX, browY)
-                drawBitmapAnchored(canvas, browBmp, 16f * s, 8f * s, 0.50f, 0.50f, paint, scratch.dst)
-                canvas.restore()
-            } else {
-                // Draw mirrored left & right brow pair from the expression brow sprite
-                canvas.save()
-                canvas.translate(eyeOffsets.first(), browY)
-                drawBitmapAnchored(canvas, browBmp, 16f * s, 8f * s, 0.50f, 0.50f, paint, scratch.dst)
-                canvas.restore()
+            // Eyebrow Expression Swap (Happy / Angry / Idle / Scared)
+            val browBmp = resolveEyebrowBitmap(slices, pose.facialExpression, pose.happySmile)
+            if (browBmp != null && !browBmp.isRecycled) {
+                val browY = -37f * s
+                if (isBackSide) {
+                    canvas.save()
+                    canvas.translate(faceShiftX, browY)
+                    drawBitmapAnchored(canvas, browBmp, 16f * s, 8f * s, 0.50f, 0.50f, paint, scratch.dst)
+                    canvas.restore()
+                } else {
+                    canvas.save()
+                    canvas.translate(eyeOffsets.first(), browY)
+                    drawBitmapAnchored(canvas, browBmp, 16f * s, 8f * s, 0.50f, 0.50f, paint, scratch.dst)
+                    canvas.restore()
 
+                    canvas.save()
+                    canvas.translate(eyeOffsets.last(), browY)
+                    canvas.scale(-1f, 1f)
+                    drawBitmapAnchored(canvas, browBmp, 16f * s, 8f * s, 0.50f, 0.50f, paint, scratch.dst)
+                    canvas.restore()
+                }
+            }
+
+            // Mouth / Lips Expression & Talking Lip-Sync (MTH1..MTH4 + Shocked)
+            val mouthBmp = resolveMouthBitmap(slices, pose.facialExpression, pose.mouthOpen, pose.happySmile, mouthSlotOverride)
+            if (mouthBmp != null && !mouthBmp.isRecycled) {
                 canvas.save()
-                canvas.translate(eyeOffsets.last(), browY)
-                canvas.scale(-1f, 1f)
-                drawBitmapAnchored(canvas, browBmp, 16f * s, 8f * s, 0.50f, 0.50f, paint, scratch.dst)
+                canvas.translate(faceShiftX * 0.85f, -11.5f * s)
+                val talkScaleY = if (mouthSlotOverride == null && pose.mouthOpen > 0.15f) {
+                    1f + pose.mouthOpen * 0.35f
+                } else 1f
+                canvas.scale(1f, talkScaleY)
+                drawBitmapAnchored(canvas, mouthBmp, 20f * s, 13f * s, 0.50f, 0.50f, paint, scratch.dst)
                 canvas.restore()
             }
-        }
-
-        // Mouth / Lips Expression & Talking Lip-Sync (MTH1..MTH4 + Shocked)
-        val mouthBmp = resolveMouthBitmap(slices, pose.facialExpression, pose.mouthOpen, pose.happySmile, mouthSlotOverride)
-        if (mouthBmp != null && !mouthBmp.isRecycled) {
-            canvas.save()
-            canvas.translate(faceShiftX * 0.85f, 3.5f * s)
-            val talkScaleY = if (mouthSlotOverride == null && pose.mouthOpen > 0.15f) {
-                1f + pose.mouthOpen * 0.35f
-            } else 1f
-            canvas.scale(1f, talkScaleY)
-            drawBitmapAnchored(canvas, mouthBmp, 20f * s, 13f * s, 0.50f, 0.50f, paint, scratch.dst)
-            canvas.restore()
         }
 
         // 7. HAIR_FRONT & ACCESSORY (on top of head & face)
         val hairFrontBmp = slices[AtlasPartSlot.HAIR_FRONT]
         if (hairFrontBmp != null && !hairFrontBmp.isRecycled) {
             canvas.save()
-            canvas.translate(0f, -22f * s)
+            canvas.translate(0f, -37f * s)
             drawBitmapAnchored(canvas, hairFrontBmp, 72f * s, 54f * s, 0.50f, 0.50f, paint, scratch.dst)
             canvas.restore()
         }
@@ -270,7 +276,7 @@ object SpriteAtlasRigRenderer {
         val accBmp = slices[AtlasPartSlot.ACCESSORY]
         if (accBmp != null && !accBmp.isRecycled) {
             canvas.save()
-            canvas.translate(0f, -34f * s)
+            canvas.translate(0f, -49f * s)
             drawBitmapAnchored(canvas, accBmp, 64f * s, 44f * s, 0.50f, 0.72f, paint, scratch.dst)
             canvas.restore()
         }
@@ -278,7 +284,7 @@ object SpriteAtlasRigRenderer {
         // Head-socket Stage Prop
         if (propType != CharacterPropType.NONE && propAttachment == PropAttachmentPoint.HEAD) {
             canvas.save()
-            canvas.translate(0f, -36f * s)
+            canvas.translate(0f, -51f * s)
             PropAndModularChartRenderer.drawPropAtSocket(
                 canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg * 0.5f, alphaInt
             )
@@ -525,7 +531,7 @@ object SpriteAtlasRigRenderer {
         scratch.guideFill.color = Color.argb((alphaInt * 0.25f).toInt(), 56, 189, 248)
         scratch.guideStroke.color = Color.argb((alphaInt * 0.55f).toInt(), 148, 163, 184)
         scratch.guideStroke.strokeWidth = 1.8f * s
-        canvas.drawCircle(0f, -10f * s, 23f * s, scratch.guideFill)
-        canvas.drawCircle(0f, -10f * s, 23f * s, scratch.guideStroke)
+        canvas.drawCircle(0f, -25f * s, 23f * s, scratch.guideFill)
+        canvas.drawCircle(0f, -25f * s, 23f * s, scratch.guideStroke)
     }
 }

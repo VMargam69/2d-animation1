@@ -128,7 +128,8 @@ object ProceduralRigRenderer {
                 propAttachment = propAttachment,
                 customPropBitmap = customPropBitmap,
                 propScale = propScale,
-                drawGhostFallbackWhenEmpty = resolvedSlices.isEmpty()
+                drawGhostFallbackWhenEmpty = resolvedSlices.isEmpty(),
+                skipFaceOverlays = rig.spriteAtlasRig?.faceBakedInHead == true
             )
             canvas.restore()
             return

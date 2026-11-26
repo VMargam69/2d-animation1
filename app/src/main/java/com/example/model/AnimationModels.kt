@@ -385,6 +385,43 @@ data class AnimationScene(
     val clips: List<TimelineClip> = emptyList()
 )
 
+/**
+ * Frame-aligned phoneme & mouth-shape cue derived from an audio track's amplitude envelope.
+ * Stored inside [ProjectDocument.audioSyncTracks] for offline lip-sync persistence & sharing.
+ */
+data class PhonemeFrameMapping(
+    val frame: Int,
+    val timeMs: Long,
+    val phoneme: String,      // "REST", "MBP", "EE", "AA", "OH"
+    val mouthShape: String,   // "MTH1".."MTH4"
+    val amplitude: Float
+)
+
+/**
+ * Duration-based volume curve control point describing audio gain/envelope over time.
+ */
+data class VolumeCurvePoint(
+    val timeMs: Long,
+    val frame: Int,
+    val gain: Float           // Normalized volume envelope / gain (0..1)
+)
+
+/**
+ * Structured audio-sync metadata persisted in the project document per audio clip,
+ * tracking trim window, waveform display sensitivity, phoneme frame mappings, and volume curve.
+ */
+data class AudioSyncMetadata(
+    val clipId: String,
+    val clipName: String,
+    val fps: Int = 24,
+    val durationMs: Long = 0L,
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 0L,
+    val waveformSensitivity: Float = 1.0f,
+    val phonemeMappings: List<PhonemeFrameMapping> = emptyList(),
+    val volumeCurve: List<VolumeCurvePoint> = emptyList()
+)
+
 data class ProjectDocument(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Untitled Animation",
@@ -397,6 +434,7 @@ data class ProjectDocument(
     val showMotionPaths: Boolean = false,
     val activeSceneIndex: Int = 0,
     val scenes: List<AnimationScene> = listOf(AnimationScene()),
+    val audioSyncTracks: List<AudioSyncMetadata> = emptyList(),
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {

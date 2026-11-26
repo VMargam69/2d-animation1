@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.engine.AudioWaveformData
 import com.example.engine.AudioWaveformExtractor
+import com.example.engine.AudioWaveformJsonCodec
 import com.example.model.TimelineClip
 import com.example.ui.theme.*
 import java.util.Locale
@@ -78,7 +79,8 @@ internal fun TrimmableAudioTimelineClip(
         newDurationFrames: Int,
         newTrimStartMs: Long,
         newTrimEndMs: Long
-    ) -> Unit
+    ) -> Unit,
+    waveformSensitivity: Float = 1.0f
 ) {
     val audioPath = clip.audioPath
     val waveform by produceState<AudioWaveformData?>(
@@ -176,6 +178,7 @@ internal fun TrimmableAudioTimelineClip(
             layerColor = layerColor,
             visAlpha = visAlpha,
             isSelected = isSelected || isTrimming,
+            waveformSensitivity = waveformSensitivity,
             modifier = Modifier.fillMaxSize()
         )
 
@@ -456,6 +459,7 @@ private fun AudioClipWaveformCanvas(
     layerColor: Color,
     visAlpha: Float,
     isSelected: Boolean,
+    waveformSensitivity: Float = 1.0f,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
@@ -500,7 +504,7 @@ private fun AudioClipWaveformCanvas(
         while (x <= visibleEndX) {
             val startLocalFrame = (x - barStepPx * 0.5f) / safeFrameW
             val endLocalFrame = (x + barStepPx * 0.5f) / safeFrameW
-            val amp = AudioWaveformExtractor.samplePeakInFrameRange(
+            val rawAmp = AudioWaveformExtractor.samplePeakInFrameRange(
                 waveform = waveform,
                 startLocalFrame = startLocalFrame,
                 endLocalFrame = endLocalFrame,
@@ -510,6 +514,7 @@ private fun AudioClipWaveformCanvas(
                 trimStartMs = trimStartMs,
                 trimEndMs = trimEndMs
             )
+            val amp = AudioWaveformJsonCodec.scaleAmplitude(rawAmp, waveformSensitivity)
 
             if (amp < 0f) {
                 drawLine(

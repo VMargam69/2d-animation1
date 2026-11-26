@@ -7,6 +7,7 @@ import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -153,16 +154,38 @@ class StudioRepository(
 
     suspend fun importCharacterPack(uri: Uri): com.example.engine.CharacterPackImportResult = withContext(Dispatchers.IO) {
         val result = assetStorage.importCharacterPackUri(uri)
-        val charDef = result.character
-        if (charDef != null) {
-            charDef.spriteAtlasRig?.let { cfg ->
-                assetStorage.saveAtlasSidecarConfig(charDef.id, cfg)
-            }
-            characterDao.upsertCharacter(charDef.toEntity())
-            // Warm up slice cache immediately in background
-            assetStorage.loadOrSliceAtlasBlocking(charDef.customImagePath)
+        val rawCharDef = result.character ?: return@withContext result
+
+        val existingChars = characterDao.observeAllCharacters().first()
+        val existingIds = existingChars.map { it.id }.toSet()
+        val existingNames = existingChars.map { it.name }
+
+        val uniqueId = if (rawCharDef.id in existingIds || rawCharDef.id.startsWith("bundled_")) {
+            "pack_${UUID.randomUUID().toString().take(12)}"
+        } else {
+            rawCharDef.id
         }
-        result
+        val uniqueName = com.example.engine.CharacterPackImporter.ensureUniqueCharacterName(
+            baseName = rawCharDef.name,
+            existingNames = existingNames
+        )
+        val finalRig = rawCharDef.spriteAtlasRig?.copy(textureName = uniqueName)
+        val charDef = rawCharDef.copy(
+            id = uniqueId,
+            name = uniqueName,
+            spriteAtlasRig = finalRig
+        )
+
+        finalRig?.let { cfg ->
+            assetStorage.saveAtlasSidecarConfig(charDef.id, cfg)
+        }
+        characterDao.upsertCharacter(charDef.toEntity())
+        // Warm up slice cache immediately in background
+        assetStorage.loadOrSliceAtlasBlocking(charDef.customImagePath)
+        result.copy(
+            character = charDef,
+            message = result.message.replace(rawCharDef.name, uniqueName)
+        )
     }
 
     suspend fun togglePinCharacter(id: String, currentlyPinned: Boolean) = withContext(Dispatchers.IO) {

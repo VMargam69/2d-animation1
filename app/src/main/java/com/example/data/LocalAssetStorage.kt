@@ -10,7 +10,9 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.LruCache
+import com.example.engine.CharacterPackImporter
 import com.example.engine.SpriteAtlasEngine
+import com.example.engine.SvgAtlasRenderer
 import com.example.model.AnimationScene
 import com.example.model.AtlasPartSlot
 import com.example.model.CharacterRigDefinition
@@ -83,19 +85,19 @@ class LocalAssetStorage(private val context: Context) {
                 val mimeType = resolver.getType(uri) ?: "application/octet-stream"
                 val rawName = queryDisplayName(uri) ?: "asset_${System.currentTimeMillis()}"
                 val cleanBase = rawName.substringBeforeLast('.').ifBlank { "Asset" }
-                val ext = rawName.substringAfterLast('.', "").ifBlank {
-                    when {
-                        mimeType.contains("png") -> "png"
-                        mimeType.contains("jpeg") || mimeType.contains("jpg") -> "jpg"
-                        mimeType.contains("webp") -> "webp"
-                        mimeType.contains("gif") -> "gif"
-                        mimeType.contains("svg") -> "svg"
-                        mimeType.contains("video") -> "mp4"
-                        mimeType.contains("audio") -> "mp3"
-                        else -> "bin"
-                    }
+                val rawExt = rawName.substringAfterLast('.', "").lowercase()
+                val ext = when {
+                    mimeType.contains("svg", ignoreCase = true) || rawExt == "svg" -> "svg"
+                    rawExt.isNotBlank() && rawExt != rawName.lowercase() -> rawExt
+                    mimeType.contains("png", ignoreCase = true) -> "png"
+                    mimeType.contains("jpeg", ignoreCase = true) || mimeType.contains("jpg", ignoreCase = true) -> "jpg"
+                    mimeType.contains("webp", ignoreCase = true) -> "webp"
+                    mimeType.contains("gif", ignoreCase = true) -> "gif"
+                    mimeType.contains("video", ignoreCase = true) -> "mp4"
+                    mimeType.contains("audio", ignoreCase = true) -> "mp3"
+                    else -> "bin"
                 }
-                val fileName = "${UUID.randomUUID()}.${ext.lowercase()}"
+                val fileName = "${UUID.randomUUID()}.$ext"
                 val outFile = File(assetsDir, fileName)
                 resolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(outFile).use { output ->
@@ -254,10 +256,14 @@ class LocalAssetStorage(private val context: Context) {
     }
 
     /** Blocking decode + normalized slicing for Dispatchers.IO prefetch and background export threads. */
-    fun loadOrSliceAtlasBlocking(path: String?): Map<AtlasPartSlot, Bitmap>? {
+    fun loadOrSliceAtlasBlocking(path: String?, maxDimension: Int = 2048): Map<AtlasPartSlot, Bitmap>? {
         if (path.isNullOrBlank()) return null
         atlasSlicesCache.get(path)?.let { return it }
-        val fullBmp = loadBitmapFromFile(path, maxDimension = 2048) ?: return null
+        val fullBmp = if (SvgAtlasRenderer.isSvgPath(path)) {
+            loadBitmapFromFile(path, maxDimension = maxDimension.coerceIn(1024, 4096))
+        } else {
+            loadBitmapFromFile(path, maxDimension = maxDimension.coerceIn(1024, 4096))
+        } ?: return null
         val slices = SpriteAtlasEngine.sliceAtlasIntoParts(fullBmp)
         atlasSlicesCache.put(path, slices)
         return slices
@@ -269,13 +275,13 @@ class LocalAssetStorage(private val context: Context) {
     }
 
     suspend fun inspectImageDimensions(path: String): Pair<Int, Int> = withContext(Dispatchers.IO) {
-        if (com.example.engine.SvgAtlasRenderer.isSvgPath(path)) {
+        if (SvgAtlasRenderer.isSvgPath(path)) {
             return@withContext 2048 to 2048
         }
         runCatching {
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            if (path.startsWith(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)) {
-                val assetRel = path.removePrefix(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)
+            if (path.startsWith(CharacterPackImporter.ASSET_URI_PREFIX)) {
+                val assetRel = path.removePrefix(CharacterPackImporter.ASSET_URI_PREFIX)
                 context.assets.open(assetRel).use { stream ->
                     BitmapFactory.decodeStream(stream, null, opts)
                 }
@@ -476,14 +482,15 @@ class LocalAssetStorage(private val context: Context) {
         val cacheKey = "file:$path:$maxDimension"
         bitmapCache.get(cacheKey)?.let { if (!it.isRecycled) return it }
 
-        val isAsset = path.startsWith(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)
-        val isSvg = com.example.engine.SvgAtlasRenderer.isSvgPath(path)
+        val isAsset = path.startsWith(CharacterPackImporter.ASSET_URI_PREFIX)
+        val isSvg = SvgAtlasRenderer.isSvgPath(path)
 
         if (isSvg) {
+            val targetPx = maxDimension.coerceIn(64, 4096)
             val bmp = if (isAsset) {
-                com.example.engine.SvgAtlasRenderer.renderAssetSvgToBitmap(context, path, maxDimension)
+                SvgAtlasRenderer.renderAssetSvgToBitmap(context, path, targetPx)
             } else {
-                com.example.engine.SvgAtlasRenderer.renderSvgFileToBitmap(File(path), maxDimension)
+                SvgAtlasRenderer.renderSvgFileToBitmap(File(path), targetPx)
             }
             if (bmp != null) {
                 bitmapCache.put(cacheKey, bmp)
@@ -492,7 +499,7 @@ class LocalAssetStorage(private val context: Context) {
         }
 
         if (isAsset) {
-            val assetRel = path.removePrefix(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)
+            val assetRel = path.removePrefix(CharacterPackImporter.ASSET_URI_PREFIX)
             return runCatching {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 context.assets.open(assetRel).use { BitmapFactory.decodeStream(it, null, bounds) }
