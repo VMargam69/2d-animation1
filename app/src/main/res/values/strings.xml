@@ -28,4 +28,7 @@
     <string name="export_title">Export Offline Animation</string>
     <string name="export_start">Start Export</string>
     <string name="export_complete">Export Complete</string>
+    <string name="character_setup_title">Custom Character Setup</string>
+    <string name="character_setup_subtitle">Select a pose template to open the Sprite-Sheet Maker</string>
+    <string name="character_setup_create">Create</string>
 </resources>

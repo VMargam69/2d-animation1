@@ -36,9 +36,11 @@ data class StageGesturePreview(
  */
 class SceneRenderer(
     private val bitmapProvider: (path: String?, bundledKey: String?) -> Bitmap?,
-    private val blockingBitmapProvider: ((path: String?, bundledKey: String?) -> Bitmap?)? = null
+    private val blockingBitmapProvider: ((path: String?, bundledKey: String?) -> Bitmap?)? = null,
+    private val atlasSlicesProvider: ((path: String?) -> Map<AtlasPartSlot, Bitmap>?)? = null,
+    private val blockingAtlasSlicesProvider: ((path: String?) -> Map<AtlasPartSlot, Bitmap>?)? = null
 ) {
-    constructor(bitmapProvider: (path: String?, bundledKey: String?) -> Bitmap?) : this(bitmapProvider, null)
+    constructor(bitmapProvider: (path: String?, bundledKey: String?) -> Bitmap?) : this(bitmapProvider, null, null, null)
 
     private class RenderScratch {
         val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
@@ -125,7 +127,9 @@ class SceneRenderer(
     /** Creates an isolated [SceneRenderer] using blocking disk decode for background export threads. */
     fun createIndependentCopy(): SceneRenderer = SceneRenderer(
         bitmapProvider = blockingBitmapProvider ?: bitmapProvider,
-        blockingBitmapProvider = blockingBitmapProvider
+        blockingBitmapProvider = blockingBitmapProvider,
+        atlasSlicesProvider = blockingAtlasSlicesProvider ?: atlasSlicesProvider,
+        blockingAtlasSlicesProvider = blockingAtlasSlicesProvider
     )
 
     fun clearScaledCache() {
@@ -450,11 +454,15 @@ class SceneRenderer(
                             val cycleFrames = clip.animationPresetType.defaultDurationFrames.coerceAtLeast(8).toFloat()
                             val rawPhase = (localFrame * clip.speedMultiplier) / cycleFrames
                             val phase = if (clip.loopAnimation) rawPhase % 1f else rawPhase.coerceIn(0f, 0.999f)
-                            val customBmp = bitmapProvider(rig.customImagePath, null)
+                            val isAtlasPro = rig.spriteAtlasRig != null || rig.skeletonRig?.rigMode == CustomRigMode.ATLAS_RIG_PRO
+                            val customBmp = if (isAtlasPro) null else bitmapProvider(rig.customImagePath, null)
+                            val atlasSlices = if (isAtlasPro) atlasSlicesProvider?.invoke(rig.customImagePath) else null
                             val customPropBmp = if (clip.propType == CharacterPropType.CUSTOM_PNG) {
                                 bitmapProvider(clip.customPropImagePath, null)
                             } else null
                             val effectiveExpression = transform.expressionOverride ?: clip.facialExpression
+                            val effectiveHandPose = transform.handPoseOverride ?: clip.handPose
+                            val effectiveBlink = transform.blinkOverride ?: if (clip.forceBlink) true else null
                             ProceduralRigRenderer.drawCharacter(
                                 canvas = canvas,
                                 rig = rig,
@@ -471,7 +479,10 @@ class SceneRenderer(
                                 propAttachment = clip.propAttachment,
                                 customPropBitmap = customPropBmp,
                                 propSwayEnabled = clip.propSwayEnabled,
-                                propScale = clip.propScale
+                                propScale = clip.propScale,
+                                handPose = effectiveHandPose,
+                                blinkOverride = effectiveBlink,
+                                atlasSlices = atlasSlices
                             )
                         }
                     }

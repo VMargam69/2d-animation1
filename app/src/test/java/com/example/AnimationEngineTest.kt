@@ -369,4 +369,111 @@ class AnimationEngineTest {
         val restored = adapter.fromJson(adapter.toJson(scene))
         assertEquals("clip_runner", restored?.cameraFocusClipId)
     }
+
+    @Test
+    fun `sprite atlas slots are strictly within 0 to 1 and have zero overlapping regions`() {
+        val slots = AtlasPartSlot.entries
+        assertEquals(30, slots.size)
+
+        for (slot in slots) {
+            assertTrue("${slot.id} u0 out of range", slot.u0 in 0f..1f)
+            assertTrue("${slot.id} v0 out of range", slot.v0 in 0f..1f)
+            assertTrue("${slot.id} u1 out of range", slot.u1 in 0f..1f)
+            assertTrue("${slot.id} v1 out of range", slot.v1 in 0f..1f)
+            assertTrue("${slot.id} width must be positive", slot.u1 > slot.u0)
+            assertTrue("${slot.id} height must be positive", slot.v1 > slot.v0)
+            assertTrue("${slot.id} pivotU out of range", slot.pivotU in 0f..1f)
+            assertTrue("${slot.id} pivotV out of range", slot.pivotV in 0f..1f)
+        }
+
+        for (i in slots.indices) {
+            for (j in i + 1 until slots.size) {
+                val a = slots[i]
+                val b = slots[j]
+                val overlapsX = a.u0 < b.u1 && b.u0 < a.u1
+                val overlapsY = a.v0 < b.v1 && b.v0 < a.v1
+                assertFalse("Atlas slots ${a.id} and ${b.id} overlap!", overlapsX && overlapsY)
+            }
+        }
+
+        // Hit-test center of HEAD returns HEAD
+        val head = AtlasPartSlot.HEAD
+        assertEquals(head, AtlasPartSlot.hitTest((head.u0 + head.u1) / 2f, (head.v0 + head.v1) / 2f))
+    }
+
+    @Test
+    fun `sprite atlas validator, JSON metadata, hand and blink keyframes, and maker routes work`() {
+        val v2k = com.example.engine.SpriteAtlasEngine.validateAtlasDimensions(2048, 2048)
+        assertTrue(v2k.isValid)
+        assertTrue(v2k.isExactStandardSize)
+        assertEquals(AtlasResolution.RES_2048, v2k.recommendedResolution)
+
+        val v4k = com.example.engine.SpriteAtlasEngine.validateAtlasDimensions(4096, 4096)
+        assertTrue(v4k.isValid)
+        assertTrue(v4k.isExactStandardSize)
+        assertEquals(AtlasResolution.RES_4096, v4k.recommendedResolution)
+
+        val nonSquare = com.example.engine.SpriteAtlasEngine.validateAtlasDimensions(1920, 1080)
+        assertFalse(nonSquare.isValid)
+
+        // Keyframeable hand pose swap & blink override
+        val clip = TimelineClip(
+            layerId = "l1",
+            name = "Atlas Actor",
+            startFrame = 0,
+            durationFrames = 40,
+            handPose = HandPoseType.OPEN,
+            keyframes = listOf(
+                TransformKeyframe(frame = 0, handPoseOverride = HandPoseType.FIST, blinkOverride = true),
+                TransformKeyframe(frame = 20, handPoseOverride = HandPoseType.POINT, blinkOverride = false)
+            )
+        )
+        val at0 = KeyframeEvaluator.evaluate(clip, globalFrame = 0)
+        assertEquals(HandPoseType.FIST, at0.handPoseOverride)
+        assertEquals(true, at0.blinkOverride)
+        val at20 = KeyframeEvaluator.evaluate(clip, globalFrame = 20)
+        assertEquals(HandPoseType.POINT, at20.handPoseOverride)
+        assertEquals(false, at20.blinkOverride)
+
+        // CharacterRigDefinition with SpriteAtlasRigConfig JSON round-trip
+        val atlasChar = CharacterRigDefinition(
+            id = "char_atlas_1",
+            name = "SuperHero",
+            category = CharacterCategory.LATEST,
+            isCustom = true,
+            skeletonRig = SkeletonRigConfig(enabled = true, rigMode = CustomRigMode.ATLAS_RIG_PRO),
+            spriteAtlasRig = SpriteAtlasRigConfig(
+                poseTemplate = AtlasPoseTemplate.THREE_QUARTER_FRONT,
+                resolutionPx = 4096,
+                textureName = "SuperHero",
+                placements = mapOf(
+                    AtlasPartSlot.HEAD.id to AtlasPartPlacement(
+                        slotId = AtlasPartSlot.HEAD.id,
+                        partImagePath = "/tmp/head.png",
+                        visible = true,
+                        offsetX = 0.05f,
+                        scale = 1.1f,
+                        rotationDeg = -4f
+                    )
+                )
+            )
+        )
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(CharacterRigDefinition::class.java)
+        val decoded = adapter.fromJson(adapter.toJson(atlasChar))
+        assertNotNull(decoded)
+        assertEquals(CustomRigMode.ATLAS_RIG_PRO, decoded?.skeletonRig?.rigMode)
+        assertEquals(4096, decoded?.spriteAtlasRig?.resolutionPx)
+        assertEquals(AtlasPoseTemplate.THREE_QUARTER_FRONT, decoded?.spriteAtlasRig?.poseTemplate)
+        assertEquals(1.1f, decoded?.spriteAtlasRig?.placementFor(AtlasPartSlot.HEAD)?.scale ?: 0f, 0.001f)
+
+        // HashRouter Character Setup & Maker routes
+        val router = com.example.navigation.HashRouter()
+        router.navigate(com.example.navigation.HashRoute.CharacterSetup)
+        assertEquals(com.example.navigation.HashRoute.CharacterSetup, router.currentRoute)
+        router.navigate(com.example.navigation.HashRoute.CharacterMaker("back_side", "char_atlas_1"))
+        val makerRoute = router.currentRoute as com.example.navigation.HashRoute.CharacterMaker
+        assertEquals("back_side", makerRoute.poseId)
+        assertEquals("char_atlas_1", makerRoute.editCharacterId)
+    }
 }

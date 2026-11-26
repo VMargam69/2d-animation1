@@ -30,7 +30,9 @@ enum class StudioDestination {
     EDITOR,
     CHARACTER_LIBRARY,
     ANIMATION_LIBRARY,
-    MEDIA_LIBRARY
+    MEDIA_LIBRARY,
+    CHARACTER_SETUP,
+    CHARACTER_MAKER
 }
 
 enum class ActiveEditorSheet {
@@ -117,6 +119,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 !bundledKey.isNullOrBlank() -> assetStorage.loadBundledBackgroundBitmap(bundledKey)
                 else -> null
             }
+        },
+        atlasSlicesProvider = { path ->
+            assetStorage.getCachedOrSliceAtlas(path)
+        },
+        blockingAtlasSlicesProvider = { path ->
+            assetStorage.loadOrSliceAtlasBlocking(path)
         }
     )
 
@@ -203,6 +211,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 swapClipId = _uiState.value.editingClipForAnimationSwapId
             )
             StudioDestination.MEDIA_LIBRARY -> HashRoute.MediaLibrary
+            StudioDestination.CHARACTER_SETUP -> HashRoute.CharacterSetup
+            StudioDestination.CHARACTER_MAKER -> HashRoute.CharacterMaker()
         }
         router.navigate(route)
         _uiState.update {
@@ -210,6 +220,28 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 destination = destination,
                 activeSheet = ActiveEditorSheet.NONE,
                 isDrawingMode = false
+            )
+        }
+    }
+
+    fun openCharacterSetup() {
+        stopPlayback()
+        router.navigate(HashRoute.CharacterSetup)
+        _uiState.update {
+            it.copy(
+                destination = StudioDestination.CHARACTER_SETUP,
+                activeSheet = ActiveEditorSheet.NONE
+            )
+        }
+    }
+
+    fun openCharacterMaker(pose: AtlasPoseTemplate, editCharacterId: String? = null) {
+        stopPlayback()
+        router.navigate(HashRoute.CharacterMaker(poseId = pose.id, editCharacterId = editCharacterId))
+        _uiState.update {
+            it.copy(
+                destination = StudioDestination.CHARACTER_MAKER,
+                activeSheet = ActiveEditorSheet.NONE
             )
         }
     }
@@ -269,6 +301,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 is HashRoute.AnimationLibrary -> StudioDestination.ANIMATION_LIBRARY
                 is HashRoute.AnimationEditor -> StudioDestination.EDITOR
                 is HashRoute.MediaLibrary -> StudioDestination.MEDIA_LIBRARY
+                is HashRoute.CharacterSetup -> StudioDestination.CHARACTER_SETUP
+                is HashRoute.CharacterMaker -> StudioDestination.CHARACTER_MAKER
             }
             _uiState.update { it.copy(destination = dest, isDrawingMode = false) }
         }
@@ -415,8 +449,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun saveCharacter(character: CharacterRigDefinition) {
         viewModelScope.launch {
+            if (!character.customImagePath.isNullOrBlank()) {
+                assetStorage.invalidateAtlasSlices(character.customImagePath)
+            }
             repository.saveCharacter(character)
             showStatus("Saved character \"${character.name}\"")
+        }
+    }
+
+    fun saveAtlasCharacterAndReturn(character: CharacterRigDefinition) {
+        viewModelScope.launch {
+            repository.saveCharacter(character)
+            router.popUpTo(HashRoute.HASH_CHARACTERS, inclusive = false)
+            _uiState.update { it.copy(destination = StudioDestination.CHARACTER_LIBRARY) }
+            showStatus("Saved \"${character.name}\" to Character Library")
         }
     }
 

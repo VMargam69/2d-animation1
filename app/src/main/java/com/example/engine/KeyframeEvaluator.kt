@@ -4,6 +4,7 @@ import com.example.model.AnimationScene
 import com.example.model.CameraKeyframe
 import com.example.model.EasingType
 import com.example.model.FacialExpression
+import com.example.model.HandPoseType
 import com.example.model.NormalizedPoint
 import com.example.model.PoseKeyframeOffsets
 import com.example.model.TimelineClip
@@ -20,7 +21,9 @@ data class EvaluatedTransform(
     val scaleY: Float,
     val opacity: Float,
     val poseOffsets: PoseKeyframeOffsets = PoseKeyframeOffsets(),
-    val expressionOverride: FacialExpression? = null
+    val expressionOverride: FacialExpression? = null,
+    val handPoseOverride: HandPoseType? = null,
+    val blinkOverride: Boolean? = null
 )
 
 data class EvaluatedCamera(
@@ -106,7 +109,9 @@ object KeyframeEvaluator {
             scaleY = lerp(prev.scaleY, next.scaleY, t),
             opacity = lerp(prev.opacity, next.opacity, t).coerceIn(0f, 1f),
             poseOffsets = interpPose,
-            expressionOverride = if (t >= 1f) (next.expressionOverride ?: prev.expressionOverride) else prev.expressionOverride
+            expressionOverride = if (t >= 1f) (next.expressionOverride ?: prev.expressionOverride) else prev.expressionOverride,
+            handPoseOverride = if (t >= 1f) (next.handPoseOverride ?: prev.handPoseOverride) else prev.handPoseOverride,
+            blinkOverride = if (t >= 1f) (next.blinkOverride ?: prev.blinkOverride) else prev.blinkOverride
         )
     }
 
@@ -265,7 +270,9 @@ object KeyframeEvaluator {
         scaleY = scaleY,
         opacity = opacity.coerceIn(0f, 1f),
         poseOffsets = poseOffsets,
-        expressionOverride = expressionOverride
+        expressionOverride = expressionOverride,
+        handPoseOverride = handPoseOverride,
+        blinkOverride = blinkOverride
     )
 
     private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t

@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.model.AtlasPoseTemplate
 import com.example.model.MediaAssetType
 import com.example.navigation.HashRoute
 import com.example.ui.screens.AnimationLibraryScreen
@@ -20,6 +21,8 @@ import com.example.ui.screens.CharacterLibraryScreen
 import com.example.ui.screens.MediaLibraryScreen
 import com.example.ui.screens.ProjectsHomeScreen
 import com.example.ui.screens.editor.EditorScreen
+import com.example.ui.screens.maker.CharacterMakerScreen
+import com.example.ui.screens.maker.CharacterSetupScreen
 import com.example.ui.theme.FrameCraftTheme
 import com.example.ui.theme.StudioObsidian
 import com.example.viewmodel.StudioDestination
@@ -77,7 +80,31 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onSaveCharacter = { char -> viewModel.saveCharacter(char) },
                 onDeleteCharacter = { char -> viewModel.deleteCustomCharacter(char) },
                 onImportSpriteUri = { uri, onPath -> viewModel.importCharacterSpriteUri(uri, onPath) },
+                onOpenCharacterMakerSetup = { viewModel.openCharacterSetup() },
+                onEditAtlasCharacter = { char ->
+                    val pose = char.spriteAtlasRig?.poseTemplate ?: AtlasPoseTemplate.THREE_QUARTER_FRONT
+                    viewModel.openCharacterMaker(pose = pose, editCharacterId = char.id)
+                },
                 onClose = { viewModel.navigateBack() }
+            )
+        }
+
+        is HashRoute.CharacterSetup -> {
+            CharacterSetupScreen(
+                onCreateWithPose = { pose -> viewModel.openCharacterMaker(pose) },
+                onBack = { viewModel.navigateBack() }
+            )
+        }
+
+        is HashRoute.CharacterMaker -> {
+            val pose = AtlasPoseTemplate.fromId(currentRoute.poseId)
+            val editChar = currentRoute.editCharacterId?.let { state.charactersById[it] }
+            CharacterMakerScreen(
+                initialPose = pose,
+                existingCharacter = editChar,
+                assetStorage = viewModel.assetStorage,
+                onSaveCharacter = { saved -> viewModel.saveAtlasCharacterAndReturn(saved) },
+                onBack = { viewModel.navigateBack() }
             )
         }
 

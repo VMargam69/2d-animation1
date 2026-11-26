@@ -26,6 +26,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.BuiltInCatalog
 import com.example.data.LocalAssetStorage
@@ -58,8 +59,13 @@ fun AnimationLibraryScreen(
     var speedMultiplier by remember { mutableFloatStateOf(1.0f) }
     var loopAnimation by remember { mutableStateOf(true) }
 
-    val customBitmap = remember(selectedCharacter.customImagePath) {
-        assetStorage.loadBitmapFromFile(selectedCharacter.customImagePath, maxDimension = 512)
+    val bitmapVersion by assetStorage.bitmapVersion.collectAsStateWithLifecycle()
+    val isAtlasPro = selectedCharacter.spriteAtlasRig != null || selectedCharacter.skeletonRig?.rigMode == CustomRigMode.ATLAS_RIG_PRO
+    val atlasSlices = remember(selectedCharacter.customImagePath, isAtlasPro, bitmapVersion) {
+        if (isAtlasPro) assetStorage.getCachedOrSliceAtlas(selectedCharacter.customImagePath) else null
+    }
+    val customBitmap = remember(selectedCharacter.customImagePath, isAtlasPro, bitmapVersion) {
+        if (!isAtlasPro) assetStorage.getCachedOrRequestBitmap(selectedCharacter.customImagePath, null, maxDimension = 512) else null
     }
 
     val filteredPresets = remember(availablePresets, searchQuery, selectedOrientation) {
@@ -110,7 +116,8 @@ fun AnimationLibraryScreen(
                             orientation = selectedOrientation,
                             preset = selectedPreset.type,
                             animate = true,
-                            customBitmap = customBitmap
+                            customBitmap = customBitmap,
+                            atlasSlices = atlasSlices
                         )
                     }
 
@@ -330,6 +337,7 @@ fun AnimationLibraryScreen(
                             character = selectedCharacter,
                             orientation = selectedOrientation,
                             customBitmap = customBitmap,
+                            atlasSlices = atlasSlices,
                             isSelected = isSelected,
                             onClick = { selectedPreset = preset }
                         )
@@ -346,6 +354,7 @@ private fun AnimationPresetCard(
     character: CharacterRigDefinition,
     orientation: CharacterOrientation,
     customBitmap: android.graphics.Bitmap?,
+    atlasSlices: Map<AtlasPartSlot, android.graphics.Bitmap>?,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
@@ -377,6 +386,7 @@ private fun AnimationPresetCard(
                     preset = preset.type,
                     animate = true,
                     customBitmap = customBitmap,
+                    atlasSlices = atlasSlices,
                     modifier = Modifier.fillMaxSize()
                 )
                 Surface(

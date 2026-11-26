@@ -506,6 +506,8 @@ fun CharacterActingAndPropsDialog(
 ) {
     val eval = remember(clip, currentFrame) { KeyframeEvaluator.evaluate(clip, currentFrame) }
     val activeExpression = eval.expressionOverride ?: clip.facialExpression
+    val activeHandPose = eval.handPoseOverride ?: clip.handPose
+    val activeBlinkOverride = eval.blinkOverride ?: if (clip.forceBlink) true else null
     val pose = eval.poseOffsets
 
     AlertDialog(
@@ -513,7 +515,7 @@ fun CharacterActingAndPropsDialog(
         containerColor = StudioPanel,
         title = {
             Column {
-                Text("Expression, Hand Props & IK Pose", color = StudioTextPrimary)
+                Text("Expression, Hands, Blink & Props", color = StudioTextPrimary)
                 Text(
                     "${clip.name} • Frame ${currentFrame + 1}",
                     style = MaterialTheme.typography.labelSmall,
@@ -529,8 +531,8 @@ fun CharacterActingAndPropsDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // 1. Facial Expression Override
-                Text("Facial Expression Override", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                // 1. Facial Expression Override (keyframeable)
+                Text("Facial Expression Override (Keyframeable)", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(FacialExpression.entries) { expr ->
                         FilterChip(
@@ -541,6 +543,54 @@ fun CharacterActingAndPropsDialog(
                             },
                             label = { Text(expr.displayName) },
                             modifier = Modifier.testTag("expression_chip_${expr.name.lowercase()}")
+                        )
+                    }
+                }
+
+                // 1B. Eye Blink Control (keyframeable)
+                Text("Eye Blink Control (Keyframeable)", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(
+                        selected = activeBlinkOverride == null,
+                        onClick = {
+                            onUpdateClip { it.copy(forceBlink = false) }
+                            onUpdateTransform { it.copy(blinkOverride = null) }
+                        },
+                        label = { Text("Auto Blink") },
+                        modifier = Modifier.testTag("blink_chip_auto")
+                    )
+                    FilterChip(
+                        selected = activeBlinkOverride == false,
+                        onClick = {
+                            onUpdateClip { it.copy(forceBlink = false) }
+                            onUpdateTransform { it.copy(blinkOverride = false) }
+                        },
+                        label = { Text("Eyes Open") },
+                        modifier = Modifier.testTag("blink_chip_open")
+                    )
+                    FilterChip(
+                        selected = activeBlinkOverride == true,
+                        onClick = {
+                            onUpdateClip { it.copy(forceBlink = true) }
+                            onUpdateTransform { it.copy(blinkOverride = true) }
+                        },
+                        label = { Text("Closed / Blink") },
+                        modifier = Modifier.testTag("blink_chip_closed")
+                    )
+                }
+
+                // 1C. Hand Pose Swap (keyframeable)
+                Text("Hand Gesture Swap (Keyframeable)", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(HandPoseType.entries) { hand ->
+                        FilterChip(
+                            selected = activeHandPose == hand,
+                            onClick = {
+                                onUpdateClip { it.copy(handPose = hand) }
+                                onUpdateTransform { it.copy(handPoseOverride = hand) }
+                            },
+                            label = { Text(hand.displayName) },
+                            modifier = Modifier.testTag("hand_pose_chip_${hand.name.lowercase()}")
                         )
                     }
                 }

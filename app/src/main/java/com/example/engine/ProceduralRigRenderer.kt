@@ -89,17 +89,50 @@ object ProceduralRigRenderer {
         propAttachment: PropAttachmentPoint = PropAttachmentPoint.RIGHT_HAND,
         customPropBitmap: Bitmap? = null,
         propSwayEnabled: Boolean = true,
-        propScale: Float = 1.0f
+        propScale: Float = 1.0f,
+        handPose: HandPoseType = HandPoseType.OPEN,
+        blinkOverride: Boolean? = null,
+        mouthSlotOverride: AtlasPartSlot? = null,
+        atlasSlices: Map<AtlasPartSlot, Bitmap>? = null
     ) {
         val p = ((phase % 1f) + 1f) % 1f
         val swayDeg = if (propSwayEnabled) (sin(p * 2.0 * PI) * 11.0).toFloat() else 0f
         val basePose = computePose(preset, p)
         val pose = basePose.withOffsets(poseOffsets, facialExpression, swayDeg)
+            .let { if (blinkOverride != null) it.copy(blinkClosed = blinkOverride) else it }
 
         canvas.save()
         canvas.translate(0f, pose.bodyBobY * rigScale)
         canvas.rotate(pose.bodyTiltDeg)
         canvas.scale(pose.squashX, pose.squashY)
+
+        if (rig.spriteAtlasRig != null || rig.skeletonRig?.rigMode == CustomRigMode.ATLAS_RIG_PRO) {
+            val resolvedSlices = atlasSlices ?: emptyMap()
+            val poseTemplate = rig.spriteAtlasRig?.poseTemplate ?: when (orientation) {
+                CharacterOrientation.FRONT -> AtlasPoseTemplate.FRONT
+                CharacterOrientation.SIDE, CharacterOrientation.BACK, CharacterOrientation.THREE_QUARTER_BACK -> AtlasPoseTemplate.BACK_SIDE
+                CharacterOrientation.THREE_QUARTER_FRONT -> AtlasPoseTemplate.THREE_QUARTER_FRONT
+            }
+            SpriteAtlasRigRenderer.drawSpriteAtlasRig(
+                canvas = canvas,
+                slices = resolvedSlices,
+                poseTemplate = poseTemplate,
+                pose = pose,
+                rigScale = rigScale,
+                alpha = alpha,
+                tintOverlayColor = tintOverlayColor,
+                handPose = handPose,
+                blinkOverride = blinkOverride,
+                mouthSlotOverride = mouthSlotOverride,
+                propType = propType,
+                propAttachment = propAttachment,
+                customPropBitmap = customPropBitmap,
+                propScale = propScale,
+                drawGhostFallbackWhenEmpty = resolvedSlices.isEmpty()
+            )
+            canvas.restore()
+            return
+        }
 
         if (customBitmap != null && !customBitmap.isRecycled) {
             val skeleton = rig.skeletonRig

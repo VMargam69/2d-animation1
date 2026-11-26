@@ -49,12 +49,33 @@ sealed interface HashRoute {
         override val hash: String = HASH_MEDIA
     }
 
+    data object CharacterSetup : HashRoute {
+        override val hash: String = HASH_CHARACTER_SETUP
+    }
+
+    data class CharacterMaker(
+        val poseId: String = "three_quarter_front",
+        val editCharacterId: String? = null
+    ) : HashRoute {
+        override val hash: String = buildString {
+            append(HASH_CHARACTER_MAKER)
+            append("/")
+            append(poseId)
+            if (!editCharacterId.isNullOrBlank()) {
+                append("?editCharId=")
+                append(editCharacterId)
+            }
+        }
+    }
+
     companion object {
         const val HASH_PROJECTS = "#/projects"
         const val HASH_CHARACTERS = "#/characters"
         const val HASH_ANIMATIONS = "#/animations"
         const val HASH_EDITOR = "#/editor"
         const val HASH_MEDIA = "#/media"
+        const val HASH_CHARACTER_SETUP = "#/character-setup"
+        const val HASH_CHARACTER_MAKER = "#/character-maker"
 
         fun parse(rawHash: String): HashRoute {
             val normalized = rawHash.trim().removePrefix("#").ifBlank { "/projects" }
@@ -78,6 +99,11 @@ sealed interface HashRoute {
                 )
                 "editor" -> AnimationEditor(projectId = segments.getOrNull(1))
                 "media" -> MediaLibrary
+                "character-setup" -> CharacterSetup
+                "character-maker" -> CharacterMaker(
+                    poseId = segments.getOrNull(1) ?: "three_quarter_front",
+                    editCharacterId = queryParams["editCharId"]
+                )
                 else -> ProjectDashboard
             }
         }

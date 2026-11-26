@@ -34,6 +34,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.LocalAssetStorage
 import com.example.engine.ProceduralRigRenderer
@@ -51,9 +52,12 @@ fun CharacterLibraryScreen(
     onSaveCharacter: (CharacterRigDefinition) -> Unit,
     onDeleteCharacter: (CharacterRigDefinition) -> Unit,
     onImportSpriteUri: (Uri, (String) -> Unit) -> Unit,
+    onOpenCharacterMakerSetup: () -> Unit,
+    onEditAtlasCharacter: (CharacterRigDefinition) -> Unit,
     onClose: () -> Unit
 ) {
     BackHandler { onClose() }
+    val bitmapVersion by assetStorage.bitmapVersion.collectAsStateWithLifecycle()
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf(CharacterCategory.ALL) }
@@ -112,16 +116,7 @@ fun CharacterLibraryScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = {
-                                isCreatingNew = true
-                                editingCharacter = CharacterRigDefinition(
-                                    id = UUID.randomUUID().toString(),
-                                    name = "Custom Character",
-                                    category = CharacterCategory.DESI,
-                                    isCustom = true,
-                                    isLatest = true
-                                )
-                            },
+                            onClick = onOpenCharacterMakerSetup,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = ElectricCyan,
                                 contentColor = StudioObsidian
@@ -136,6 +131,26 @@ fun CharacterLibraryScreen(
                                 stringResource(R.string.characters_create),
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                isCreatingNew = true
+                                editingCharacter = CharacterRigDefinition(
+                                    id = UUID.randomUUID().toString(),
+                                    name = "Custom Character",
+                                    category = CharacterCategory.DESI,
+                                    isCustom = true,
+                                    isLatest = true
+                                )
+                            },
+                            modifier = Modifier.testTag("quick_procedural_char_btn")
+                        ) {
+                            Icon(
+                                Icons.Rounded.Tune,
+                                contentDescription = "Quick procedural or single-PNG rig",
+                                tint = AmberKeyframe
                             )
                         }
 
@@ -262,10 +277,15 @@ fun CharacterLibraryScreen(
                             CharacterCard(
                                 character = character,
                                 assetStorage = assetStorage,
+                                bitmapVersion = bitmapVersion,
                                 onSelect = { onSelectCharacter(character) },
                                 onEdit = {
-                                    isCreatingNew = false
-                                    editingCharacter = character
+                                    if (character.spriteAtlasRig != null || character.skeletonRig?.rigMode == CustomRigMode.ATLAS_RIG_PRO) {
+                                        onEditAtlasCharacter(character)
+                                    } else {
+                                        isCreatingNew = false
+                                        editingCharacter = character
+                                    }
                                 },
                                 onTogglePin = { onTogglePin(character) }
                             )
@@ -301,12 +321,17 @@ fun CharacterLibraryScreen(
 private fun CharacterCard(
     character: CharacterRigDefinition,
     assetStorage: LocalAssetStorage,
+    bitmapVersion: Int,
     onSelect: () -> Unit,
     onEdit: () -> Unit,
     onTogglePin: () -> Unit
 ) {
-    val customBitmap = remember(character.customImagePath) {
-        assetStorage.loadBitmapFromFile(character.customImagePath, maxDimension = 512)
+    val isAtlasPro = character.spriteAtlasRig != null || character.skeletonRig?.rigMode == CustomRigMode.ATLAS_RIG_PRO
+    val atlasSlices = remember(character.customImagePath, isAtlasPro, bitmapVersion) {
+        if (isAtlasPro) assetStorage.getCachedOrSliceAtlas(character.customImagePath) else null
+    }
+    val customBitmap = remember(character.customImagePath, isAtlasPro, bitmapVersion) {
+        if (!isAtlasPro) assetStorage.getCachedOrRequestBitmap(character.customImagePath, null, maxDimension = 512) else null
     }
     val hasSkeleton = character.skeletonRig?.enabled == true && character.customImagePath != null
 
@@ -334,10 +359,11 @@ private fun CharacterCard(
             ) {
                 CharacterPreviewCanvas(
                     rig = character,
-                    orientation = CharacterOrientation.FRONT,
+                    orientation = character.spriteAtlasRig?.poseTemplate?.defaultOrientation ?: CharacterOrientation.FRONT,
                     preset = AnimationPresetType.IDLE,
                     animate = false,
                     customBitmap = customBitmap,
+                    atlasSlices = atlasSlices,
                     modifier = Modifier.fillMaxSize()
                 )
 
@@ -349,9 +375,13 @@ private fun CharacterCard(
                         .padding(6.dp)
                 ) {
                     Text(
-                        text = if (hasSkeleton) "PNG Rig" else character.category.displayName,
+                        text = when {
+                            isAtlasPro -> "Atlas Pro"
+                            hasSkeleton -> "PNG Rig"
+                            else -> character.category.displayName
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (hasSkeleton) EmeraldLayer else ElectricCyan,
+                        color = if (isAtlasPro || hasSkeleton) EmeraldLayer else ElectricCyan,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }

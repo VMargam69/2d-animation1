@@ -90,7 +90,8 @@ enum class HumanBuildType(val displayName: String, val shoulderScale: Float, val
 
 enum class CustomRigMode(val displayName: String, val shortLabel: String) {
     SINGLE_PNG_MESH("Single PNG Mesh Rig", "Single PNG Mesh"),
-    MODULAR_CHART_2048("2048×2048 Modular Chart", "2048×2048 Chart")
+    MODULAR_CHART_2048("2048×2048 Modular Chart", "2048×2048 Chart"),
+    ATLAS_RIG_PRO("Custom Character Maker Atlas", "Atlas Pro")
 }
 
 enum class FacialExpression(val displayName: String, val badgeText: String) {
@@ -225,6 +226,7 @@ data class CharacterRigDefinition(
     val isLatest: Boolean = false,
     val customImagePath: String? = null,
     val skeletonRig: SkeletonRigConfig? = null,
+    val spriteAtlasRig: SpriteAtlasRigConfig? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -310,7 +312,9 @@ data class TransformKeyframe(
     val opacity: Float = 1f,
     val easing: EasingType = EasingType.LINEAR,
     val poseOffsets: PoseKeyframeOffsets = PoseKeyframeOffsets(),
-    val expressionOverride: FacialExpression? = null
+    val expressionOverride: FacialExpression? = null,
+    val handPoseOverride: HandPoseType? = null,
+    val blinkOverride: Boolean? = null
 )
 
 data class TimelineClip(
@@ -323,6 +327,8 @@ data class TimelineClip(
     val orientation: CharacterOrientation = CharacterOrientation.FRONT,
     val animationPresetType: AnimationPresetType = AnimationPresetType.IDLE,
     val facialExpression: FacialExpression = FacialExpression.AUTO,
+    val handPose: HandPoseType = HandPoseType.OPEN,
+    val forceBlink: Boolean = false,
     val propType: CharacterPropType = CharacterPropType.NONE,
     val propAttachment: PropAttachmentPoint = PropAttachmentPoint.RIGHT_HAND,
     val customPropImagePath: String? = null,

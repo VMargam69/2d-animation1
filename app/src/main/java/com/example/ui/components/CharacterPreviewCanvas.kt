@@ -5,19 +5,16 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import com.example.engine.ProceduralRigRenderer
-import com.example.model.AnimationPresetType
-import com.example.model.CharacterOrientation
-import com.example.model.CharacterRigDefinition
+import com.example.model.*
 import kotlin.math.min
 
 /**
- * Reusable live-animated procedural character preview used inside Character Library cards,
- * Animation Library cards, and custom character creator dialog.
+ * Reusable live-animated character preview used inside Character Library cards,
+ * Animation Library cards, Character Setup templates, and Custom Character Maker.
  */
 @Composable
 fun CharacterPreviewCanvas(
@@ -26,6 +23,11 @@ fun CharacterPreviewCanvas(
     preset: AnimationPresetType = AnimationPresetType.IDLE,
     animate: Boolean = true,
     customBitmap: Bitmap? = null,
+    atlasSlices: Map<AtlasPartSlot, Bitmap>? = null,
+    facialExpression: FacialExpression = FacialExpression.AUTO,
+    handPose: HandPoseType = HandPoseType.OPEN,
+    blinkOverride: Boolean? = null,
+    mouthSlotOverride: AtlasPartSlot? = null,
     modifier: Modifier = Modifier
 ) {
     val animatedPhaseState = if (animate) {
@@ -60,7 +62,12 @@ fun CharacterPreviewCanvas(
                 phase = phase,
                 rigScale = rigScale,
                 alpha = 1f,
-                customBitmap = customBitmap
+                customBitmap = customBitmap,
+                facialExpression = facialExpression,
+                handPose = handPose,
+                blinkOverride = blinkOverride,
+                mouthSlotOverride = mouthSlotOverride,
+                atlasSlices = atlasSlices
             )
             nativeCanvas.restore()
         }
