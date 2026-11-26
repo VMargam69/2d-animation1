@@ -44,6 +44,18 @@ class StudioRepository(
         if (characterDao.countCharacters() == 0) {
             characterDao.insertAllIgnore(BuiltInCatalog.builtInCharacters.map { it.toEntity() })
         }
+        // Always ensure bundled offline HD SVG/PNG packs from assets/characters/ are registered
+        val bundledPacks = assetStorage.loadBundledAssetPacks()
+        if (bundledPacks.isNotEmpty()) {
+            bundledPacks.forEach { pack ->
+                pack.spriteAtlasRig?.let { cfg ->
+                    if (assetStorage.loadAtlasSidecarConfig(pack.id) == null) {
+                        assetStorage.saveAtlasSidecarConfig(pack.id, cfg)
+                    }
+                }
+            }
+            characterDao.insertAllIgnore(bundledPacks.map { it.toEntity() })
+        }
         if (animationPresetDao.countPresets() == 0) {
             animationPresetDao.insertAllIgnore(BuiltInCatalog.animationPresets.map { it.toEntity() })
         }
@@ -133,7 +145,24 @@ class StudioRepository(
     }
 
     suspend fun saveCharacter(character: CharacterRigDefinition) = withContext(Dispatchers.IO) {
+        character.spriteAtlasRig?.let { cfg ->
+            assetStorage.saveAtlasSidecarConfig(character.id, cfg)
+        }
         characterDao.upsertCharacter(character.toEntity())
+    }
+
+    suspend fun importCharacterPack(uri: Uri): com.example.engine.CharacterPackImportResult = withContext(Dispatchers.IO) {
+        val result = assetStorage.importCharacterPackUri(uri)
+        val charDef = result.character
+        if (charDef != null) {
+            charDef.spriteAtlasRig?.let { cfg ->
+                assetStorage.saveAtlasSidecarConfig(charDef.id, cfg)
+            }
+            characterDao.upsertCharacter(charDef.toEntity())
+            // Warm up slice cache immediately in background
+            assetStorage.loadOrSliceAtlasBlocking(charDef.customImagePath)
+        }
+        result
     }
 
     suspend fun togglePinCharacter(id: String, currentlyPinned: Boolean) = withContext(Dispatchers.IO) {
@@ -143,6 +172,7 @@ class StudioRepository(
     suspend fun deleteCustomCharacter(character: CharacterRigDefinition) = withContext(Dispatchers.IO) {
         if (character.isCustom) {
             assetStorage.deleteOfflineFile(character.customImagePath)
+            assetStorage.deleteAtlasSidecarConfig(character.id)
             characterDao.deleteCustomCharacter(character.id)
         }
     }
@@ -186,6 +216,15 @@ class StudioRepository(
         val hair = runCatching { HumanHairStyle.valueOf(hairStyleName) }.getOrDefault(HumanHairStyle.SIDE_PART)
         val build = runCatching { HumanBuildType.valueOf(buildTypeName) }.getOrDefault(HumanBuildType.STANDARD)
         val skel = skeletonRigJson?.let { runCatching { skeletonAdapter.fromJson(it) }.getOrNull() }
+        val atlasSidecar = assetStorage.loadAtlasSidecarConfig(id) ?: if (skel?.rigMode == CustomRigMode.ATLAS_RIG_PRO) {
+            SpriteAtlasRigConfig(
+                poseTemplate = AtlasPoseTemplate.THREE_QUARTER_FRONT,
+                resolutionPx = 2048,
+                textureName = name,
+                renderMode = if (customImagePath?.endsWith(".svg", true) == true) "SVG" else "PNG",
+                importedFullSheetPath = customImagePath
+            )
+        } else null
         return CharacterRigDefinition(
             id = id,
             name = name,
@@ -207,6 +246,7 @@ class StudioRepository(
             isLatest = isLatest,
             customImagePath = customImagePath,
             skeletonRig = skel,
+            spriteAtlasRig = atlasSidecar,
             createdAt = createdAt
         )
     }

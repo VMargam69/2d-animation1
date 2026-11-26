@@ -160,6 +160,9 @@ fun TransformInspectorDialog(
     onUpdateTransform: ((TransformKeyframe) -> TransformKeyframe) -> Unit,
     onFlipHorizontal: () -> Unit,
     onFlipVertical: () -> Unit,
+    onUpdateClip: (((TimelineClip) -> TimelineClip) -> Unit)? = null,
+    isIkPosingMode: Boolean = false,
+    onToggleIkPosingMode: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val eval = remember(clip, currentFrame) { KeyframeEvaluator.evaluate(clip, currentFrame) }
@@ -171,7 +174,7 @@ fun TransformInspectorDialog(
         containerColor = StudioPanel,
         title = {
             Column {
-                Text("Transform & Keyframe", color = StudioTextPrimary)
+                Text("Transform & Stage Controls", color = StudioTextPrimary)
                 Text("${clip.name} • Frame ${currentFrame + 1}", style = MaterialTheme.typography.labelSmall, color = ElectricCyan)
             }
         },
@@ -179,7 +182,7 @@ fun TransformInspectorDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 440.dp)
+                    .heightIn(max = 460.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -192,11 +195,32 @@ fun TransformInspectorDialog(
                 LabeledSlider("Rotation", eval.rotation, -180f..180f, "${eval.rotation.toInt()}°") { v ->
                     onUpdateTransform { it.copy(rotation = v) }
                 }
-                LabeledSlider("Scale", eval.scaleX, 0.3f..2.5f, String.format(Locale.US, "%.2fx", eval.scaleX)) { v ->
+                LabeledSlider("Size (Scale)", eval.scaleX, 0.3f..2.5f, String.format(Locale.US, "%.2fx", eval.scaleX)) { v ->
                     onUpdateTransform { it.copy(scaleX = v, scaleY = v) }
                 }
-                LabeledSlider("Opacity", eval.opacity, 0f..1f, "${(eval.opacity * 100).toInt()}%") { v ->
+                LabeledSlider("Fade (Opacity)", eval.opacity, 0f..1f, "${(eval.opacity * 100).toInt()}%") { v ->
                     onUpdateTransform { it.copy(opacity = v) }
+                }
+
+                if (onUpdateClip != null) {
+                    if (clip.characterId != null) {
+                        LabeledSlider(
+                            "Black Shade",
+                            clip.blackShade,
+                            0f..1f,
+                            "${(clip.blackShade * 100).toInt()}%"
+                        ) { v ->
+                            onUpdateClip { it.copy(blackShade = v) }
+                        }
+                    }
+                    LabeledSlider(
+                        "Depth Order",
+                        clip.depthOrder.toFloat(),
+                        -10f..10f,
+                        if (clip.depthOrder >= 0) "+${clip.depthOrder}" else "${clip.depthOrder}"
+                    ) { v ->
+                        onUpdateClip { it.copy(depthOrder = v.toInt()) }
+                    }
                 }
 
                 Text("Keyframe Interpolation", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
@@ -220,6 +244,21 @@ fun TransformInspectorDialog(
                         Icon(Icons.Rounded.SwapVert, null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Flip V")
+                    }
+                }
+
+                if (clip.characterId != null && onToggleIkPosingMode != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Stage IK Limb Posing", style = MaterialTheme.typography.bodyMedium, color = StudioTextPrimary)
+                        Switch(
+                            checked = isIkPosingMode,
+                            onCheckedChange = { onToggleIkPosingMode() },
+                            modifier = Modifier.testTag("transform_ik_toggle")
+                        )
                     }
                 }
             }
@@ -502,6 +541,8 @@ fun CharacterActingAndPropsDialog(
     onResetPoseAtFrame: () -> Unit,
     onToggleIkPosingMode: () -> Unit,
     onImportCustomPropPng: ((String) -> Unit) -> Unit,
+    onFlipHorizontal: () -> Unit = {},
+    onFlipVertical: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val eval = remember(clip, currentFrame) { KeyframeEvaluator.evaluate(clip, currentFrame) }
@@ -515,7 +556,7 @@ fun CharacterActingAndPropsDialog(
         containerColor = StudioPanel,
         title = {
             Column {
-                Text("Expression, Hands, Blink & Props", color = StudioTextPrimary)
+                Text("Character Stage, Face & Props", color = StudioTextPrimary)
                 Text(
                     "${clip.name} • Frame ${currentFrame + 1}",
                     style = MaterialTheme.typography.labelSmall,
@@ -527,10 +568,82 @@ fun CharacterActingAndPropsDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 460.dp)
+                    .heightIn(max = 470.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                // 0. Character Stage Controls: Size, Fade, Black Shade, Depth, Flip, IK
+                Text("Character Stage Controls", style = MaterialTheme.typography.labelLarge, color = ElectricCyan)
+                LabeledSlider(
+                    "Size",
+                    eval.scaleX,
+                    0.3f..2.5f,
+                    String.format(Locale.US, "%.2fx", eval.scaleX)
+                ) { v ->
+                    onUpdateTransform { it.copy(scaleX = v, scaleY = v) }
+                }
+                LabeledSlider(
+                    "Fade",
+                    eval.opacity,
+                    0f..1f,
+                    "${(eval.opacity * 100).toInt()}%"
+                ) { v ->
+                    onUpdateTransform { it.copy(opacity = v) }
+                }
+                LabeledSlider(
+                    "Black Shade",
+                    clip.blackShade,
+                    0f..1f,
+                    "${(clip.blackShade * 100).toInt()}%"
+                ) { v ->
+                    onUpdateClip { it.copy(blackShade = v) }
+                }
+                LabeledSlider(
+                    "Depth",
+                    clip.depthOrder.toFloat(),
+                    -10f..10f,
+                    if (clip.depthOrder >= 0) "+${clip.depthOrder}" else "${clip.depthOrder}"
+                ) { v ->
+                    onUpdateClip { it.copy(depthOrder = v.toInt()) }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = onFlipHorizontal,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("char_stage_flip_h")
+                    ) {
+                        Icon(Icons.Rounded.Flip, null, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Flip H", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(
+                        onClick = onFlipVertical,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("char_stage_flip_v")
+                    ) {
+                        Icon(Icons.Rounded.SwapVert, null, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Flip V", style = MaterialTheme.typography.labelSmall)
+                    }
+                    FilterChip(
+                        selected = isIkPosingMode,
+                        onClick = onToggleIkPosingMode,
+                        label = { Text("IK") },
+                        leadingIcon = { Icon(Icons.Rounded.AccessibilityNew, null, modifier = Modifier.size(15.dp)) },
+                        modifier = Modifier.testTag("char_stage_ik_toggle")
+                    )
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
                 // 1. Facial Expression Override (keyframeable)
                 Text("Facial Expression Override (Keyframeable)", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

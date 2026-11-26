@@ -33,7 +33,7 @@ enum class CharacterCategory(val displayName: String) {
 }
 
 enum class CharacterOrientation(val displayName: String, val shortLabel: String) {
-    FRONT("Front", "Front"),
+    FRONT("Front", "F"),
     THREE_QUARTER_FRONT("3/4 Front", "3/4 F"),
     THREE_QUARTER_BACK("3/4 Back", "3/4 B"),
     BACK("Back", "Back"),
@@ -352,7 +352,9 @@ data class TimelineClip(
     val drawingStrokes: List<DrawingStroke> = emptyList(),
     val keyframes: List<TransformKeyframe> = listOf(TransformKeyframe(frame = 0)),
     val flipHorizontal: Boolean = false,
-    val flipVertical: Boolean = false
+    val flipVertical: Boolean = false,
+    val blackShade: Float = 0f,
+    val depthOrder: Int = 0
 ) {
     val endFrame: Int get() = startFrame + durationFrames
 }

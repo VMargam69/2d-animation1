@@ -179,7 +179,7 @@ internal object HumanRigDrawer {
             canvas.drawOval(RectF(-5f * s, -5f * s, 3f * s, 8f * s), fill)
         }
 
-        // Sculpted Cranium + Tapered Jawline Path
+        // Sculpted Cranium + Tapered Jawline Path with 2-Tone Cel-Shading
         val headW = if (isSide) 18.5f * s else 20.5f * s
         val headPath = Path().apply {
             moveTo(-headW, -4f * s)
@@ -188,16 +188,25 @@ internal object HumanRigDrawer {
             cubicTo(-headW * 0.62f, 20f * s, -headW, 9f * s, -headW, -4f * s)
             close()
         }
-        val skinShader = LinearGradient(
-            -headW, -20f * s, headW, 20f * s,
-            withAlpha(lighten(skin, 1.07f), alphaInt),
-            withAlpha(darken(skin, 0.88f), alphaInt),
-            Shader.TileMode.CLAMP
-        )
-        fill.shader = skinShader
+        fill.color = withAlpha(skin, alphaInt)
         canvas.drawPath(headPath, fill)
-        fill.shader = null
-        canvas.drawPath(headPath, outline)
+        // Clipped cel-shadow crescent on far cheek/jaw + soft rim light
+        canvas.save()
+        canvas.clipPath(headPath)
+        val shadowCrescent = Path().apply {
+            moveTo(headW * 0.42f, -24f * s)
+            cubicTo(headW * 0.85f, -6f * s, headW * 0.72f, 14f * s, -headW * 0.25f, 23f * s)
+            lineTo(headW + 4f * s, 26f * s)
+            lineTo(headW + 4f * s, -28f * s)
+            close()
+        }
+        fill.color = withAlpha(darken(skin, 0.84f), alphaInt)
+        canvas.drawPath(shadowCrescent, fill)
+        // Specular forehead/cheek highlight
+        fill.color = withAlpha(lighten(skin, 1.16f), (alphaInt * 0.55f).toInt())
+        canvas.drawOval(RectF(-headW * 0.78f, -15f * s, -headW * 0.25f, 1f * s), fill)
+        canvas.restore()
+        canvas.drawPath(headPath, clothOutline)
 
         // Realistic Facial Features (visible on Front, 3/4 Front, Side)
         if (!isBack) {
@@ -268,22 +277,38 @@ internal object HumanRigDrawer {
         val torsoPath = Path().apply {
             moveTo(-shoulderHalf, -32f * s)
             quadTo(0f, -38f * s, shoulderHalf, -32f * s)
-            lineTo(waistHalf, 12f * s)
-            lineTo(waistHalf * 1.10f, bottomY)
-            quadTo(0f, bottomY + 5f * s, -waistHalf * 1.10f, bottomY)
+            cubicTo(shoulderHalf * 0.92f, -10f * s, waistHalf * 1.05f, 4f * s, waistHalf, 12f * s)
+            lineTo(waistHalf * 1.12f, bottomY)
+            quadTo(0f, bottomY + 6f * s, -waistHalf * 1.12f, bottomY)
             lineTo(-waistHalf, 12f * s)
+            cubicTo(-waistHalf * 1.05f, 4f * s, -shoulderHalf * 0.92f, -10f * s, -shoulderHalf, -32f * s)
             close()
         }
 
-        val gradient = LinearGradient(
-            -shoulderHalf, -30f * s, shoulderHalf, bottomY,
-            withAlpha(lighten(primary, 1.08f), alphaInt),
-            withAlpha(darken(primary, 0.80f), alphaInt),
-            Shader.TileMode.CLAMP
-        )
-        fill.shader = gradient
+        fill.color = withAlpha(primary, alphaInt)
         canvas.drawPath(torsoPath, fill)
-        fill.shader = null
+        // Clipped 2-tone cel-shading shadow side + rim highlight
+        canvas.save()
+        canvas.clipPath(torsoPath)
+        val torsoShadow = Path().apply {
+            moveTo(shoulderHalf * 0.34f, -38f * s)
+            quadTo(waistHalf * 0.45f, 4f * s, waistHalf * 0.25f, bottomY + 8f * s)
+            lineTo(shoulderHalf + 10f * s, bottomY + 8f * s)
+            lineTo(shoulderHalf + 10f * s, -38f * s)
+            close()
+        }
+        fill.color = withAlpha(darken(primary, 0.78f), alphaInt)
+        canvas.drawPath(torsoShadow, fill)
+        val torsoHighlight = Path().apply {
+            moveTo(-shoulderHalf, -34f * s)
+            lineTo(-shoulderHalf * 0.48f, -34f * s)
+            quadTo(-waistHalf * 0.62f, -4f * s, -waistHalf * 0.75f, bottomY)
+            lineTo(-shoulderHalf - 4f * s, bottomY)
+            close()
+        }
+        fill.color = withAlpha(lighten(primary, 1.18f), (alphaInt * 0.42f).toInt())
+        canvas.drawPath(torsoHighlight, fill)
+        canvas.restore()
         canvas.drawPath(torsoPath, outline)
 
         if (isBack) return
@@ -675,31 +700,69 @@ internal object HumanRigDrawer {
         canvas.translate(ox, oy)
         canvas.rotate(upperDeg)
 
-        // Upper arm / Sleeve
+        // Tapered Organic Upper Arm / Sleeve Path (wider deltoid tapering to elbow)
         val upperLen = 28f * s
-        val upperW = 5.4f * s
+        val topW = 6.2f * s
+        val elbowW = 4.6f * s
+        val upperPath = Path().apply {
+            moveTo(-topW, 2f * s)
+            quadTo(0f, -5.5f * s, topW, 2f * s)
+            cubicTo(topW * 1.05f, upperLen * 0.42f, elbowW * 1.08f, upperLen * 0.78f, elbowW, upperLen)
+            quadTo(0f, upperLen + 3.2f * s, -elbowW, upperLen)
+            cubicTo(-elbowW * 1.08f, upperLen * 0.78f, -topW * 1.05f, upperLen * 0.42f, -topW, 2f * s)
+            close()
+        }
         fill.color = withAlpha(upperColor, alphaInt)
-        val upperRect = RectF(-upperW, -2f * s, upperW, upperLen)
-        canvas.drawRoundRect(upperRect, upperW, upperW, fill)
-        canvas.drawRoundRect(upperRect, upperW, upperW, outline)
+        canvas.drawPath(upperPath, fill)
+        // Cel-shading shadow crescent & rim highlight on upper arm
+        canvas.save()
+        canvas.clipPath(upperPath)
+        fill.color = withAlpha(darken(upperColor, 0.78f), alphaInt)
+        canvas.drawRect(topW * 0.2f, -6f * s, topW + 4f * s, upperLen + 6f * s, fill)
+        fill.color = withAlpha(lighten(upperColor, 1.18f), (alphaInt * 0.45f).toInt())
+        canvas.drawRect(-topW - 2f * s, -4f * s, -topW * 0.42f, upperLen + 4f * s, fill)
+        canvas.restore()
+        canvas.drawPath(upperPath, outline)
 
-        // Elbow pivot -> Forearm
-        canvas.translate(0f, upperLen - 3f * s)
+        // Elbow pivot -> Tapered Organic Forearm (sculpted muscle contour tapering to wrist)
+        canvas.translate(0f, upperLen - 2.5f * s)
         canvas.rotate(forearmDeg)
         val foreLen = 24f * s
-        val foreW = 4.4f * s
-        fill.color = withAlpha(if (sleeveColor == skin) skin else skin, alphaInt)
-        val foreRect = RectF(-foreW, 0f, foreW, foreLen)
-        canvas.drawRoundRect(foreRect, foreW, foreW, fill)
-        canvas.drawRoundRect(foreRect, foreW, foreW, outline)
+        val foreTopW = 4.7f * s
+        val wristW = 3.2f * s
+        val foreColor = if (sleeveColor == skin) skin else skin
+        val forePath = Path().apply {
+            moveTo(-foreTopW, 1f * s)
+            quadTo(0f, -3.5f * s, foreTopW, 1f * s)
+            cubicTo(foreTopW * 1.05f, foreLen * 0.35f, wristW * 1.15f, foreLen * 0.75f, wristW, foreLen)
+            quadTo(0f, foreLen + 2.5f * s, -wristW, foreLen)
+            cubicTo(-wristW * 1.15f, foreLen * 0.75f, -foreTopW * 1.05f, foreLen * 0.35f, -foreTopW, 1f * s)
+            close()
+        }
+        fill.color = withAlpha(foreColor, alphaInt)
+        canvas.drawPath(forePath, fill)
+        canvas.save()
+        canvas.clipPath(forePath)
+        fill.color = withAlpha(darken(foreColor, 0.82f), alphaInt)
+        canvas.drawRect(foreTopW * 0.22f, -4f * s, foreTopW + 3f * s, foreLen + 4f * s, fill)
+        fill.color = withAlpha(lighten(foreColor, 1.14f), (alphaInt * 0.42f).toInt())
+        canvas.drawRect(-foreTopW - 2f * s, -3f * s, -foreTopW * 0.38f, foreLen + 3f * s, fill)
+        canvas.restore()
+        canvas.drawPath(forePath, outline)
 
-        // Sculpted Human Hand with Thumb
-        canvas.translate(0f, foreLen + 2f * s)
+        // Sculpted Human Hand with Palm & Thumb + Cel Shadow
+        canvas.translate(0f, foreLen + 1.5f * s)
+        val handRect = RectF(-4.8f * s, -2.6f * s, 4.8f * s, 7.6f * s)
         fill.color = withAlpha(skin, alphaInt)
-        canvas.drawOval(RectF(-4.8f * s, -3f * s, 4.8f * s, 7.5f * s), fill)
-        canvas.drawOval(RectF(-4.8f * s, -3f * s, 4.8f * s, 7.5f * s), outline)
+        canvas.drawOval(handRect, fill)
+        fill.color = withAlpha(darken(skin, 0.84f), alphaInt)
+        canvas.drawArc(handRect, -40f, 150f, false, fill)
+        canvas.drawOval(handRect, outline)
         val thumbSign = if (mirrorThumb) 1f else -1f
-        canvas.drawOval(RectF(thumbSign * 2.5f * s - 2.2f * s, -1f * s, thumbSign * 2.5f * s + 2.2f * s, 4.5f * s), fill)
+        val thumbRect = RectF(thumbSign * 2.8f * s - 2.2f * s, -1.2f * s, thumbSign * 2.8f * s + 2.2f * s, 4.4f * s)
+        fill.color = withAlpha(skin, alphaInt)
+        canvas.drawOval(thumbRect, fill)
+        canvas.drawOval(thumbRect, outline)
 
         if (propType != CharacterPropType.NONE) {
             canvas.save()
@@ -730,31 +793,68 @@ internal object HumanRigDrawer {
         canvas.translate(ox, oy)
         canvas.rotate(thighDeg)
 
+        // Tapered Organic Thigh Path (wider hip tapering cleanly to knee)
         val thighLen = 32f * s
-        val thighW = 6.8f * s
+        val hipW = 7.6f * s
+        val kneeW = 5.4f * s
+        val thighPath = Path().apply {
+            moveTo(-hipW, 2f * s)
+            quadTo(0f, -5f * s, hipW, 2f * s)
+            cubicTo(hipW * 1.04f, thighLen * 0.45f, kneeW * 1.08f, thighLen * 0.80f, kneeW, thighLen)
+            quadTo(0f, thighLen + 3.5f * s, -kneeW, thighLen)
+            cubicTo(-kneeW * 1.08f, thighLen * 0.80f, -hipW * 1.04f, thighLen * 0.45f, -hipW, 2f * s)
+            close()
+        }
         fill.color = withAlpha(pantColor, alphaInt)
-        val thighRect = RectF(-thighW, -2f * s, thighW, thighLen)
-        canvas.drawRoundRect(thighRect, thighW, thighW, fill)
-        canvas.drawRoundRect(thighRect, thighW, thighW, outline)
+        canvas.drawPath(thighPath, fill)
+        canvas.save()
+        canvas.clipPath(thighPath)
+        fill.color = withAlpha(darken(pantColor, 0.76f), alphaInt)
+        canvas.drawRect(hipW * 0.22f, -6f * s, hipW + 4f * s, thighLen + 5f * s, fill)
+        fill.color = withAlpha(lighten(pantColor, 1.16f), (alphaInt * 0.35f).toInt())
+        canvas.drawRect(-hipW - 2f * s, -4f * s, -hipW * 0.40f, thighLen + 4f * s, fill)
+        canvas.restore()
+        canvas.drawPath(thighPath, outline)
 
-        // Knee pivot -> Calf
-        canvas.translate(0f, thighLen - 3f * s)
+        // Knee pivot -> Tapered Organic Calf Path (sculpted calf contour tapering to ankle)
+        canvas.translate(0f, thighLen - 2.5f * s)
         canvas.rotate(kneeDeg)
         val calfLen = 31f * s
-        val calfW = 5.4f * s
-        fill.color = withAlpha(darken(pantColor, 0.92f), alphaInt)
-        val calfRect = RectF(-calfW, 0f, calfW, calfLen)
-        canvas.drawRoundRect(calfRect, calfW, calfW, fill)
-        canvas.drawRoundRect(calfRect, calfW, calfW, outline)
+        val calfTopW = 5.7f * s
+        val ankleW = 4.0f * s
+        val calfBaseColor = darken(pantColor, 0.93f)
+        val calfPath = Path().apply {
+            moveTo(-calfTopW, 1f * s)
+            quadTo(0f, -3.5f * s, calfTopW, 1f * s)
+            cubicTo(calfTopW * 1.12f, calfLen * 0.32f, ankleW * 1.18f, calfLen * 0.74f, ankleW, calfLen)
+            quadTo(0f, calfLen + 2.5f * s, -ankleW, calfLen)
+            cubicTo(-ankleW * 1.12f, calfLen * 0.74f, -calfTopW * 1.06f, calfLen * 0.32f, -calfTopW, 1f * s)
+            close()
+        }
+        fill.color = withAlpha(calfBaseColor, alphaInt)
+        canvas.drawPath(calfPath, fill)
+        canvas.save()
+        canvas.clipPath(calfPath)
+        fill.color = withAlpha(darken(calfBaseColor, 0.78f), alphaInt)
+        canvas.drawRect(calfTopW * 0.22f, -4f * s, calfTopW + 3f * s, calfLen + 4f * s, fill)
+        canvas.restore()
+        canvas.drawPath(calfPath, outline)
 
-        // Structured Sneaker / Shoe with Sole
+        // Sculpted Sneaker / Shoe with Curved Toe Cap, Cel Shadow & Crisp Sole
         val shoeTop = calfLen - 2f * s
-        fill.color = withAlpha(darken(shoeColor, 0.65f), alphaInt)
-        val shoeRect = RectF(-calfW * 1.05f, shoeTop, calfW * 2.15f, shoeTop + 9.5f * s)
-        canvas.drawRoundRect(shoeRect, 4.5f * s, 4.5f * s, fill)
-        canvas.drawRoundRect(shoeRect, 4.5f * s, 4.5f * s, outline)
-        fill.color = withAlpha(0xFFE2E8F0.toInt(), alphaInt)
-        canvas.drawRoundRect(RectF(-calfW * 1.05f, shoeTop + 6.8f * s, calfW * 2.15f, shoeTop + 9.8f * s), 2f * s, 2f * s, fill)
+        val shoePath = Path().apply {
+            moveTo(-ankleW * 1.35f, shoeTop)
+            lineTo(ankleW * 1.25f, shoeTop)
+            quadTo(ankleW * 2.85f, shoeTop + 1.5f * s, ankleW * 2.75f, shoeTop + 7.2f * s)
+            lineTo(ankleW * 2.75f, shoeTop + 9.6f * s)
+            lineTo(-ankleW * 1.45f, shoeTop + 9.6f * s)
+            close()
+        }
+        fill.color = withAlpha(darken(shoeColor, 0.68f), alphaInt)
+        canvas.drawPath(shoePath, fill)
+        fill.color = withAlpha(0xFFF1F5F9.toInt(), alphaInt)
+        canvas.drawRoundRect(RectF(-ankleW * 1.45f, shoeTop + 7.0f * s, ankleW * 2.78f, shoeTop + 10.0f * s), 2f * s, 2f * s, fill)
+        canvas.drawPath(shoePath, outline)
 
         canvas.restore()
     }

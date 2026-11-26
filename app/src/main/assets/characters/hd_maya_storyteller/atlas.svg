@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048" width="2048" height="2048">
+  <!-- Band 1: Core Head, Hair Front, Hair Back, Chest/Body -->
+
+  <!-- HEAD (cx=256, cy=307) -->
+  <g id="slot_head">
+    <rect x="224" y="456" width="64" height="94" rx="30" fill="#D59A73" stroke="#1E1B18" stroke-width="10"/>
+    <ellipse cx="122" cy="322" rx="26" ry="38" fill="#F2BE97" stroke="#1E1B18" stroke-width="9"/>
+    <ellipse cx="390" cy="322" rx="26" ry="38" fill="#F2BE97" stroke="#1E1B18" stroke-width="9"/>
+    <!-- Gold Hoop Earrings -->
+    <circle cx="118" cy="364" r="14" fill="none" stroke="#FACC15" stroke-width="7"/>
+    <circle cx="394" cy="364" r="14" fill="none" stroke="#FACC15" stroke-width="7"/>
+    <!-- Soft Tapered Head -->
+    <path d="M132 268 C132 128 380 128 380 268 C380 378 334 456 256 480 C178 456 132 378 132 268 Z"
+          fill="#FAD0AF" stroke="#1E1B18" stroke-width="10" stroke-linejoin="round"/>
+    <!-- Cel Shadow -->
+    <path d="M135 270 C138 372 184 448 254 474 C216 440 182 376 180 268 C179 202 198 158 228 140 C172 154 134 204 135 270 Z"
+          fill="#E5AF88" opacity="0.65"/>
+    <!-- Bindi & Rosy Cheeks -->
+    <circle cx="256" cy="242" r="9" fill="#E11D48"/>
+    <ellipse cx="182" cy="352" rx="28" ry="16" fill="#FB7185" opacity="0.28"/>
+    <ellipse cx="330" cy="352" rx="28" ry="16" fill="#FB7185" opacity="0.28"/>
+    <path d="M256 298 L266 340 Q256 348 246 342" fill="none" stroke="#BA815C" stroke-width="7" stroke-linecap="round"/>
+  </g>
+
+  <!-- HAIR_FRONT (cx=748, cy=307) -->
+  <g id="slot_hair_front">
+    <path d="M590 342 C578 184 654 120 748 122 C842 124 918 184 906 342 C874 264 832 224 776 220 C724 216 664 252 590 342 Z"
+          fill="#1E162B" stroke="#0B0D14" stroke-width="10" stroke-linejoin="round"/>
+    <path d="M652 178 Q748 144 844 178" fill="none" stroke="#818CF8" stroke-width="10" stroke-linecap="round" opacity="0.48"/>
+  </g>
+
+  <!-- HAIR_BACK (cx=1239, cy=307) -->
+  <g id="slot_hair_back">
+    <path d="M1076 250 C1076 116 1402 116 1402 250 C1412 378 1428 486 1384 558 Q1239 588 1094 558 C1050 486 1066 378 1076 250 Z"
+          fill="#161021" stroke="#0B0D14" stroke-width="10"/>
+    <!-- Floral Hair Bun Accent -->
+    <circle cx="1239" cy="150" r="46" fill="#1E162B" stroke="#0B0D14" stroke-width="9"/>
+    <circle cx="1208" cy="144" r="14" fill="#FDE047"/>
+    <circle cx="1239" cy="134" r="14" fill="#F472B6"/>
+    <circle cx="1270" cy="144" r="14" fill="#FDE047"/>
+  </g>
+
+  <!-- CHEST_BODY (cx=1761, cy=307) -->
+  <g id="slot_chest_body">
+    <!-- Teal & Magenta Saree Drape Tunic -->
+    <path d="M1610 144 Q1761 108 1912 144 L1882 374 L1934 532 Q1761 564 1588 532 L1640 374 Z"
+          fill="#0EA5E9" stroke="#1E1B18" stroke-width="10" stroke-linejoin="round"/>
+    <!-- Cel Shadow -->
+    <path d="M1614 146 L1680 132 L1676 378 L1650 538 L1592 528 L1642 374 Z" fill="#0284C7" opacity="0.72"/>
+    <!-- Diagonal Magenta Pallu with Gold Trim -->
+    <path d="M1618 142 L1708 134 L1906 436 L1812 460 Z" fill="#EC4899" stroke="#FACC15" stroke-width="10" stroke-linejoin="round"/>
+    <!-- Waist Zari Border -->
+    <rect x="1632" y="370" width="258" height="44" rx="12" fill="#FACC15" stroke="#1E1B18" stroke-width="8"/>
+  </g>
+
+  <!-- Band 2A: Eyes & Brows -->
+  <g id="slot_eye_white">
+    <ellipse cx="164" cy="727" rx="92" ry="62" fill="#FFFFFF" stroke="#1E1B18" stroke-width="10"/>
+    <path d="M74 714 Q164 656 254 714" fill="none" stroke="#1E1B18" stroke-width="14" stroke-linecap="round"/>
+  </g>
+  <g id="slot_eyeball">
+    <circle cx="471" cy="727" r="56" fill="#4C1D95" stroke="#1E1B18" stroke-width="8"/>
+    <circle cx="471" cy="727" r="30" fill="#0F172A"/>
+    <circle cx="492" cy="704" r="17" fill="#FFFFFF"/>
+    <circle cx="450" cy="748" r="9" fill="#FFFFFF" opacity="0.8"/>
+  </g>
+  <g id="slot_eyelid">
+    <path d="M684 738 Q778 668 872 738" fill="none" stroke="#1E1B18" stroke-width="15" stroke-linecap="round"/>
+    <path d="M852 722 L884 704" stroke="#1E1B18" stroke-width="11" stroke-linecap="round"/>
+  </g>
+  <g id="slot_brow_idle">
+    <path d="M984 732 Q1075 700 1166 732" fill="none" stroke="#1E162B" stroke-width="17" stroke-linecap="round"/>
+  </g>
+  <g id="slot_brow_happy">
+    <path d="M1270 744 Q1362 684 1454 744" fill="none" stroke="#1E162B" stroke-width="17" stroke-linecap="round"/>
+  </g>
+  <g id="slot_brow_angry">
+    <path d="M1550 698 L1726 754" fill="none" stroke="#1E162B" stroke-width="19" stroke-linecap="round"/>
+  </g>
+  <g id="slot_brow_scared">
+    <path d="M1814 752 Q1905 704 1994 696" fill="none" stroke="#1E162B" stroke-width="17" stroke-linecap="round"/>
+  </g>
+
+  <!-- Band 2B: Mouths & Accessory -->
+  <g id="slot_lip_idle">
+    <path d="M96 924 Q174 964 252 924" fill="none" stroke="#BE123C" stroke-width="15" stroke-linecap="round"/>
+  </g>
+  <g id="slot_lip_happy">
+    <path d="M406 902 Q502 918 598 902 Q572 994 502 994 Q432 994 406 902 Z" fill="#9F1239" stroke="#1E1B18" stroke-width="9"/>
+    <path d="M428 912 Q502 924 576 912 L564 936 Q502 944 440 936 Z" fill="#FFFFFF"/>
+    <ellipse cx="502" cy="972" rx="42" ry="15" fill="#FB7185"/>
+  </g>
+  <g id="slot_lip_scared">
+    <path d="M750 960 Q829 906 908 960" fill="none" stroke="#BE123C" stroke-width="15" stroke-linecap="round"/>
+  </g>
+  <g id="slot_lip_angry">
+    <rect x="1066" y="898" width="182" height="68" rx="22" fill="#FFFFFF" stroke="#1E1B18" stroke-width="10"/>
+    <line x1="1070" y1="932" x2="1244" y2="932" stroke="#1E1B18" stroke-width="7"/>
+  </g>
+  <g id="slot_lip_shocked">
+    <ellipse cx="1485" cy="932" rx="58" ry="70" fill="#9F1239" stroke="#1E1B18" stroke-width="10"/>
+    <ellipse cx="1485" cy="976" rx="30" ry="16" fill="#FB7185"/>
+  </g>
+  <g id="slot_accessory">
+    <!-- Floral Maang Tikka Crown -->
+    <path d="M1728 958 Q1843 886 1958 958" fill="none" stroke="#FACC15" stroke-width="14" stroke-linecap="round"/>
+    <circle cx="1843" cy="918" r="24" fill="#FACC15" stroke="#1E1B18" stroke-width="8"/>
+    <circle cx="1843" cy="918" r="10" fill="#EC4899"/>
+  </g>
+
+  <!-- Band 3: Tapered Arms & Legs -->
+  <g id="slot_l_upper_arm">
+    <path d="M98 1106 Q138 1074 178 1106 L170 1542 Q138 1570 106 1542 Z" fill="#0284C7" stroke="#1E1B18" stroke-width="9"/>
+  </g>
+  <g id="slot_l_lower_arm">
+    <path d="M358 1106 Q394 1080 430 1106 L418 1548 Q394 1570 370 1548 Z" fill="#FAD0AF" stroke="#1E1B18" stroke-width="9"/>
+    <rect x="366" y="1466" width="56" height="20" rx="8" fill="#EC4899" stroke="#1E1B18" stroke-width="6"/>
+    <rect x="366" y="1494" width="56" height="20" rx="8" fill="#FACC15" stroke="#1E1B18" stroke-width="6"/>
+  </g>
+  <g id="slot_r_upper_arm">
+    <path d="M610 1106 Q650 1074 690 1106 L682 1542 Q650 1570 618 1542 Z" fill="#0EA5E9" stroke="#1E1B18" stroke-width="9"/>
+  </g>
+  <g id="slot_r_lower_arm">
+    <path d="M870 1106 Q906 1080 942 1106 L930 1548 Q906 1570 882 1548 Z" fill="#FAD0AF" stroke="#1E1B18" stroke-width="9"/>
+    <rect x="878" y="1466" width="56" height="20" rx="8" fill="#EC4899" stroke="#1E1B18" stroke-width="6"/>
+    <rect x="878" y="1494" width="56" height="20" rx="8" fill="#FACC15" stroke="#1E1B18" stroke-width="6"/>
+  </g>
+  <g id="slot_l_upper_leg">
+    <path d="M1112 1102 Q1162 1074 1212 1102 L1202 1548 Q1162 1572 1122 1548 Z" fill="#0369A1" stroke="#0B0D14" stroke-width="9"/>
+  </g>
+  <g id="slot_l_lower_leg">
+    <path d="M1376 1102 Q1418 1078 1460 1102 L1452 1492 L1384 1492 Z" fill="#0369A1" stroke="#0B0D14" stroke-width="9"/>
+    <path d="M1374 1486 L1462 1486 L1494 1536 Q1494 1568 1456 1568 L1374 1568 Z" fill="#EC4899" stroke="#0B0D14" stroke-width="9"/>
+    <rect x="1368" y="1552" width="124" height="20" rx="9" fill="#FACC15" stroke="#0B0D14" stroke-width="6"/>
+  </g>
+  <g id="slot_r_upper_leg">
+    <path d="M1624 1102 Q1674 1074 1724 1102 L1714 1548 Q1674 1572 1634 1548 Z" fill="#0284C7" stroke="#0B0D14" stroke-width="9"/>
+  </g>
+  <g id="slot_r_lower_leg">
+    <path d="M1884 1102 Q1925 1078 1966 1102 L1958 1492 L1892 1492 Z" fill="#0284C7" stroke="#0B0D14" stroke-width="9"/>
+    <path d="M1882 1486 L1970 1486 L2002 1536 Q2002 1568 1964 1568 L1882 1568 Z" fill="#EC4899" stroke="#0B0D14" stroke-width="9"/>
+    <rect x="1876" y="1552" width="124" height="20" rx="9" fill="#FACC15" stroke="#0B0D14" stroke-width="6"/>
+  </g>
+
+  <!-- Band 4: Hand Poses -->
+  <g id="slot_hand_open">
+    <ellipse cx="210" cy="1828" rx="64" ry="70" fill="#FAD0AF" stroke="#1E1B18" stroke-width="9"/>
+    <rect x="150" y="1866" width="22" height="82" rx="11" fill="#FAD0AF" stroke="#1E1B18" stroke-width="7"/>
+    <rect x="180" y="1876" width="22" height="92" rx="11" fill="#FAD0AF" stroke="#1E1B18" stroke-width="7"/>
+    <rect x="210" y="1876" width="22" height="90" rx="11" fill="#FAD0AF" stroke="#1E1B18" stroke-width="7"/>
+    <rect x="240" y="1862" width="20" height="76" rx="10" fill="#FAD0AF" stroke="#1E1B18" stroke-width="7"/>
+  </g>
+  <g id="slot_hand_fist">
+    <rect x="546" y="1776" width="126" height="120" rx="42" fill="#FAD0AF" stroke="#1E1B18" stroke-width="9"/>
+  </g>
+  <g id="slot_hand_point">
+    <rect x="950" y="1776" width="114" height="102" rx="36" fill="#FAD0AF" stroke="#1E1B18" stroke-width="9"/>
+    <rect x="996" y="1852" width="26" height="120" rx="13" fill="#FAD0AF" stroke="#1E1B18" stroke-width="8"/>
+  </g>
+  <g id="slot_prop_hand_l">
+    <circle cx="1418" cy="1836" r="64" fill="#FAD0AF" stroke="#1E1B18" stroke-width="9"/>
+  </g>
+  <g id="slot_prop_hand_r">
+    <circle cx="1833" cy="1836" r="64" fill="#FAD0AF" stroke="#1E1B18" stroke-width="9"/>
+  </g>
+</svg>

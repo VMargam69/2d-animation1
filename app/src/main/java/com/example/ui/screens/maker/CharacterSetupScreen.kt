@@ -1,6 +1,9 @@
 package com.example.ui.screens.maker
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -11,8 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -21,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.*
@@ -29,15 +32,25 @@ import com.example.ui.theme.*
 
 /**
  * Custom Character Setup Screen:
- * Presents the 3 pose templates (3-4 Front, Front, Back / Side) with animated pose previews
- * and a "Create" button for each template to launch the interactive Custom Character Maker.
+ * Presents the 3 pose templates (3-4 Front, Front, Back / Side) with animated pose previews,
+ * a "Create" button for each template, and a 1-tap offline ZIP/SVG/JSON pack importer.
  */
 @Composable
 fun CharacterSetupScreen(
     onCreateWithPose: (AtlasPoseTemplate) -> Unit,
+    onImportCharacterPack: (Uri, (String) -> Unit) -> Unit = { _, _ -> },
     onBack: () -> Unit
 ) {
     BackHandler { onBack() }
+
+    var importMessage by remember { mutableStateOf<String?>(null) }
+    val packImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            onImportCharacterPack(uri) { msg -> importMessage = msg }
+        }
+    }
 
     val previewRig = remember {
         CharacterRigDefinition(
@@ -65,7 +78,7 @@ fun CharacterSetupScreen(
                         .statusBarsPadding()
                         .padding(horizontal = 10.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     IconButton(
                         onClick = onBack,
@@ -80,34 +93,41 @@ fun CharacterSetupScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = stringResource(R.string.character_setup_title),
-                            style = MaterialTheme.typography.titleLarge,
+                            style = MaterialTheme.typography.titleMedium,
                             color = StudioTextPrimary,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = stringResource(R.string.character_setup_subtitle),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = StudioTextSecondary
+                            text = "2K/4K PNG • HD SVG • Code/ZIP",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ElectricCyan,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Surface(
-                        color = ElectricCyanDim,
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.5f))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(Icons.Rounded.GridView, null, tint = ElectricCyan, modifier = Modifier.size(14.dp))
-                            Text(
-                                text = "2K / 4K Atlas",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = ElectricCyan,
-                                fontWeight = FontWeight.SemiBold
+                    OutlinedButton(
+                        onClick = {
+                            packImportLauncher.launch(
+                                arrayOf("application/zip", "application/json", "image/svg+xml", "text/plain", "*/*")
                             )
-                        }
+                        },
+                        border = BorderStroke(1.dp, EmeraldLayer),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .height(40.dp)
+                            .testTag("setup_import_pack_btn")
+                    ) {
+                        Icon(Icons.Rounded.FolderZip, null, tint = EmeraldLayer, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "Import Pack",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = EmeraldLayer,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
@@ -127,7 +147,34 @@ fun CharacterSetupScreen(
                     .navigationBarsPadding(),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // Concise feature strip explaining the offline workflow
+                importMessage?.let { msg ->
+                    Surface(
+                        color = ElectricCyanDim,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.55f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = msg,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioTextPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { importMessage = null }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Rounded.Close, "Dismiss", tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+
+                // Concise feature strip explaining the offline PNG + SVG + Code/ZIP workflow
                 Surface(
                     color = StudioPanel,
                     shape = RoundedCornerShape(14.dp),
@@ -155,7 +202,7 @@ fun CharacterSetupScreen(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "Import individual transparent body-part PNGs or a full 2048×2048 / 4096×4096 sprite sheet. 100% offline.",
+                                text = "Build with PNG or crisp vector SVG parts, import/export .fcchar.json code, or load 1-tap .zip packs completely offline.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = StudioTextSecondary
                             )

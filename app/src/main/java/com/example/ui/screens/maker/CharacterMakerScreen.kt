@@ -3,7 +3,6 @@ package com.example.ui.screens.maker
 import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -34,6 +33,7 @@ import com.example.R
 import com.example.data.LocalAssetStorage
 import com.example.engine.ProceduralRigRenderer
 import com.example.engine.SpriteAtlasEngine
+import com.example.engine.SvgAtlasRenderer
 import com.example.model.*
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -42,13 +42,11 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
- * Complete Offline-First In-App Custom Character Maker & Sprite-Sheet Workspace:
- * - Top Controls: Resolution (2048x2048 / 4096x4096), Test Animation dropdown (Idle, Walk, Hand Poses, MTH1-MTH4),
- *   Texture Name input, ImportTex, ExportTex, and Save Character.
- * - Left Toggles: Drag (canvas pan/zoom vs part drag/scale/rotate), BG (reference guide), Chart (slots + pivots), IMG (imported sheet).
- * - Left Side: Draggable & zoomable Live Rig Preview assembling parts in real time (excluded during ExportTex).
- * - Center: Interactive Atlas Editor Canvas with normalized (0..1) slots.
- * - Right Panel: Preview toggle + Body Parts toggle + scrollable 30-slot list with visibility checkboxes & PNG importers.
+ * Complete Offline-First Pixel-Perfect Custom Character Maker & Sprite-Sheet Studio:
+ * - 2-Mode Toggle: Workspace Mode (Drag OFF: pan/pinch-zoom) vs Part Edit Mode (Drag ON: move/scale/rotate + Lock Part).
+ * - Supports BOTH transparent PNG and vector SVG per part or as a full 2048x2048 / 4096x4096 atlas.
+ * - Live Pose/Expression tester (Idle, Walk, Run, Eye Close, Talk 1-10, Hand Poses, MTH1-MTH4).
+ * - Clean ExportTex (auto-hides BG, Chart, borders, and Preview) + Import/Export Code (.fcchar.json / .svg).
  */
 @Composable
 fun CharacterMakerScreen(
@@ -89,6 +87,7 @@ fun CharacterMakerScreen(
     // Right panel toggles
     var previewEnabled by remember { mutableStateOf(true) }
     var bodyPartsExpanded by remember { mutableStateOf(true) }
+    var showCodeDialog by remember { mutableStateOf(false) }
 
     var selectedSlot by remember { mutableStateOf<AtlasPartSlot?>(AtlasPartSlot.HEAD) }
     var pendingImportSlot by remember { mutableStateOf<AtlasPartSlot?>(null) }
@@ -156,9 +155,9 @@ fun CharacterMakerScreen(
         merged
     }
 
-    // Zero-permission Android Photo Picker for importing an individual part PNG
-    val partPngPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
+    // Zero-permission SAF OpenDocument picker supporting BOTH transparent PNG and vector SVG parts
+    val partAssetPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         val targetSlot = pendingImportSlot ?: return@rememberLauncherForActivityResult
         pendingImportSlot = null
@@ -167,11 +166,14 @@ fun CharacterMakerScreen(
             isBusy = true
             val imported = assetStorage.importUriToOfflineStorage(uri, MediaAssetType.IMAGE)
             if (imported != null) {
+                val isSvg = SvgAtlasRenderer.isSvgPath(imported.filePath)
                 val cur = config.placementFor(targetSlot)
                 config = config.copy(
+                    renderMode = if (isSvg) "SVG" else config.renderMode,
                     placements = config.placements + (targetSlot.id to cur.copy(
                         partImagePath = imported.filePath,
                         visible = true,
+                        locked = false,
                         offsetX = 0f,
                         offsetY = 0f,
                         scale = 1f,
@@ -179,35 +181,46 @@ fun CharacterMakerScreen(
                     ))
                 )
                 selectedSlot = targetSlot
-                statusBanner = "Imported ${targetSlot.label} PNG"
+                statusBanner = "Imported ${targetSlot.label} (${if (isSvg) "HD SVG" else "PNG"})"
             } else {
-                statusBanner = "Could not import PNG for ${targetSlot.label}"
+                statusBanner = "Could not import PNG/SVG for ${targetSlot.label}"
             }
             isBusy = false
         }
     }
 
-    // Zero-permission Android Photo Picker for ImportTex (full 2048/4096 sprite sheet)
+    // Zero-permission SAF OpenDocument picker for ImportTex (full 2048/4096 PNG or crisp SVG atlas)
     val fullSheetPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
+        contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             isBusy = true
             val imported = assetStorage.importUriToOfflineStorage(uri, MediaAssetType.IMAGE)
             if (imported != null) {
-                val (w, h) = assetStorage.inspectImageDimensions(imported.filePath)
-                val validation = SpriteAtlasEngine.validateAtlasDimensions(w, h)
-                selectedResolution = validation.recommendedResolution
-                showImportedSheet = true
-                config = config.copy(
-                    importedFullSheetPath = imported.filePath,
-                    resolutionPx = validation.recommendedResolution.px,
-                    textureName = config.textureName.ifBlank { imported.displayName }
-                )
-                statusBanner = validation.message
+                val isSvg = SvgAtlasRenderer.isSvgPath(imported.filePath)
+                if (isSvg) {
+                    showImportedSheet = true
+                    config = config.copy(
+                        importedFullSheetPath = imported.filePath,
+                        renderMode = "SVG",
+                        textureName = config.textureName.ifBlank { imported.displayName }
+                    )
+                    statusBanner = "Imported crisp HD SVG sprite sheet (${selectedResolution.label})"
+                } else {
+                    val (w, h) = assetStorage.inspectImageDimensions(imported.filePath)
+                    val validation = SpriteAtlasEngine.validateAtlasDimensions(w, h)
+                    selectedResolution = validation.recommendedResolution
+                    showImportedSheet = true
+                    config = config.copy(
+                        importedFullSheetPath = imported.filePath,
+                        resolutionPx = validation.recommendedResolution.px,
+                        textureName = config.textureName.ifBlank { imported.displayName }
+                    )
+                    statusBanner = validation.message
+                }
             } else {
-                statusBanner = "Could not import sprite-sheet PNG"
+                statusBanner = "Could not import PNG/SVG sprite sheet"
             }
             isBusy = false
         }
@@ -321,9 +334,10 @@ fun CharacterMakerScreen(
                 },
                 isBusy = isBusy,
                 onImportTex = {
-                    fullSheetPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    fullSheetPicker.launch(arrayOf("image/png", "image/svg+xml", "image/webp", "image/*"))
                 },
                 onExportTex = { runExportAtlas(saveToLibraryAfter = false) },
+                onOpenCodeDialog = { showCodeDialog = true },
                 onSaveRig = { runExportAtlas(saveToLibraryAfter = true) },
                 onBack = onBack
             )
@@ -387,24 +401,37 @@ fun CharacterMakerScreen(
                         modifier = Modifier.fillMaxSize(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        val selectedIsLocked = selectedSlot?.let { config.isSlotLocked(it) } == true
                         LeftToggleRail(
                             isDragPartMode = isDragPartMode,
                             showBgGuide = showBgGuide,
                             showChartGrid = showChartGrid,
                             showImportedSheet = showImportedSheet,
-                            canResetSelectedPart = isDragPartMode && selectedSlot != null,
+                            selectedSlotLocked = selectedIsLocked,
+                            hasSelectedSlot = selectedSlot != null,
+                            canResetSelectedPart = isDragPartMode && selectedSlot != null && !selectedIsLocked,
                             onToggleDrag = { isDragPartMode = !isDragPartMode },
                             onToggleBg = { showBgGuide = !showBgGuide },
                             onToggleChart = { showChartGrid = !showChartGrid },
                             onToggleImg = { showImportedSheet = !showImportedSheet },
-                            onResetSelectedPart = {
+                            onToggleLockSelectedPart = {
                                 selectedSlot?.let { slot ->
                                     val cur = config.placementFor(slot)
                                     config = config.copy(
-                                        placements = config.placements + (slot.id to cur.copy(
-                                            offsetX = 0f, offsetY = 0f, scale = 1f, rotationDeg = 0f
-                                        ))
+                                        placements = config.placements + (slot.id to cur.copy(locked = !cur.locked))
                                     )
+                                }
+                            },
+                            onResetSelectedPart = {
+                                selectedSlot?.let { slot ->
+                                    val cur = config.placementFor(slot)
+                                    if (!cur.locked) {
+                                        config = config.copy(
+                                            placements = config.placements + (slot.id to cur.copy(
+                                                offsetX = 0f, offsetY = 0f, scale = 1f, rotationDeg = 0f
+                                            ))
+                                        )
+                                    }
                                 }
                             }
                         )
@@ -433,6 +460,7 @@ fun CharacterMakerScreen(
                             onTransformSelectedSlot = { dx, dy, scaleFactor, rotDelta ->
                                 val slot = selectedSlot ?: return@AtlasWorkspaceCanvas
                                 val cur = config.placementFor(slot)
+                                if (cur.locked) return@AtlasWorkspaceCanvas
                                 config = config.copy(
                                     placements = config.placements + (slot.id to cur.copy(
                                         offsetX = (cur.offsetX + dx).coerceIn(-0.6f, 0.6f),
@@ -462,9 +490,15 @@ fun CharacterMakerScreen(
                                     placements = config.placements + (slot.id to cur.copy(visible = visible))
                                 )
                             },
+                            onToggleSlotLocked = { slot ->
+                                val cur = config.placementFor(slot)
+                                config = config.copy(
+                                    placements = config.placements + (slot.id to cur.copy(locked = !cur.locked))
+                                )
+                            },
                             onImportSlotPng = { slot ->
                                 pendingImportSlot = slot
-                                partPngPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                partAssetPicker.launch(arrayOf("image/png", "image/svg+xml", "image/webp", "image/*"))
                             },
                             onClearSlotPng = { slot ->
                                 val cur = config.placementFor(slot)
@@ -475,7 +509,7 @@ fun CharacterMakerScreen(
                                 )
                             },
                             modifier = Modifier
-                                .width(if (bodyPartsExpanded) 250.dp else 132.dp)
+                                .width(if (bodyPartsExpanded) 256.dp else 132.dp)
                                 .fillMaxHeight()
                         )
                     }
@@ -485,6 +519,7 @@ fun CharacterMakerScreen(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        val selectedIsLocked = selectedSlot?.let { config.isSlotLocked(it) } == true
                         Row(
                             modifier = Modifier
                                 .weight(if (bodyPartsExpanded) 0.56f else 0.86f)
@@ -496,19 +531,31 @@ fun CharacterMakerScreen(
                                 showBgGuide = showBgGuide,
                                 showChartGrid = showChartGrid,
                                 showImportedSheet = showImportedSheet,
-                                canResetSelectedPart = isDragPartMode && selectedSlot != null,
+                                selectedSlotLocked = selectedIsLocked,
+                                hasSelectedSlot = selectedSlot != null,
+                                canResetSelectedPart = isDragPartMode && selectedSlot != null && !selectedIsLocked,
                                 onToggleDrag = { isDragPartMode = !isDragPartMode },
                                 onToggleBg = { showBgGuide = !showBgGuide },
                                 onToggleChart = { showChartGrid = !showChartGrid },
                                 onToggleImg = { showImportedSheet = !showImportedSheet },
-                                onResetSelectedPart = {
+                                onToggleLockSelectedPart = {
                                     selectedSlot?.let { slot ->
                                         val cur = config.placementFor(slot)
                                         config = config.copy(
-                                            placements = config.placements + (slot.id to cur.copy(
-                                                offsetX = 0f, offsetY = 0f, scale = 1f, rotationDeg = 0f
-                                            ))
+                                            placements = config.placements + (slot.id to cur.copy(locked = !cur.locked))
                                         )
+                                    }
+                                },
+                                onResetSelectedPart = {
+                                    selectedSlot?.let { slot ->
+                                        val cur = config.placementFor(slot)
+                                        if (!cur.locked) {
+                                            config = config.copy(
+                                                placements = config.placements + (slot.id to cur.copy(
+                                                    offsetX = 0f, offsetY = 0f, scale = 1f, rotationDeg = 0f
+                                                ))
+                                            )
+                                        }
                                     }
                                 }
                             )
@@ -537,6 +584,7 @@ fun CharacterMakerScreen(
                                 onTransformSelectedSlot = { dx, dy, scaleFactor, rotDelta ->
                                     val slot = selectedSlot ?: return@AtlasWorkspaceCanvas
                                     val cur = config.placementFor(slot)
+                                    if (cur.locked) return@AtlasWorkspaceCanvas
                                     config = config.copy(
                                         placements = config.placements + (slot.id to cur.copy(
                                             offsetX = (cur.offsetX + dx).coerceIn(-0.6f, 0.6f),
@@ -567,9 +615,15 @@ fun CharacterMakerScreen(
                                     placements = config.placements + (slot.id to cur.copy(visible = visible))
                                 )
                             },
+                            onToggleSlotLocked = { slot ->
+                                val cur = config.placementFor(slot)
+                                config = config.copy(
+                                    placements = config.placements + (slot.id to cur.copy(locked = !cur.locked))
+                                )
+                            },
                             onImportSlotPng = { slot ->
                                 pendingImportSlot = slot
-                                partPngPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                partAssetPicker.launch(arrayOf("image/png", "image/svg+xml", "image/webp", "image/*"))
                             },
                             onClearSlotPng = { slot ->
                                 val cur = config.placementFor(slot)
@@ -590,6 +644,20 @@ fun CharacterMakerScreen(
             }
         }
     }
+
+    if (showCodeDialog) {
+        CharacterCodeDialog(
+            config = config,
+            assetStorage = assetStorage,
+            onApplyImportedConfig = { importedCfg, msg ->
+                config = importedCfg
+                selectedResolution = AtlasResolution.fromPx(importedCfg.resolutionPx)
+                showImportedSheet = true
+                statusBanner = msg
+            },
+            onDismiss = { showCodeDialog = false }
+        )
+    }
 }
 
 @Composable
@@ -605,6 +673,7 @@ private fun MakerTopControlBar(
     isBusy: Boolean,
     onImportTex: () -> Unit,
     onExportTex: () -> Unit,
+    onOpenCodeDialog: () -> Unit,
     onSaveRig: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -780,6 +849,22 @@ private fun MakerTopControlBar(
                     Spacer(Modifier.width(4.dp))
                     Text("ExportTex", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                 }
+
+                // Import / Export Character Code (.fcchar.json / .svg)
+                OutlinedButton(
+                    onClick = onOpenCodeDialog,
+                    enabled = !isBusy,
+                    border = BorderStroke(1.dp, EmeraldLayer),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .height(36.dp)
+                        .testTag("maker_code_dialog_btn")
+                ) {
+                    Icon(Icons.Rounded.Code, null, tint = EmeraldLayer, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Code", style = MaterialTheme.typography.labelSmall, color = EmeraldLayer, fontWeight = FontWeight.SemiBold)
+                }
             }
         }
     }
@@ -791,11 +876,14 @@ private fun LeftToggleRail(
     showBgGuide: Boolean,
     showChartGrid: Boolean,
     showImportedSheet: Boolean,
+    selectedSlotLocked: Boolean,
+    hasSelectedSlot: Boolean,
     canResetSelectedPart: Boolean,
     onToggleDrag: () -> Unit,
     onToggleBg: () -> Unit,
     onToggleChart: () -> Unit,
     onToggleImg: () -> Unit,
+    onToggleLockSelectedPart: () -> Unit,
     onResetSelectedPart: () -> Unit
 ) {
     Surface(
@@ -808,12 +896,12 @@ private fun LeftToggleRail(
             modifier = Modifier
                 .fillMaxHeight()
                 .padding(vertical = 6.dp, horizontal = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             RailToggleButton(
-                label = "Drag",
-                icon = Icons.Rounded.OpenWith,
+                label = if (isDragPartMode) "Part" else "Pan",
+                icon = if (isDragPartMode) Icons.Rounded.OpenWith else Icons.Rounded.PanTool,
                 active = isDragPartMode,
                 accentColor = AmberKeyframe,
                 testTag = "maker_toggle_drag",
@@ -843,8 +931,18 @@ private fun LeftToggleRail(
                 testTag = "maker_toggle_img",
                 onClick = onToggleImg
             )
+            if (hasSelectedSlot) {
+                HorizontalDivider(color = StudioBorderSubtle, modifier = Modifier.padding(vertical = 1.dp))
+                RailToggleButton(
+                    label = if (selectedSlotLocked) "Locked" else "Lock",
+                    icon = if (selectedSlotLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                    active = selectedSlotLocked,
+                    accentColor = CoralPlayhead,
+                    testTag = "maker_toggle_lock_part",
+                    onClick = onToggleLockSelectedPart
+                )
+            }
             if (canResetSelectedPart) {
-                HorizontalDivider(color = StudioBorderSubtle, modifier = Modifier.padding(vertical = 2.dp))
                 RailToggleButton(
                     label = "Reset",
                     icon = Icons.Rounded.RestartAlt,
@@ -910,6 +1008,7 @@ private fun RightPartsInspectorPanel(
     onToggleBodyParts: (Boolean) -> Unit,
     onSelectSlot: (AtlasPartSlot) -> Unit,
     onToggleSlotVisible: (AtlasPartSlot, Boolean) -> Unit,
+    onToggleSlotLocked: (AtlasPartSlot) -> Unit,
     onImportSlotPng: (AtlasPartSlot) -> Unit,
     onClearSlotPng: (AtlasPartSlot) -> Unit,
     modifier: Modifier = Modifier
@@ -970,6 +1069,7 @@ private fun RightPartsInspectorPanel(
                     items(AtlasPartSlot.entries, key = { it.id }) { slot ->
                         val placement = config.placementFor(slot)
                         val hasCustomPart = !placement.partImagePath.isNullOrBlank()
+                        val isSvgPart = SvgAtlasRenderer.isSvgPath(placement.partImagePath)
                         val hasSheetSlice = slot in loadedSheetSlots
                         val isSelected = slot == selectedSlot
                         val slotColor = Color(ProceduralRigRenderer.parseColorSafe(slot.guideColorHex, 0xFF38BDF8.toInt()))
@@ -1018,6 +1118,7 @@ private fun RightPartsInspectorPanel(
                                     )
                                     Text(
                                         text = when {
+                                            hasCustomPart && isSvgPart -> "SVG Loaded"
                                             hasCustomPart -> "PNG Loaded"
                                             hasSheetSlice -> "From Sheet"
                                             else -> slot.category.displayName
@@ -1032,10 +1133,24 @@ private fun RightPartsInspectorPanel(
                                     )
                                 }
 
+                                IconButton(
+                                    onClick = { onToggleSlotLocked(slot) },
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .testTag("maker_part_lock_${slot.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = if (placement.locked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                                        contentDescription = if (placement.locked) "Unlock ${slot.label}" else "Lock ${slot.label}",
+                                        tint = if (placement.locked) AmberKeyframe else StudioTextMuted,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+
                                 if (hasCustomPart) {
                                     IconButton(
                                         onClick = { onClearSlotPng(slot) },
-                                        modifier = Modifier.size(30.dp)
+                                        modifier = Modifier.size(28.dp)
                                     ) {
                                         Icon(
                                             Icons.Rounded.Clear,
@@ -1049,7 +1164,7 @@ private fun RightPartsInspectorPanel(
                                 FilledTonalButton(
                                     onClick = { onImportSlotPng(slot) },
                                     shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp),
                                     colors = ButtonDefaults.filledTonalButtonColors(
                                         containerColor = if (hasCustomPart) EmeraldLayer.copy(alpha = 0.2f) else StudioCard,
                                         contentColor = if (hasCustomPart) EmeraldLayer else ElectricCyan
@@ -1060,7 +1175,7 @@ private fun RightPartsInspectorPanel(
                                 ) {
                                     Icon(Icons.Rounded.AddPhotoAlternate, null, modifier = Modifier.size(14.dp))
                                     Spacer(Modifier.width(3.dp))
-                                    Text(if (hasCustomPart) "Swap" else "PNG", style = MaterialTheme.typography.labelSmall)
+                                    Text(if (hasCustomPart) "Swap" else "PNG/SVG", style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         }

@@ -469,6 +469,9 @@ fun EditorScreen(
                     onUpdateTransform = onUpdateTransform,
                     onFlipHorizontal = { onFlipClip(true) },
                     onFlipVertical = { onFlipClip(false) },
+                    onUpdateClip = onUpdateSelectedClip,
+                    isIkPosingMode = state.isIkPosingMode,
+                    onToggleIkPosingMode = onToggleIkPosingMode,
                     onDismiss = onCloseSheet
                 )
             }
@@ -488,6 +491,8 @@ fun EditorScreen(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                         )
                     },
+                    onFlipHorizontal = { onFlipClip(true) },
+                    onFlipVertical = { onFlipClip(false) },
                     onDismiss = onCloseSheet
                 )
             }

@@ -414,9 +414,19 @@ class SceneRenderer(
             if (skipBackgroundLayers && layer.type == LayerType.BACKGROUND) continue
             if (layer.type == LayerType.AUDIO) continue
 
-            for (clipIdx in clips.indices) {
-                val clip = clips[clipIdx]
-                if (clip.layerId != layer.id || frame < clip.startFrame || frame >= clip.endFrame) continue
+            // Sort active clips in this layer by depthOrder (ascending so higher depth renders on top)
+            val activeLayerClips = clips.filter { clip ->
+                clip.layerId == layer.id && frame >= clip.startFrame && frame < clip.endFrame
+            }.let { list ->
+                if (list.size > 1 && list.any { it.depthOrder != 0 }) {
+                    list.sortedBy { it.depthOrder }
+                } else {
+                    list
+                }
+            }
+
+            for (clipIdx in activeLayerClips.indices) {
+                val clip = activeLayerClips[clipIdx]
 
                 val transform = applyGesturePreview(
                     KeyframeEvaluator.evaluate(clip, frame),
@@ -463,6 +473,9 @@ class SceneRenderer(
                             val effectiveExpression = transform.expressionOverride ?: clip.facialExpression
                             val effectiveHandPose = transform.handPoseOverride ?: clip.handPose
                             val effectiveBlink = transform.blinkOverride ?: if (clip.forceBlink) true else null
+                            val effectiveTint = tintOverlay ?: if (clip.blackShade > 0.01f) {
+                                Color.argb((clip.blackShade.coerceIn(0f, 1f) * 215f).toInt(), 0, 0, 0)
+                            } else null
                             ProceduralRigRenderer.drawCharacter(
                                 canvas = canvas,
                                 rig = rig,
@@ -472,7 +485,7 @@ class SceneRenderer(
                                 rigScale = baseScale,
                                 alpha = effectiveAlpha,
                                 customBitmap = customBmp,
-                                tintOverlayColor = tintOverlay,
+                                tintOverlayColor = effectiveTint,
                                 poseOffsets = transform.poseOffsets,
                                 facialExpression = effectiveExpression,
                                 propType = clip.propType,

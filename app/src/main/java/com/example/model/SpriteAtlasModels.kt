@@ -1,5 +1,8 @@
 package com.example.model
 
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+
 enum class AtlasPoseTemplate(
     val id: String,
     val displayName: String,
@@ -58,10 +61,23 @@ enum class MakerTestAnimation(
     val preset: AnimationPresetType,
     val expression: FacialExpression,
     val handPose: HandPoseType,
-    val mouthSlotOverride: AtlasPartSlot? = null
+    val mouthSlotOverride: AtlasPartSlot? = null,
+    val blinkOverride: Boolean? = null
 ) {
     IDLE("Idle", "Motion", AnimationPresetType.IDLE, FacialExpression.NEUTRAL, HandPoseType.OPEN),
     WALK("Walk", "Motion", AnimationPresetType.WALK, FacialExpression.HAPPY, HandPoseType.OPEN),
+    RUN("Run", "Motion", AnimationPresetType.RUNNING, FacialExpression.HAPPY, HandPoseType.FIST),
+    EYE_CLOSE("Eye Close / Blink", "Face", AnimationPresetType.IDLE, FacialExpression.SLEEPING, HandPoseType.OPEN, blinkOverride = true),
+    TALK_1("Talk 1 (Calm)", "Talk", AnimationPresetType.TALKING, FacialExpression.TALKING, HandPoseType.OPEN),
+    TALK_2("Talk 2 (Happy)", "Talk", AnimationPresetType.TALKING, FacialExpression.HAPPY, HandPoseType.OPEN),
+    TALK_3("Talk 3 (Pointing)", "Talk", AnimationPresetType.TALKING, FacialExpression.TALKING, HandPoseType.POINT),
+    TALK_4("Talk 4 (Excited)", "Talk", AnimationPresetType.IDLE_HAPPY, FacialExpression.LAUGHING, HandPoseType.OPEN),
+    TALK_5("Talk 5 (Angry)", "Talk", AnimationPresetType.TALKING, FacialExpression.ANGRY, HandPoseType.FIST),
+    TALK_6("Talk 6 (Sad)", "Talk", AnimationPresetType.TALKING, FacialExpression.SAD, HandPoseType.OPEN),
+    TALK_7("Talk 7 (Shocked)", "Talk", AnimationPresetType.TALKING, FacialExpression.SHOCKED, HandPoseType.OPEN),
+    TALK_8("Talk 8 (Waving)", "Talk", AnimationPresetType.WAVING, FacialExpression.TALKING, HandPoseType.OPEN),
+    TALK_9("Talk 9 (Prop Speech)", "Talk", AnimationPresetType.TALKING, FacialExpression.HAPPY, HandPoseType.PROP_GRIP),
+    TALK_10("Talk 10 (Walk & Talk)", "Talk", AnimationPresetType.WALK, FacialExpression.TALKING, HandPoseType.OPEN),
     HAND_OPEN("Hand: Open", "Hands", AnimationPresetType.WAVING, FacialExpression.HAPPY, HandPoseType.OPEN),
     HAND_FIST("Hand: Fist", "Hands", AnimationPresetType.IDLE, FacialExpression.ANGRY, HandPoseType.FIST),
     HAND_POINT("Hand: Point", "Hands", AnimationPresetType.TALKING, FacialExpression.NEUTRAL, HandPoseType.POINT),
@@ -82,7 +98,7 @@ enum class AtlasSlotCategory(val displayName: String) {
 
 /**
  * Fixed, strictly non-overlapping normalized (0..1) sprite-atlas slot layout supporting both
- * 2048x2048 and 4096x4096 transparent PNG sprite sheets.
+ * 2048x2048 and 4096x4096 transparent PNG and crisp vector SVG sprite sheets.
  */
 enum class AtlasPartSlot(
     val id: String,
@@ -152,17 +168,21 @@ data class AtlasPartPlacement(
     val slotId: String,
     val partImagePath: String? = null,
     val visible: Boolean = true,
+    val locked: Boolean = false,
     val offsetX: Float = 0f,
     val offsetY: Float = 0f,
     val scale: Float = 1f,
-    val rotationDeg: Float = 0f
+    val rotationDeg: Float = 0f,
+    val svgInline: String? = null
 )
 
 data class SpriteAtlasRigConfig(
     val poseTemplate: AtlasPoseTemplate = AtlasPoseTemplate.THREE_QUARTER_FRONT,
     val resolutionPx: Int = 2048,
     val textureName: String = "CustomHero",
+    val renderMode: String = "PNG", // "PNG" or "SVG"
     val importedFullSheetPath: String? = null,
+    val inlineAtlasSvg: String? = null,
     val placements: Map<String, AtlasPartPlacement> = emptyMap(),
     val metadataJsonPath: String? = null
 ) {
@@ -170,4 +190,143 @@ data class SpriteAtlasRigConfig(
         placements[slot.id] ?: AtlasPartPlacement(slotId = slot.id)
 
     fun isSlotVisible(slot: AtlasPartSlot): Boolean = placements[slot.id]?.visible ?: true
+    fun isSlotLocked(slot: AtlasPartSlot): Boolean = placements[slot.id]?.locked ?: false
+    val isSvgMode: Boolean
+        get() = renderMode.equals("SVG", ignoreCase = true) ||
+            importedFullSheetPath?.endsWith(".svg", ignoreCase = true) == true ||
+            !inlineAtlasSvg.isNullOrBlank()
+}
+
+/**
+ * Clean, human-readable FrameCraft Character Code Format (.fcchar.json) schema v1.
+ * Enables artists and developers to author, copy/paste, share, and import/export crisp
+ * 30-slot SVG or PNG character rigs completely offline.
+ */
+data class CharacterCodeSlot(
+    val x: Float = 0f,
+    val y: Float = 0f,
+    val scale: Float = 1f,
+    val rotation: Float = 0f,
+    val pivotX: Float = 0.5f,
+    val pivotY: Float = 0.5f,
+    val visible: Boolean = true,
+    val locked: Boolean = false,
+    val assetPath: String? = null,
+    val svgPathData: String? = null
+)
+
+data class FrameCraftCharacterCode(
+    val schemaVersion: Int = 1,
+    val id: String? = null,
+    val name: String = "CustomHero",
+    val category: String = "DESI",
+    val orientation: String = "THREE_QUARTER_FRONT",
+    val poseTemplate: String = "three_quarter_front",
+    val atlasSize: Int = 2048,
+    val renderMode: String = "SVG",
+    val atlasFile: String? = null,
+    val atlasSvg: String? = null,
+    val slots: Map<String, CharacterCodeSlot> = emptyMap(),
+    val animations: List<String> = listOf("idle", "walk", "run", "talk1", "mth1", "mth2", "mth3", "mth4")
+)
+
+object CharacterCodeCodec {
+    private val moshi: Moshi by lazy {
+        Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+    }
+    private val codeAdapter by lazy {
+        moshi.adapter(FrameCraftCharacterCode::class.java).indent("  ")
+    }
+    private val atlasConfigAdapter by lazy {
+        moshi.adapter(SpriteAtlasRigConfig::class.java)
+    }
+
+    fun toJson(code: FrameCraftCharacterCode): String = codeAdapter.toJson(code)
+
+    fun fromJson(rawJson: String): FrameCraftCharacterCode? {
+        if (rawJson.length > 4 * 1024 * 1024) return null
+        return runCatching {
+            val parsed = codeAdapter.fromJson(rawJson) ?: return null
+            if (parsed.schemaVersion !in 1..2) return null
+            parsed
+        }.getOrNull()
+    }
+
+    fun encodeAtlasConfig(config: SpriteAtlasRigConfig): String = atlasConfigAdapter.toJson(config)
+    fun decodeAtlasConfig(rawJson: String): SpriteAtlasRigConfig? =
+        runCatching { atlasConfigAdapter.fromJson(rawJson) }.getOrNull()
+
+    fun fromRigConfig(
+        config: SpriteAtlasRigConfig,
+        category: CharacterCategory = CharacterCategory.LATEST,
+        atlasFileName: String? = null,
+        inlineSvgAtlas: String? = null
+    ): FrameCraftCharacterCode {
+        val slotsMap = LinkedHashMap<String, CharacterCodeSlot>()
+        for (slot in AtlasPartSlot.entries) {
+            val p = config.placementFor(slot)
+            if (!p.partImagePath.isNullOrBlank() || !p.svgInline.isNullOrBlank() ||
+                !p.visible || p.locked || p.offsetX != 0f || p.offsetY != 0f ||
+                p.scale != 1f || p.rotationDeg != 0f
+            ) {
+                slotsMap[slot.id] = CharacterCodeSlot(
+                    x = p.offsetX,
+                    y = p.offsetY,
+                    scale = p.scale,
+                    rotation = p.rotationDeg,
+                    pivotX = slot.pivotU,
+                    pivotY = slot.pivotV,
+                    visible = p.visible,
+                    locked = p.locked,
+                    assetPath = p.partImagePath?.substringAfterLast('/'),
+                    svgPathData = p.svgInline
+                )
+            }
+        }
+        return FrameCraftCharacterCode(
+            schemaVersion = 1,
+            name = config.textureName.trim().ifBlank { "CustomHero" },
+            category = category.name,
+            orientation = config.poseTemplate.defaultOrientation.name,
+            poseTemplate = config.poseTemplate.id,
+            atlasSize = if (config.resolutionPx >= 4096) 4096 else 2048,
+            renderMode = if (config.isSvgMode || !inlineSvgAtlas.isNullOrBlank()) "SVG" else "PNG",
+            atlasFile = atlasFileName,
+            atlasSvg = inlineSvgAtlas ?: config.inlineAtlasSvg,
+            slots = slotsMap,
+            animations = listOf("idle", "walk", "run", "eyeclose", "talk1", "talk2", "mth1", "mth2", "mth3", "mth4")
+        )
+    }
+
+    fun toRigConfig(
+        code: FrameCraftCharacterCode,
+        resolvedAtlasPath: String? = null,
+        resolvedSlotPaths: Map<String, String> = emptyMap()
+    ): SpriteAtlasRigConfig {
+        val placements = LinkedHashMap<String, AtlasPartPlacement>()
+        for ((slotId, slotData) in code.slots) {
+            val validSlot = AtlasPartSlot.fromId(slotId) ?: continue
+            placements[validSlot.id] = AtlasPartPlacement(
+                slotId = validSlot.id,
+                partImagePath = resolvedSlotPaths[validSlot.id],
+                visible = slotData.visible,
+                locked = slotData.locked,
+                offsetX = slotData.x.coerceIn(-0.6f, 0.6f),
+                offsetY = slotData.y.coerceIn(-0.6f, 0.6f),
+                scale = slotData.scale.coerceIn(0.25f, 2.8f),
+                rotationDeg = slotData.rotation,
+                svgInline = slotData.svgPathData
+            )
+        }
+        val pose = AtlasPoseTemplate.fromId(code.poseTemplate)
+        return SpriteAtlasRigConfig(
+            poseTemplate = pose,
+            resolutionPx = if (code.atlasSize >= 4096) 4096 else 2048,
+            textureName = code.name.trim().ifBlank { "CustomHero" },
+            renderMode = if (code.renderMode.equals("SVG", ignoreCase = true)) "SVG" else "PNG",
+            importedFullSheetPath = resolvedAtlasPath,
+            inlineAtlasSvg = code.atlasSvg,
+            placements = placements
+        )
+    }
 }

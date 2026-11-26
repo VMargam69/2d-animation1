@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048" width="2048" height="2048">
+  <!-- Band 1: Core Head, Hair Front, Hair Back, Chest/Body (v: 0.01..0.29 => y: 20..594) -->
+
+  <!-- HEAD (x: 20..491, cx=256, y: 20..594, cy=307) -->
+  <g id="slot_head">
+    <!-- Neck shadow base -->
+    <rect x="218" y="458" width="76" height="96" rx="34" fill="#C98D63" stroke="#1E1B18" stroke-width="10"/>
+    <!-- Left & Right Ears -->
+    <ellipse cx="118" cy="322" rx="30" ry="44" fill="#E3A87D" stroke="#1E1B18" stroke-width="10"/>
+    <path d="M116 302 Q104 322 116 342" fill="none" stroke="#B77850" stroke-width="7" stroke-linecap="round"/>
+    <ellipse cx="394" cy="322" rx="30" ry="44" fill="#E3A87D" stroke="#1E1B18" stroke-width="10"/>
+    <path d="M396 302 Q408 322 396 342" fill="none" stroke="#B77850" stroke-width="7" stroke-linecap="round"/>
+    <!-- Sculpted Head Cranium & Tapered Jawline -->
+    <path d="M126 270 C126 122 386 122 386 270 C386 382 342 462 260 486 C178 462 126 382 126 270 Z"
+          fill="#F0B98E" stroke="#1E1B18" stroke-width="11" stroke-linejoin="round"/>
+    <!-- Cel-Shading Side Shadow Crescent -->
+    <path d="M129 272 C131 378 182 454 256 480 C216 446 178 378 176 266 C175 198 196 154 228 134 C168 150 128 202 129 272 Z"
+          fill="#DC9F73" opacity="0.72"/>
+    <!-- Cheek Highlight & Subtle Warm Blush -->
+    <ellipse cx="184" cy="356" rx="28" ry="15" fill="#F43F5E" opacity="0.22"/>
+    <ellipse cx="332" cy="356" rx="28" ry="15" fill="#F43F5E" opacity="0.22"/>
+    <!-- Clean Sculpted Nose -->
+    <path d="M262 292 L276 346 Q262 356 248 348" fill="none" stroke="#B2744E" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- HAIR_FRONT (x: 512..983, cx=748, y: 20..594, cy=307) -->
+  <g id="slot_hair_front">
+    <path d="M594 316 C586 190 662 128 756 130 C852 132 918 192 908 312 C886 248 844 218 796 226 C750 234 716 262 670 250 C636 242 612 272 594 316 Z"
+          fill="#1B191F" stroke="#0B0D14" stroke-width="11" stroke-linejoin="round"/>
+    <!-- Stylized Swept Bangs -->
+    <path d="M684 148 Q758 182 848 164 Q808 214 734 210 Q696 208 660 232 Z" fill="#2A2733"/>
+    <!-- Specular Hair Sheen Arc -->
+    <path d="M664 188 Q748 154 832 184" fill="none" stroke="#64748B" stroke-width="10" stroke-linecap="round" opacity="0.55"/>
+  </g>
+
+  <!-- HAIR_BACK (x: 1004..1475, cx=1239, y: 20..594, cy=307) -->
+  <g id="slot_hair_back">
+    <path d="M1084 268 C1084 128 1394 128 1394 268 C1394 366 1362 430 1324 460 L1154 460 C1116 430 1084 366 1084 268 Z"
+          fill="#151318" stroke="#0B0D14" stroke-width="10"/>
+  </g>
+
+  <!-- CHEST_BODY (x: 1495..2028, cx=1761, y: 20..594, cy=307) -->
+  <g id="slot_chest_body">
+    <!-- Crisp Cel-Shaded Saffron Kurta Tunic with Teal Collar & Sash -->
+    <path d="M1592 142 Q1761 104 1930 142 L1902 384 L1922 526 Q1761 558 1600 526 L1620 384 Z"
+          fill="#F97316" stroke="#1E1B18" stroke-width="11" stroke-linejoin="round"/>
+    <!-- Left Shadow Panel -->
+    <path d="M1595 144 L1672 132 L1664 388 L1682 536 L1602 524 L1622 384 Z" fill="#EA580C" opacity="0.72"/>
+    <!-- Mandarin Collar & Gold Placket -->
+    <rect x="1700" y="114" width="122" height="44" rx="16" fill="#0F766E" stroke="#1E1B18" stroke-width="9"/>
+    <rect x="1742" y="154" width="38" height="176" rx="12" fill="#FACC15" stroke="#1E1B18" stroke-width="8"/>
+    <circle cx="1761" cy="196" r="9" fill="#FFFBEB"/>
+    <circle cx="1761" cy="244" r="9" fill="#FFFBEB"/>
+    <circle cx="1761" cy="292" r="9" fill="#FFFBEB"/>
+    <!-- Waist Sash -->
+    <rect x="1612" y="370" width="298" height="52" rx="14" fill="#0F766E" stroke="#1E1B18" stroke-width="9"/>
+    <rect x="1728" y="366" width="66" height="60" rx="12" fill="#FACC15" stroke="#1E1B18" stroke-width="8"/>
+  </g>
+
+  <!-- Band 2A: Eyes & Eyebrows (v: 0.31..0.40 => y: 635..819, cy=727) -->
+  <!-- EYE_WHITE (cx=164) -->
+  <g id="slot_eye_white">
+    <ellipse cx="164" cy="727" rx="92" ry="60" fill="#FFFFFF" stroke="#1E1B18" stroke-width="11"/>
+    <path d="M84 702 Q164 670 244 702" fill="none" stroke="#CBD5E1" stroke-width="10" opacity="0.65"/>
+  </g>
+  <!-- EYEBALL (cx=471) -->
+  <g id="slot_eyeball">
+    <circle cx="471" cy="727" r="56" fill="#3B2314" stroke="#140C07" stroke-width="8"/>
+    <circle cx="471" cy="727" r="32" fill="#0F172A"/>
+    <circle cx="492" cy="706" r="16" fill="#FFFFFF"/>
+    <circle cx="452" cy="748" r="8" fill="#FFFFFF" opacity="0.75"/>
+  </g>
+  <!-- EYELID (cx=778) -->
+  <g id="slot_eyelid">
+    <path d="M684 736 Q778 672 872 736" fill="none" stroke="#1E1B18" stroke-width="16" stroke-linecap="round"/>
+  </g>
+  <!-- BROW_IDLE (cx=1075) -->
+  <g id="slot_brow_idle">
+    <path d="M982 734 Q1075 704 1168 730" fill="none" stroke="#1B191F" stroke-width="22" stroke-linecap="round"/>
+  </g>
+  <!-- BROW_HAPPY (cx=1362) -->
+  <g id="slot_brow_happy">
+    <path d="M1268 746 Q1362 686 1456 742" fill="none" stroke="#1B191F" stroke-width="22" stroke-linecap="round"/>
+  </g>
+  <!-- BROW_ANGRY (cx=1638) -->
+  <g id="slot_brow_angry">
+    <path d="M1548 696 L1728 756" fill="none" stroke="#1B191F" stroke-width="24" stroke-linecap="round"/>
+  </g>
+  <!-- BROW_SCARED (cx=1905) -->
+  <g id="slot_brow_scared">
+    <path d="M1814 752 Q1905 704 1994 696" fill="none" stroke="#1B191F" stroke-width="22" stroke-linecap="round"/>
+  </g>
+
+  <!-- Band 2B: Mouths (MTH1-MTH4 + Shocked) & Accessory (v: 0.41..0.50 => y: 840..1024, cy=932) -->
+  <!-- LIP_IDLE (MTH1, cx=174) -->
+  <g id="slot_lip_idle">
+    <path d="M92 924 Q174 966 256 924" fill="none" stroke="#7F1D1D" stroke-width="16" stroke-linecap="round"/>
+  </g>
+  <!-- LIP_HAPPY (MTH2, cx=502) -->
+  <g id="slot_lip_happy">
+    <path d="M402 902 Q502 918 602 902 Q576 996 502 996 Q428 996 402 902 Z" fill="#991B1B" stroke="#1E1B18" stroke-width="10"/>
+    <path d="M424 912 Q502 926 580 912 L568 938 Q502 946 436 938 Z" fill="#FFFFFF"/>
+    <ellipse cx="502" cy="974" rx="44" ry="16" fill="#FB7185"/>
+  </g>
+  <!-- LIP_SCARED (MTH3, cx=829) -->
+  <g id="slot_lip_scared">
+    <path d="M748 962 Q829 904 910 962" fill="none" stroke="#7F1D1D" stroke-width="16" stroke-linecap="round"/>
+  </g>
+  <!-- LIP_ANGRY (MTH4, cx=1157) -->
+  <g id="slot_lip_angry">
+    <rect x="1062" y="896" width="190" height="72" rx="22" fill="#FFFFFF" stroke="#1E1B18" stroke-width="11"/>
+    <line x1="1066" y1="932" x2="1248" y2="932" stroke="#1E1B18" stroke-width="8"/>
+    <line x1="1124" y1="898" x2="1124" y2="966" stroke="#1E1B18" stroke-width="7"/>
+    <line x1="1190" y1="898" x2="1190" y2="966" stroke="#1E1B18" stroke-width="7"/>
+  </g>
+  <!-- LIP_SHOCKED (cx=1485) -->
+  <g id="slot_lip_shocked">
+    <ellipse cx="1485" cy="932" rx="64" ry="74" fill="#7F1D1D" stroke="#1E1B18" stroke-width="11"/>
+    <ellipse cx="1485" cy="978" rx="34" ry="18" fill="#FB7185"/>
+  </g>
+  <!-- ACCESSORY (Gold Headband / Crest, cx=1843) -->
+  <g id="slot_accessory">
+    <path d="M1708 972 Q1843 878 1978 972 Q1843 938 1708 972 Z" fill="#FACC15" stroke="#1E1B18" stroke-width="10"/>
+    <circle cx="1843" cy="918" r="24" fill="#EF4444" stroke="#1E1B18" stroke-width="8"/>
+  </g>
+
+  <!-- Band 3: Tapered Cel-Shaded Arms & Legs (v: 0.51..0.79 => y: 1044..1618) -->
+  <!-- L_UPPER_ARM (cx=138) -->
+  <g id="slot_l_upper_arm">
+    <path d="M92 1106 Q138 1072 184 1106 L174 1544 Q138 1574 102 1544 Z" fill="#EA580C" stroke="#1E1B18" stroke-width="10"/>
+    <path d="M142 1094 L182 1110 L172 1542 L144 1554 Z" fill="#F97316" opacity="0.82"/>
+  </g>
+  <!-- L_LOWER_ARM (cx=394) -->
+  <g id="slot_l_lower_arm">
+    <path d="M352 1106 Q394 1078 436 1106 L422 1548 Q394 1572 366 1548 Z" fill="#E3A87D" stroke="#1E1B18" stroke-width="10"/>
+    <path d="M396 1094 L434 1110 L420 1546 L396 1556 Z" fill="#F0B98E"/>
+    <rect x="362" y="1478" width="64" height="32" rx="10" fill="#FACC15" stroke="#1E1B18" stroke-width="7"/>
+  </g>
+  <!-- R_UPPER_ARM (cx=650) -->
+  <g id="slot_r_upper_arm">
+    <path d="M604 1106 Q650 1072 696 1106 L686 1544 Q650 1574 614 1544 Z" fill="#F97316" stroke="#1E1B18" stroke-width="10"/>
+    <path d="M606 1108 L636 1094 L636 1554 L616 1542 Z" fill="#EA580C" opacity="0.72"/>
+  </g>
+  <!-- R_LOWER_ARM (cx=906) -->
+  <g id="slot_r_lower_arm">
+    <path d="M864 1106 Q906 1078 948 1106 L934 1548 Q906 1572 878 1548 Z" fill="#F0B98E" stroke="#1E1B18" stroke-width="10"/>
+    <path d="M866 1110 L892 1094 L896 1554 L880 1546 Z" fill="#DC9F73" opacity="0.75"/>
+    <rect x="874" y="1478" width="64" height="32" rx="10" fill="#FACC15" stroke="#1E1B18" stroke-width="7"/>
+  </g>
+  <!-- L_UPPER_LEG (cx=1162) -->
+  <g id="slot_l_upper_leg">
+    <path d="M1108 1102 Q1162 1072 1216 1102 L1202 1548 Q1162 1574 1122 1548 Z" fill="#1E293B" stroke="#0B0D14" stroke-width="10"/>
+    <path d="M1164 1092 L1214 1106 L1200 1546 L1166 1558 Z" fill="#334155" opacity="0.75"/>
+  </g>
+  <!-- L_LOWER_LEG (cx=1418) -->
+  <g id="slot_l_lower_leg">
+    <path d="M1374 1102 Q1418 1076 1462 1102 L1452 1492 L1384 1492 Z" fill="#1E293B" stroke="#0B0D14" stroke-width="10"/>
+    <!-- Shoe -->
+    <path d="M1374 1482 L1462 1482 L1496 1534 Q1498 1570 1456 1570 L1372 1570 Q1358 1554 1374 1482 Z" fill="#7C2D12" stroke="#0B0D14" stroke-width="10"/>
+    <rect x="1364" y="1552" width="132" height="22" rx="10" fill="#F8FAFC" stroke="#0B0D14" stroke-width="7"/>
+  </g>
+  <!-- R_UPPER_LEG (cx=1674) -->
+  <g id="slot_r_upper_leg">
+    <path d="M1620 1102 Q1674 1072 1728 1102 L1714 1548 Q1674 1574 1634 1548 Z" fill="#334155" stroke="#0B0D14" stroke-width="10"/>
+    <path d="M1622 1106 L1656 1092 L1660 1558 L1636 1546 Z" fill="#1E293B" opacity="0.78"/>
+  </g>
+  <!-- R_LOWER_LEG (cx=1925) -->
+  <g id="slot_r_lower_leg">
+    <path d="M1882 1102 Q1925 1076 1968 1102 L1958 1492 L1892 1492 Z" fill="#334155" stroke="#0B0D14" stroke-width="10"/>
+    <path d="M1882 1482 L1970 1482 L2004 1534 Q2006 1570 1964 1570 L1880 1570 Q1866 1554 1882 1482 Z" fill="#9A3412" stroke="#0B0D14" stroke-width="10"/>
+    <rect x="1872" y="1552" width="132" height="22" rx="10" fill="#F8FAFC" stroke="#0B0D14" stroke-width="7"/>
+  </g>
+
+  <!-- Band 4: Hand Poses (v: 0.805..0.990 => y: 1649..2028, cy=1838) -->
+  <!-- HAND_OPEN (cx=210) -->
+  <g id="slot_hand_open">
+    <ellipse cx="210" cy="1828" rx="68" ry="74" fill="#F0B98E" stroke="#1E1B18" stroke-width="10"/>
+    <rect x="148" y="1868" width="24" height="84" rx="12" fill="#F0B98E" stroke="#1E1B18" stroke-width="8"/>
+    <rect x="180" y="1878" width="24" height="94" rx="12" fill="#F0B98E" stroke="#1E1B18" stroke-width="8"/>
+    <rect x="212" y="1878" width="24" height="92" rx="12" fill="#F0B98E" stroke="#1E1B18" stroke-width="8"/>
+    <rect x="244" y="1862" width="22" height="78" rx="11" fill="#F0B98E" stroke="#1E1B18" stroke-width="8"/>
+    <ellipse cx="128" cy="1824" rx="22" ry="42" transform="rotate(28 128 1824)" fill="#F0B98E" stroke="#1E1B18" stroke-width="8"/>
+  </g>
+  <!-- HAND_FIST (cx=609) -->
+  <g id="slot_hand_fist">
+    <rect x="542" y="1772" width="134" height="126" rx="44" fill="#F0B98E" stroke="#1E1B18" stroke-width="10"/>
+    <line x1="576" y1="1844" x2="576" y2="1892" stroke="#1E1B18" stroke-width="8"/>
+    <line x1="610" y1="1844" x2="610" y2="1894" stroke="#1E1B18" stroke-width="8"/>
+    <line x1="644" y1="1844" x2="644" y2="1892" stroke="#1E1B18" stroke-width="8"/>
+  </g>
+  <!-- HAND_POINT (cx=1009) -->
+  <g id="slot_hand_point">
+    <rect x="946" y="1772" width="120" height="106" rx="38" fill="#F0B98E" stroke="#1E1B18" stroke-width="10"/>
+    <rect x="996" y="1852" width="28" height="124" rx="14" fill="#F0B98E" stroke="#1E1B18" stroke-width="9"/>
+  </g>
+  <!-- PROP_HAND_L (cx=1418) -->
+  <g id="slot_prop_hand_l">
+    <circle cx="1418" cy="1836" r="68" fill="#F0B98E" stroke="#1E1B18" stroke-width="10"/>
+    <circle cx="1418" cy="1842" r="24" fill="#DC9F73" stroke="#1E1B18" stroke-width="7"/>
+  </g>
+  <!-- PROP_HAND_R (cx=1833) -->
+  <g id="slot_prop_hand_r">
+    <circle cx="1833" cy="1836" r="68" fill="#F0B98E" stroke="#1E1B18" stroke-width="10"/>
+    <circle cx="1833" cy="1842" r="24" fill="#DC9F73" stroke="#1E1B18" stroke-width="7"/>
+  </g>
+</svg>

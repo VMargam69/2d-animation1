@@ -666,53 +666,78 @@ object ProceduralRigRenderer {
         canvas.drawLine(-10f * s, 30f * s, -12f * s + pose.leftLegDeg * 0.4f * s, 54f * s, legPaint)
         canvas.drawLine(10f * s, 30f * s, 12f * s + pose.rightLegDeg * 0.4f * s, 54f * s, legPaint)
 
-        // Body oval
+        // Cel-Shaded Body Oval with Shadow Crescent & Rim Highlight
         fill.color = withAlpha(primary, alphaInt)
         val bodyRect = RectF(-34f * s, -20f * s, 34f * s, 36f * s)
         canvas.drawOval(bodyRect, fill)
+        fill.color = withAlpha(0x2E000000, alphaInt)
+        canvas.drawArc(bodyRect, 20f, 155f, false, fill)
+        fill.color = withAlpha(0x33FFFFFF, alphaInt)
+        canvas.drawOval(RectF(-26f * s, -15f * s, -4f * s, -3f * s), fill)
         canvas.drawOval(bodyRect, stroke)
 
         // Belly highlight
-        fill.color = withAlpha(accent, (alphaInt * 0.85f).toInt())
+        fill.color = withAlpha(accent, (alphaInt * 0.88f).toInt())
         canvas.drawOval(RectF(-18f * s, -4f * s, 18f * s, 28f * s), fill)
 
-        // Flapping Wings
+        // Sculpted Feather Wings with Cel-Shading
         canvas.save()
         canvas.translate(-24f * s, -4f * s)
         canvas.rotate(-25f - pose.wingFlapDeg)
+        val leftWing = Path().apply {
+            moveTo(6f * s, -6f * s)
+            quadTo(-16f * s, -16f * s, -36f * s, 4f * s)
+            quadTo(-18f * s, 22f * s, 6f * s, 12f * s)
+            close()
+        }
         fill.color = withAlpha(secondary, alphaInt)
-        canvas.drawOval(RectF(-34f * s, -10f * s, 6f * s, 18f * s), fill)
-        canvas.drawOval(RectF(-34f * s, -10f * s, 6f * s, 18f * s), stroke)
+        canvas.drawPath(leftWing, fill)
+        canvas.drawPath(leftWing, stroke)
         canvas.restore()
 
         canvas.save()
         canvas.translate(24f * s, -4f * s)
         canvas.rotate(25f + pose.wingFlapDeg)
+        val rightWing = Path().apply {
+            moveTo(-6f * s, -6f * s)
+            quadTo(16f * s, -16f * s, 36f * s, 4f * s)
+            quadTo(18f * s, 22f * s, -6f * s, 12f * s)
+            close()
+        }
         fill.color = withAlpha(secondary, alphaInt)
-        canvas.drawOval(RectF(-6f * s, -10f * s, 34f * s, 18f * s), fill)
-        canvas.drawOval(RectF(-6f * s, -10f * s, 34f * s, 18f * s), stroke)
+        canvas.drawPath(rightWing, fill)
+        canvas.drawPath(rightWing, stroke)
         canvas.restore()
 
-        // Head
+        // Head with Cel Highlight
         canvas.save()
         canvas.translate(0f, -34f * s)
         canvas.rotate(pose.headNodDeg)
         fill.color = withAlpha(primary, alphaInt)
         canvas.drawCircle(0f, 0f, 22f * s, fill)
+        fill.color = withAlpha(0x28000000, alphaInt)
+        canvas.drawArc(RectF(-22f * s, -22f * s, 22f * s, 22f * s), 15f, 150f, false, fill)
+        fill.color = withAlpha(0x38FFFFFF, alphaInt)
+        canvas.drawOval(RectF(-15f * s, -17f * s, -2f * s, -8f * s), fill)
         canvas.drawCircle(0f, 0f, 22f * s, stroke)
 
         if (!isBack) {
-            // Eyes
+            // Expressive Eyes with Glint
             val eyeOffset = if (orientation == CharacterOrientation.SIDE) 8f * s else 0f
             fill.color = withAlpha(0xFFFFFFFF.toInt(), alphaInt)
-            canvas.drawCircle(-7f * s + eyeOffset, -4f * s, 5f * s, fill)
+            canvas.drawCircle(-7f * s + eyeOffset, -4f * s, 5.2f * s, fill)
             if (orientation != CharacterOrientation.SIDE) {
-                canvas.drawCircle(7f * s, -4f * s, 5f * s, fill)
+                canvas.drawCircle(7f * s, -4f * s, 5.2f * s, fill)
             }
             fill.color = withAlpha(0xFF0F172A.toInt(), alphaInt)
-            canvas.drawCircle(-6f * s + eyeOffset, -4f * s, 2.5f * s, fill)
+            canvas.drawCircle(-6f * s + eyeOffset, -4f * s, 2.7f * s, fill)
             if (orientation != CharacterOrientation.SIDE) {
-                canvas.drawCircle(8f * s, -4f * s, 2.5f * s, fill)
+                canvas.drawCircle(8f * s, -4f * s, 2.7f * s, fill)
+            }
+            fill.color = withAlpha(0xFFFFFFFF.toInt(), alphaInt)
+            canvas.drawCircle(-5.2f * s + eyeOffset, -5.2f * s, 1.0f * s, fill)
+            if (orientation != CharacterOrientation.SIDE) {
+                canvas.drawCircle(8.8f * s, -5.2f * s, 1.0f * s, fill)
             }
             // Beak
             fill.color = withAlpha(beak, alphaInt)
@@ -762,24 +787,32 @@ object ProceduralRigRenderer {
         canvas.drawRoundRect(RectF(-34f * s, -6f * s, 4f * s, 6f * s), 6f * s, 6f * s, fill)
         canvas.restore()
 
-        // Four animated legs
+        // Four Tapered Organic Legs
         val legAngles = listOf(pose.leftLegDeg, pose.rightLegDeg, -pose.leftLegDeg * 0.8f, -pose.rightLegDeg * 0.8f)
         val legXs = listOf(-28f * s, -14f * s, 14f * s, 28f * s)
         for (i in legXs.indices) {
             canvas.save()
             canvas.translate(legXs[i], 14f * s)
             canvas.rotate(legAngles[i])
+            val legPath = Path().apply {
+                moveTo(-7.5f * s, 0f)
+                lineTo(7.5f * s, 0f)
+                lineTo(5.2f * s, 35f * s)
+                quadTo(0f, 38f * s, -5.2f * s, 35f * s)
+                close()
+            }
             fill.color = withAlpha(if (i % 2 == 0) secondary else primary, alphaInt)
-            val lr = RectF(-7f * s, 0f, 7f * s, 36f * s)
-            canvas.drawRoundRect(lr, 6f * s, 6f * s, fill)
-            canvas.drawRoundRect(lr, 6f * s, 6f * s, stroke)
+            canvas.drawPath(legPath, fill)
+            canvas.drawPath(legPath, stroke)
             canvas.restore()
         }
 
-        // Body
+        // Cel-Shaded Body
         fill.color = withAlpha(primary, alphaInt)
         val bodyRect = RectF(-42f * s, -22f * s, 40f * s, 24f * s)
         canvas.drawRoundRect(bodyRect, 20f * s, 20f * s, fill)
+        fill.color = withAlpha(0x2AFFFFFF, alphaInt)
+        canvas.drawOval(RectF(-30f * s, -18f * s, 14f * s, -6f * s), fill)
         canvas.drawRoundRect(bodyRect, 20f * s, 20f * s, stroke)
 
         // Belly patch
@@ -794,23 +827,31 @@ object ProceduralRigRenderer {
         // Ears
         fill.color = withAlpha(primary, alphaInt)
         canvas.drawCircle(-17f * s, -18f * s, 9f * s, fill)
+        canvas.drawCircle(-17f * s, -18f * s, 9f * s, stroke)
         canvas.drawCircle(17f * s, -18f * s, 9f * s, fill)
+        canvas.drawCircle(17f * s, -18f * s, 9f * s, stroke)
         fill.color = withAlpha(belly, alphaInt)
         canvas.drawCircle(-17f * s, -18f * s, 4.5f * s, fill)
         canvas.drawCircle(17f * s, -18f * s, 4.5f * s, fill)
 
-        // Head circle
+        // Cel-Shaded Head Circle
         fill.color = withAlpha(primary, alphaInt)
         canvas.drawCircle(0f, 0f, 23f * s, fill)
+        fill.color = withAlpha(0x2A000000, alphaInt)
+        canvas.drawArc(RectF(-23f * s, -23f * s, 23f * s, 23f * s), 20f, 145f, false, fill)
         canvas.drawCircle(0f, 0f, 23f * s, stroke)
 
         if (!isBack) {
             fill.color = withAlpha(belly, alphaInt)
             canvas.drawOval(RectF(-13f * s, 0f, 13f * s, 17f * s), fill)
             fill.color = withAlpha(accent, alphaInt)
-            canvas.drawCircle(-8f * s, -5f * s, 3.3f * s, fill)
-            canvas.drawCircle(8f * s, -5f * s, 3.3f * s, fill)
+            canvas.drawCircle(-8f * s, -5f * s, 3.5f * s, fill)
+            canvas.drawCircle(8f * s, -5f * s, 3.5f * s, fill)
+            fill.color = withAlpha(0xFFFFFFFF.toInt(), alphaInt)
+            canvas.drawCircle(-7.2f * s, -6.1f * s, 1.1f * s, fill)
+            canvas.drawCircle(8.8f * s, -6.1f * s, 1.1f * s, fill)
             // Nose
+            fill.color = withAlpha(accent, alphaInt)
             canvas.drawOval(RectF(-5f * s, 1f * s, 5f * s, 7f * s), fill)
         }
         drawHeadAccessory(canvas, rig.accessory, s, accent, primary, stroke, alphaInt)

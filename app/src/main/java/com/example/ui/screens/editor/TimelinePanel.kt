@@ -524,11 +524,11 @@ fun TimelinePanel(
                         .horizontalScroll(horizontalScroll)
                 ) {
                     Column(modifier = Modifier.width(totalTrackWidthDp)) {
-                        // Frame Ruler (tap or deduplicated scrub playhead)
+                        // Frame Ruler (tap or smooth horizontal scrub playhead)
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(26.dp)
+                                .height(28.dp)
                                 .background(StudioObsidian)
                                 .pointerInput(scene.durationFrames, frameWidthPx) {
                                     detectTapGestures { pos ->
@@ -539,7 +539,12 @@ fun TimelinePanel(
                                 .pointerInput(scene.durationFrames, frameWidthPx) {
                                     var lastSeekedFrame = -1
                                     detectHorizontalDragGestures(
-                                        onDragStart = { lastSeekedFrame = -1 },
+                                        onDragStart = { startOffset ->
+                                            val target = (startOffset.x / frameWidthPx).toInt()
+                                                .coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0))
+                                            lastSeekedFrame = target
+                                            latestOnSeekFrame(target)
+                                        },
                                         onDragEnd = { lastSeekedFrame = -1 },
                                         onDragCancel = { lastSeekedFrame = -1 }
                                     ) { change, _ ->
@@ -702,10 +707,12 @@ fun TimelinePanel(
                         }
                     }
 
-                    // GPU-accelerated Playhead Indicator Line & Handle (zero recomposition during playback!)
+                    // GPU-accelerated Playhead Indicator Line & Draggable Horizontal Scrub Handle
                     LivePlayheadOverlay(
                         playbackFrameFlow = playbackFrameFlow,
-                        frameWidthPx = frameWidthPx
+                        frameWidthPx = frameWidthPx,
+                        maxFrame = (scene.durationFrames - 1).coerceAtLeast(0),
+                        onSeekFrame = latestOnSeekFrame
                     )
                 }
             }
@@ -739,29 +746,68 @@ private fun LiveCompactTimecode(
 @Composable
 private fun LivePlayheadOverlay(
     playbackFrameFlow: StateFlow<Int>,
-    frameWidthPx: Float
+    frameWidthPx: Float,
+    maxFrame: Int,
+    onSeekFrame: (Int) -> Unit
 ) {
     val liveFrameState = playbackFrameFlow.collectAsState()
-    val halfWidthPx = with(LocalDensity.current) { 6.dp.toPx() }
+    val latestSeek by rememberUpdatedState(onSeekFrame)
+    val handleWidthDp = 24.dp
+    val halfWidthPx = with(LocalDensity.current) { (handleWidthDp / 2).toPx() }
+
     Box(
         modifier = Modifier
             .graphicsLayer {
                 translationX = liveFrameState.value * frameWidthPx - halfWidthPx
             }
-            .width(12.dp)
+            .width(handleWidthDp)
             .fillMaxHeight()
     ) {
+        // Draggable horizontal scrub head (smoothly updates current frame & stage canvas)
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .size(width = 24.dp, height = 28.dp)
+                .pointerInput(frameWidthPx, maxFrame) {
+                    var startFrame = 0
+                    var dragAccumPx = 0f
+                    var lastEmitted = -1
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            startFrame = liveFrameState.value
+                            dragAccumPx = 0f
+                            lastEmitted = startFrame
+                        },
+                        onDragEnd = { dragAccumPx = 0f },
+                        onDragCancel = { dragAccumPx = 0f }
+                    ) { change, dragAmount ->
+                        change.consume()
+                        dragAccumPx += dragAmount
+                        val deltaFrames = (dragAccumPx / frameWidthPx.coerceAtLeast(1f)).toInt()
+                        val target = (startFrame + deltaFrames).coerceIn(0, maxFrame)
+                        if (target != lastEmitted) {
+                            lastEmitted = target
+                            latestSeek(target)
+                        }
+                    }
+                }
+                .testTag("timeline_playhead_scrub_handle")
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = 14.dp, height = 14.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(CoralPlayhead)
+                    .border(1.2.dp, Color.White.copy(alpha = 0.85f), RoundedCornerShape(4.dp))
+            )
+        }
+
+        // Crisp vertical playhead needle
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .size(10.dp)
-                .clip(CircleShape)
-                .background(CoralPlayhead)
-        )
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 8.dp)
+                .padding(top = 18.dp)
                 .width(2.dp)
                 .fillMaxHeight()
                 .background(CoralPlayhead)

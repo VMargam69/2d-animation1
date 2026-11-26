@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "bundled_hd_maya_storyteller",
+  "name": "Maya HD (SVG)",
+  "category": "DESI",
+  "orientation": "FRONT",
+  "poseTemplate": "front",
+  "atlasSize": 2048,
+  "renderMode": "SVG",
+  "atlasFile": "atlas.svg",
+  "animations": ["idle", "walk", "run", "eyeclose", "talk1", "talk2", "mth1", "mth2", "mth3", "mth4"]
+}

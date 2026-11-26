@@ -60,6 +60,7 @@ fun AtlasWorkspaceCanvas(
 
     val currentDragMode by rememberUpdatedState(isDragPartMode)
     val currentSelectedSlot by rememberUpdatedState(selectedSlot)
+    val currentConfig by rememberUpdatedState(config)
     val currentOnSelect by rememberUpdatedState(onSelectSlot)
     val currentOnTransform by rememberUpdatedState(onTransformSelectedSlot)
 
@@ -70,6 +71,7 @@ fun AtlasWorkspaceCanvas(
             p.visible && (partBitmapsBySlot[slot] != null || (showImportedSheet && importedSheetBitmap != null))
         }.toSet()
     }
+    val selectedIsLocked = selectedSlot?.let { config.isSlotLocked(it) } == true
 
     Box(
         modifier = modifier
@@ -91,6 +93,7 @@ fun AtlasWorkspaceCanvas(
                         if (u in 0f..1f && v in 0f..1f) {
                             currentOnSelect(AtlasPartSlot.hitTest(u, v))
                         } else {
+                            // Clear selection on empty-space tap so placed parts cannot shift accidentally
                             currentOnSelect(null)
                         }
                     }
@@ -101,14 +104,17 @@ fun AtlasWorkspaceCanvas(
                         val sheetSize = minSide * 0.94f * canvasZoom
                         val activeSlot = currentSelectedSlot
                         if (currentDragMode && activeSlot != null) {
-                            val slotW = (activeSlot.widthU * sheetSize).coerceAtLeast(12f)
-                            val slotH = (activeSlot.heightV * sheetSize).coerceAtLeast(12f)
-                            currentOnTransform(
-                                pan.x / slotW,
-                                pan.y / slotH,
-                                zoom,
-                                rotation
-                            )
+                            // Respect per-part lock toggle so locked slots never shift accidentally
+                            if (!currentConfig.isSlotLocked(activeSlot)) {
+                                val slotW = (activeSlot.widthU * sheetSize).coerceAtLeast(12f)
+                                val slotH = (activeSlot.heightV * sheetSize).coerceAtLeast(12f)
+                                currentOnTransform(
+                                    pan.x / slotW,
+                                    pan.y / slotH,
+                                    zoom,
+                                    rotation
+                                )
+                            }
                         } else {
                             canvasZoom = (canvasZoom * zoom).coerceIn(0.65f, 4.5f)
                             val maxPan = minSide * canvasZoom * 0.75f
@@ -168,7 +174,7 @@ fun AtlasWorkspaceCanvas(
                     }
                 }
 
-                // 4. Individual imported body part PNGs
+                // 4. Individual imported body part PNGs / SVGs
                 for (slot in AtlasPartSlot.entries) {
                     val placement = config.placementFor(slot)
                     if (!placement.visible) continue
@@ -196,11 +202,10 @@ fun AtlasWorkspaceCanvas(
                         loadedSlots = loadedSlots
                     )
                 } else if (selectedSlot != null) {
-                    // Minimal selection highlight when Drag mode is active even if Chart is hidden
                     val selPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                         style = Paint.Style.STROKE
                         strokeWidth = 2.6f
-                        color = android.graphics.Color.WHITE
+                        color = if (selectedIsLocked) 0xFFF59E0B.toInt() else android.graphics.Color.WHITE
                     }
                     nc.drawRect(
                         selectedSlot.u0 * sheetSize,
@@ -209,6 +214,23 @@ fun AtlasWorkspaceCanvas(
                         selectedSlot.v1 * sheetSize,
                         selPaint
                     )
+                }
+
+                // 5B. Lock badges on locked slots (UI only, never exported)
+                val lockBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCCF59E0B.toInt() }
+                val lockTxtPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = 0xFF0A0D12.toInt()
+                    textSize = (sheetSize * 0.015f).coerceIn(10f, 18f)
+                    isFakeBoldText = true
+                    textAlign = Paint.Align.CENTER
+                }
+                for (slot in AtlasPartSlot.entries) {
+                    if (config.isSlotLocked(slot)) {
+                        val rx = slot.u1 * sheetSize - 11f
+                        val ry = slot.v0 * sheetSize + 11f
+                        nc.drawCircle(rx, ry, 8.5f, lockBgPaint)
+                        nc.drawText("L", rx, ry + lockTxtPaint.textSize * 0.36f, lockTxtPaint)
+                    }
                 }
 
                 // Outer sheet frame border (UI only, never exported)
@@ -231,19 +253,26 @@ fun AtlasWorkspaceCanvas(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
-                color = StudioObsidian.copy(alpha = 0.85f),
+                color = StudioObsidian.copy(alpha = 0.88f),
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    text = if (isDragPartMode && selectedSlot != null) {
-                        "Drag Part: ${selectedSlot.label}"
-                    } else if (isDragPartMode) {
-                        "Tap a slot to drag/scale/rotate"
-                    } else {
-                        "Atlas ${(canvasZoom * 100).toInt()}% • Pinch/Pan"
+                    text = when {
+                        isDragPartMode && selectedSlot != null && selectedIsLocked ->
+                            "Locked: ${selectedSlot.label} (unlock to move)"
+                        isDragPartMode && selectedSlot != null ->
+                            "Part Edit: ${selectedSlot.label} • Drag/Pinch/Rotate"
+                        isDragPartMode ->
+                            "Part Edit • Tap slot (empty space clears)"
+                        else ->
+                            "Workspace ${(canvasZoom * 100).toInt()}% • Pan/Pinch"
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isDragPartMode) AmberKeyframe else ElectricCyan,
+                    color = when {
+                        selectedIsLocked && isDragPartMode -> CoralPlayhead
+                        isDragPartMode -> AmberKeyframe
+                        else -> ElectricCyan
+                    },
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                 )
             }
@@ -334,6 +363,7 @@ fun LiveRigPreviewPanel(
                     rigScale = rigScale,
                     alpha = 1f,
                     handPose = testAnimation.handPose,
+                    blinkOverride = testAnimation.blinkOverride,
                     mouthSlotOverride = testAnimation.mouthSlotOverride,
                     drawGhostFallbackWhenEmpty = true
                 )

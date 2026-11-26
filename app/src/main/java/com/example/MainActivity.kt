@@ -85,6 +85,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                     val pose = char.spriteAtlasRig?.poseTemplate ?: AtlasPoseTemplate.THREE_QUARTER_FRONT
                     viewModel.openCharacterMaker(pose = pose, editCharacterId = char.id)
                 },
+                onImportCharacterPack = { uri, onMsg -> viewModel.importCharacterPackUri(uri, onMsg) },
                 onClose = { viewModel.navigateBack() }
             )
         }
@@ -92,6 +93,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
         is HashRoute.CharacterSetup -> {
             CharacterSetupScreen(
                 onCreateWithPose = { pose -> viewModel.openCharacterMaker(pose) },
+                onImportCharacterPack = { uri, onMsg -> viewModel.importCharacterPackUri(uri, onMsg) },
                 onBack = { viewModel.navigateBack() }
             )
         }

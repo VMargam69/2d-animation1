@@ -38,6 +38,14 @@ class LocalAssetStorage(private val context: Context) {
         File(context.filesDir, "offline_media_assets").apply { mkdirs() }
     }
 
+    private val customCharactersDir: File by lazy {
+        File(context.filesDir, "custom_characters").apply { mkdirs() }
+    }
+
+    private val atlasSidecarsDir: File by lazy {
+        File(customCharactersDir, "sidecars").apply { mkdirs() }
+    }
+
     private val bitmapCache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
@@ -124,9 +132,12 @@ class LocalAssetStorage(private val context: Context) {
             }
         }
         atlasSlicesCache.remove(path)
+        if (path.startsWith(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)) return
         runCatching {
             val file = File(path)
-            if (file.exists() && file.parentFile?.absolutePath == assetsDir.absolutePath) {
+            if (file.exists() && (file.parentFile?.absolutePath == assetsDir.absolutePath ||
+                    file.canonicalPath.startsWith(customCharactersDir.canonicalPath + File.separator))
+            ) {
                 file.delete()
             }
         }
@@ -257,11 +268,115 @@ class LocalAssetStorage(private val context: Context) {
     }
 
     suspend fun inspectImageDimensions(path: String): Pair<Int, Int> = withContext(Dispatchers.IO) {
+        if (com.example.engine.SvgAtlasRenderer.isSvgPath(path)) {
+            return@withContext 2048 to 2048
+        }
         runCatching {
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, opts)
+            if (path.startsWith(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)) {
+                val assetRel = path.removePrefix(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)
+                context.assets.open(assetRel).use { stream ->
+                    BitmapFactory.decodeStream(stream, null, opts)
+                }
+            } else {
+                BitmapFactory.decodeFile(path, opts)
+            }
             opts.outWidth to opts.outHeight
         }.getOrDefault(0 to 0)
+    }
+
+    fun loadBundledAssetPacks(): List<CharacterRigDefinition> =
+        com.example.engine.CharacterPackImporter.loadBundledAssetPacks(context)
+
+    suspend fun importCharacterPackUri(uri: Uri): com.example.engine.CharacterPackImportResult =
+        withContext(Dispatchers.IO) {
+            com.example.engine.CharacterPackImporter.importCharacterPackFromUri(context, uri)
+        }
+
+    suspend fun importCharacterCodeText(rawCodeJson: String): com.example.engine.CharacterPackImportResult =
+        withContext(Dispatchers.IO) {
+            val packId = "code_${UUID.randomUUID().toString().take(10)}"
+            val packDir = File(customCharactersDir, packId).apply { mkdirs() }
+            com.example.engine.CharacterPackImporter.importFromCharacterCodeString(packDir, packId, rawCodeJson)
+        }
+
+    fun saveAtlasSidecarConfig(characterId: String, config: com.example.model.SpriteAtlasRigConfig) {
+        runCatching {
+            val safeId = characterId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            val file = File(atlasSidecarsDir, "$safeId.atlas.json")
+            file.writeText(com.example.model.CharacterCodeCodec.encodeAtlasConfig(config), Charsets.UTF_8)
+        }
+    }
+
+    fun loadAtlasSidecarConfig(characterId: String): com.example.model.SpriteAtlasRigConfig? {
+        return runCatching {
+            val safeId = characterId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            val file = File(atlasSidecarsDir, "$safeId.atlas.json")
+            if (!file.exists()) return null
+            com.example.model.CharacterCodeCodec.decodeAtlasConfig(file.readText(Charsets.UTF_8))
+        }.getOrNull()
+    }
+
+    fun deleteAtlasSidecarConfig(characterId: String) {
+        runCatching {
+            val safeId = characterId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            File(atlasSidecarsDir, "$safeId.atlas.json").delete()
+        }
+    }
+
+    suspend fun exportCleanAtlasSvg(svgContent: String, textureName: String): String? = withContext(Dispatchers.IO) {
+        if (!com.example.engine.SvgAtlasRenderer.isSafeSvgContent(svgContent)) return@withContext null
+        runCatching {
+            val safeName = textureName.trim()
+                .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+                .ifBlank { "CustomHero" }
+            val fileName = "${safeName}_${System.currentTimeMillis() % 10000}.svg"
+            val outFile = File(assetsDir, fileName)
+            outFile.writeText(svgContent, Charsets.UTF_8)
+            invalidateAtlasSlices(outFile.absolutePath)
+            outFile.absolutePath
+        }.getOrNull()
+    }
+
+    fun readSvgTextFromPath(path: String?): String? {
+        if (path.isNullOrBlank() || !com.example.engine.SvgAtlasRenderer.isSvgPath(path)) return null
+        return runCatching {
+            if (path.startsWith(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)) {
+                val assetRel = path.removePrefix(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)
+                context.assets.open(assetRel).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            } else {
+                val file = File(path)
+                if (file.exists() && file.length() <= 4L * 1024L * 1024L) file.readText(Charsets.UTF_8) else null
+            }
+        }.getOrNull()
+    }
+
+    suspend fun writeTextToSafUri(uri: Uri, content: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(content.toByteArray(Charsets.UTF_8))
+                out.flush()
+            } ?: return@withContext false
+            true
+        }.getOrDefault(false)
+    }
+
+    suspend fun readTextFromSafUri(uri: Uri): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { reader ->
+                val buf = CharArray(8192)
+                val sb = StringBuilder()
+                var total = 0
+                while (true) {
+                    val read = reader.read(buf)
+                    if (read <= 0) break
+                    total += read
+                    if (total > 4 * 1024 * 1024) return@use null
+                    sb.append(buf, 0, read)
+                }
+                sb.toString()
+            }
+        }.getOrNull()
     }
 
     /**
@@ -343,6 +458,41 @@ class LocalAssetStorage(private val context: Context) {
         if (path.isNullOrBlank()) return null
         val cacheKey = "file:$path:$maxDimension"
         bitmapCache.get(cacheKey)?.let { if (!it.isRecycled) return it }
+
+        val isAsset = path.startsWith(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)
+        val isSvg = com.example.engine.SvgAtlasRenderer.isSvgPath(path)
+
+        if (isSvg) {
+            val bmp = if (isAsset) {
+                com.example.engine.SvgAtlasRenderer.renderAssetSvgToBitmap(context, path, maxDimension)
+            } else {
+                com.example.engine.SvgAtlasRenderer.renderSvgFileToBitmap(File(path), maxDimension)
+            }
+            if (bmp != null) {
+                bitmapCache.put(cacheKey, bmp)
+            }
+            return bmp
+        }
+
+        if (isAsset) {
+            val assetRel = path.removePrefix(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)
+            return runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.assets.open(assetRel).use { BitmapFactory.decodeStream(it, null, bounds) }
+                var sample = 1
+                while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) {
+                    sample *= 2
+                }
+                val opts = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                context.assets.open(assetRel).use { BitmapFactory.decodeStream(it, null, opts) }?.also { bmp ->
+                    bitmapCache.put(cacheKey, bmp)
+                }
+            }.getOrNull()
+        }
+
         val file = File(path)
         if (!file.exists()) return null
         return runCatching {

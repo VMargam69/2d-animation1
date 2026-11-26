@@ -482,6 +482,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun importCharacterPackUri(uri: Uri, onResult: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            val result = repository.importCharacterPack(uri)
+            showStatus(result.message)
+            onResult(result.message)
+        }
+    }
+
     fun applyAnimationPresetToCanvas(
         characterId: String,
         orientation: CharacterOrientation,
@@ -1188,10 +1196,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     // --- Playback Engine (Drift-Free Monotonic Clock + Zero Full-Screen Recomposition) ---
     fun seekToFrame(frame: Int) {
+        if (_uiState.value.isPlaying) {
+            stopPlayback()
+        }
         val maxFrame = (_uiState.value.project.activeScene.durationFrames - 1).coerceAtLeast(0)
         val clamped = frame.coerceIn(0, maxFrame)
-        _playbackFrame.value = clamped
-        _uiState.update { it.copy(currentFrame = clamped) }
+        if (_playbackFrame.value != clamped) {
+            _playbackFrame.value = clamped
+        }
+        if (_uiState.value.currentFrame != clamped) {
+            _uiState.update { it.copy(currentFrame = clamped) }
+        }
     }
 
     fun stepFrame(delta: Int) {

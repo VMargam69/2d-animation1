@@ -54,6 +54,7 @@ fun CharacterLibraryScreen(
     onImportSpriteUri: (Uri, (String) -> Unit) -> Unit,
     onOpenCharacterMakerSetup: () -> Unit,
     onEditAtlasCharacter: (CharacterRigDefinition) -> Unit,
+    onImportCharacterPack: (Uri, (String) -> Unit) -> Unit = { _, _ -> },
     onClose: () -> Unit
 ) {
     BackHandler { onClose() }
@@ -63,6 +64,15 @@ fun CharacterLibraryScreen(
     var selectedCategory by remember { mutableStateOf(CharacterCategory.ALL) }
     var editingCharacter by remember { mutableStateOf<CharacterRigDefinition?>(null) }
     var isCreatingNew by remember { mutableStateOf(false) }
+    var importBanner by remember { mutableStateOf<String?>(null) }
+
+    val packImporterLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            onImportCharacterPack(uri) { msg -> importBanner = msg }
+        }
+    }
 
     val filteredCharacters = remember(characters, searchQuery, selectedCategory) {
         characters.filter { char ->
@@ -90,80 +100,107 @@ fun CharacterLibraryScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .statusBarsPadding()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Icon(
+                        Icons.Rounded.Groups,
+                        contentDescription = null,
+                        tint = ElectricCyan,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = stringResource(R.string.characters_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = StudioTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    OutlinedButton(
+                        onClick = {
+                            packImporterLauncher.launch(
+                                arrayOf("application/zip", "application/json", "image/svg+xml", "text/plain", "*/*")
+                            )
+                        },
+                        border = BorderStroke(1.dp, EmeraldLayer),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .height(36.dp)
+                            .testTag("import_character_pack_btn")
                     ) {
-                        Icon(
-                            Icons.Rounded.Groups,
-                            contentDescription = null,
-                            tint = ElectricCyan,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        Icon(Icons.Rounded.FolderZip, contentDescription = null, tint = EmeraldLayer, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
                         Text(
-                            text = stringResource(R.string.characters_title),
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = StudioTextPrimary
+                            text = "Import",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = EmeraldLayer,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
                         )
                     }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Button(
+                        onClick = onOpenCharacterMakerSetup,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ElectricCyan,
+                            contentColor = StudioObsidian
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .height(36.dp)
+                            .testTag("create_character_button")
                     ) {
-                        Button(
-                            onClick = onOpenCharacterMakerSetup,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ElectricCyan,
-                                contentColor = StudioObsidian
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                            modifier = Modifier.testTag("create_character_button")
-                        ) {
-                            Icon(Icons.Rounded.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                stringResource(R.string.characters_create),
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                        Icon(Icons.Rounded.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            stringResource(R.string.characters_create),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
 
-                        IconButton(
-                            onClick = {
-                                isCreatingNew = true
-                                editingCharacter = CharacterRigDefinition(
-                                    id = UUID.randomUUID().toString(),
-                                    name = "Custom Character",
-                                    category = CharacterCategory.DESI,
-                                    isCustom = true,
-                                    isLatest = true
-                                )
-                            },
-                            modifier = Modifier.testTag("quick_procedural_char_btn")
-                        ) {
-                            Icon(
-                                Icons.Rounded.Tune,
-                                contentDescription = "Quick procedural or single-PNG rig",
-                                tint = AmberKeyframe
+                    IconButton(
+                        onClick = {
+                            isCreatingNew = true
+                            editingCharacter = CharacterRigDefinition(
+                                id = UUID.randomUUID().toString(),
+                                name = "Custom Character",
+                                category = CharacterCategory.DESI,
+                                isCustom = true,
+                                isLatest = true
                             )
-                        }
+                        },
+                        modifier = Modifier
+                            .size(40.dp)
+                            .testTag("quick_procedural_char_btn")
+                    ) {
+                        Icon(
+                            Icons.Rounded.Tune,
+                            contentDescription = "Quick procedural or single-PNG rig",
+                            tint = AmberKeyframe,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
 
-                        IconButton(
-                            onClick = onClose,
-                            modifier = Modifier.testTag("close_character_library_btn")
-                        ) {
-                            Icon(
-                                Icons.Rounded.Close,
-                                contentDescription = stringResource(R.string.nav_close),
-                                tint = StudioTextPrimary
-                            )
-                        }
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .testTag("close_character_library_btn")
+                    ) {
+                        Icon(
+                            Icons.Rounded.Close,
+                            contentDescription = stringResource(R.string.nav_close),
+                            tint = StudioTextPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
@@ -174,9 +211,38 @@ fun CharacterLibraryScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .padding(horizontal = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Spacer(Modifier.height(2.dp))
+
+            importBanner?.let { msg ->
+                Surface(
+                    color = ElectricCyanDim,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.55f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = StudioTextPrimary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { importBanner = null }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Rounded.Close, "Dismiss import status", tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
 
             // Search Bar
             OutlinedTextField(
@@ -327,6 +393,8 @@ private fun CharacterCard(
     onTogglePin: () -> Unit
 ) {
     val isAtlasPro = character.spriteAtlasRig != null || character.skeletonRig?.rigMode == CustomRigMode.ATLAS_RIG_PRO
+    val isHdSvg = character.spriteAtlasRig?.isSvgMode == true ||
+        com.example.engine.SvgAtlasRenderer.isSvgPath(character.customImagePath)
     val atlasSlices = remember(character.customImagePath, isAtlasPro, bitmapVersion) {
         if (isAtlasPro) assetStorage.getCachedOrSliceAtlas(character.customImagePath) else null
     }
@@ -335,23 +403,101 @@ private fun CharacterCard(
     }
     val hasSkeleton = character.skeletonRig?.enabled == true && character.customImagePath != null
 
+    val badgeLabel = when {
+        isHdSvg -> "HD SVG"
+        isAtlasPro -> "Atlas Pro"
+        hasSkeleton -> "PNG Rig"
+        else -> character.category.displayName
+    }
+    val badgeColor = when {
+        isHdSvg -> EmeraldLayer
+        isAtlasPro || hasSkeleton -> ElectricCyan
+        else -> AmberKeyframe
+    }
+
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = StudioCard,
         border = BorderStroke(
             1.dp,
-            if (character.isPinned) AmberKeyframe.copy(alpha = 0.65f) else StudioBorderSubtle
+            when {
+                character.isPinned -> AmberKeyframe.copy(alpha = 0.7f)
+                isHdSvg -> EmeraldLayer.copy(alpha = 0.45f)
+                else -> StudioBorderSubtle
+            }
         ),
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onSelect)
             .testTag("character_card_${character.id}")
     ) {
-        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            // Dedicated top-card strip ABOVE the thumbnail so badges and action icons NEVER overlap the character's head
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Surface(
+                    color = badgeColor.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(6.dp),
+                    border = BorderStroke(0.8.dp, badgeColor.copy(alpha = 0.45f))
+                ) {
+                    Text(
+                        text = badgeLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = badgeColor,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(StudioPanel)
+                            .clickable(onClick = onTogglePin)
+                            .testTag("pin_char_${character.id}")
+                    ) {
+                        Icon(
+                            imageVector = if (character.isPinned) Icons.Rounded.PushPin else Icons.Outlined.PushPin,
+                            contentDescription = "Pin character",
+                            tint = if (character.isPinned) AmberKeyframe else StudioTextSecondary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(StudioPanel)
+                            .clickable(onClick = onEdit)
+                            .testTag("edit_char_${character.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Edit,
+                            contentDescription = "Edit character",
+                            tint = StudioTextPrimary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
+            }
+
+            // Unobstructed character preview thumbnail
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(146.dp)
+                    .height(142.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(
                         Brush.verticalGradient(listOf(Color(0xFF1A2233), Color(0xFF111622)))
@@ -364,75 +510,22 @@ private fun CharacterCard(
                     animate = false,
                     customBitmap = customBitmap,
                     atlasSlices = atlasSlices,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(vertical = 4.dp)
                 )
-
-                Surface(
-                    color = StudioObsidian.copy(alpha = 0.80f),
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp)
-                ) {
-                    Text(
-                        text = when {
-                            isAtlasPro -> "Atlas Pro"
-                            hasSkeleton -> "PNG Rig"
-                            else -> character.category.displayName
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isAtlasPro || hasSkeleton) EmeraldLayer else ElectricCyan,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    IconButton(
-                        onClick = onTogglePin,
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clip(CircleShape)
-                            .background(StudioObsidian.copy(alpha = 0.7f))
-                            .testTag("pin_char_${character.id}")
-                    ) {
-                        Icon(
-                            imageVector = if (character.isPinned) Icons.Rounded.PushPin else Icons.Outlined.PushPin,
-                            contentDescription = "Pin character",
-                            tint = if (character.isPinned) AmberKeyframe else StudioTextSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = onEdit,
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clip(CircleShape)
-                            .background(StudioObsidian.copy(alpha = 0.7f))
-                            .testTag("edit_char_${character.id}")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Edit,
-                            contentDescription = "Edit character",
-                            tint = StudioTextPrimary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
             }
 
             Text(
                 text = character.name,
                 style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
                 color = StudioTextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
 
+            // Compact non-clipping orientation pills (F, 3/4 F, 3/4 B, Back, Side)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 items(character.supportedOrientations) { orient ->
                     Surface(
@@ -444,7 +537,8 @@ private fun CharacterCard(
                             text = orient.shortLabel,
                             style = MaterialTheme.typography.labelSmall,
                             color = StudioTextSecondary,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
                 }

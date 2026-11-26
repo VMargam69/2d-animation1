@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "bundled_hd_arjun_hero",
+  "name": "Arjun HD (SVG)",
+  "category": "DESI",
+  "orientation": "THREE_QUARTER_FRONT",
+  "poseTemplate": "three_quarter_front",
+  "atlasSize": 2048,
+  "renderMode": "SVG",
+  "atlasFile": "atlas.svg",
+  "animations": ["idle", "walk", "run", "eyeclose", "talk1", "talk2", "mth1", "mth2", "mth3", "mth4"]
+}

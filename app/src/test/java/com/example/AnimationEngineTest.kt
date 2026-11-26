@@ -476,4 +476,158 @@ class AnimationEngineTest {
         assertEquals("back_side", makerRoute.poseId)
         assertEquals("char_atlas_1", makerRoute.editCharacterId)
     }
+
+    @Test
+    fun `character code codec round-trips locked slots, SVG mode, and clip blackShade depthOrder`() {
+        val originalConfig = SpriteAtlasRigConfig(
+            poseTemplate = AtlasPoseTemplate.FRONT,
+            resolutionPx = 4096,
+            textureName = "VectorArjun",
+            renderMode = "SVG",
+            placements = mapOf(
+                AtlasPartSlot.HEAD.id to AtlasPartPlacement(
+                    slotId = AtlasPartSlot.HEAD.id,
+                    partImagePath = "/storage/head.svg",
+                    visible = true,
+                    locked = true,
+                    offsetX = 0.08f,
+                    offsetY = -0.04f,
+                    scale = 1.25f,
+                    rotationDeg = 6f,
+                    svgInline = "<circle cx=\"128\" cy=\"128\" r=\"96\" fill=\"#F5C6A5\"/>"
+                )
+            )
+        )
+
+        val code = CharacterCodeCodec.fromRigConfig(
+            config = originalConfig,
+            category = CharacterCategory.DESI,
+            atlasFileName = "atlas.svg"
+        )
+        val json = CharacterCodeCodec.toJson(code)
+        val parsed = CharacterCodeCodec.fromJson(json)
+        assertNotNull(parsed)
+        assertEquals("VectorArjun", parsed?.name)
+        assertEquals("SVG", parsed?.renderMode)
+        assertEquals(4096, parsed?.atlasSize)
+        assertEquals(true, parsed?.slots?.get(AtlasPartSlot.HEAD.id)?.locked)
+
+        val restoredConfig = CharacterCodeCodec.toRigConfig(
+            code = parsed!!,
+            resolvedAtlasPath = "/packs/atlas.svg"
+        )
+        assertTrue(restoredConfig.isSvgMode)
+        assertTrue(restoredConfig.isSlotLocked(AtlasPartSlot.HEAD))
+        assertEquals(1.25f, restoredConfig.placementFor(AtlasPartSlot.HEAD).scale, 0.001f)
+        assertEquals(6f, restoredConfig.placementFor(AtlasPartSlot.HEAD).rotationDeg, 0.001f)
+
+        // Verify TimelineClip blackShade + depthOrder round-trip through Moshi
+        val clip = TimelineClip(
+            layerId = "char_layer",
+            name = "VectorArjun",
+            startFrame = 0,
+            durationFrames = 48,
+            blackShade = 0.42f,
+            depthOrder = 7
+        )
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val clipAdapter = moshi.adapter(TimelineClip::class.java)
+        val restoredClip = clipAdapter.fromJson(clipAdapter.toJson(clip))
+        assertNotNull(restoredClip)
+        assertEquals(0.42f, restoredClip?.blackShade ?: 0f, 0.001f)
+        assertEquals(7, restoredClip?.depthOrder)
+    }
+
+    @Test
+    fun `svg sanitizer blocks unsafe xml constructs and composes clean atlas svg`() {
+        val validSvg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 2048 2048\"><circle cx=\"100\" cy=\"100\" r=\"50\"/></svg>"
+        assertTrue(com.example.engine.SvgAtlasRenderer.isSafeSvgContent(validSvg))
+
+        assertFalse(com.example.engine.SvgAtlasRenderer.isSafeSvgContent(""))
+        assertFalse(com.example.engine.SvgAtlasRenderer.isSafeSvgContent("<html><body>not svg</body></html>"))
+        assertFalse(
+            com.example.engine.SvgAtlasRenderer.isSafeSvgContent(
+                "<!DOCTYPE svg [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><svg>&xxe;</svg>"
+            )
+        )
+        assertFalse(
+            com.example.engine.SvgAtlasRenderer.isSafeSvgContent(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"
+            )
+        )
+
+        val config = SpriteAtlasRigConfig(
+            resolutionPx = 2048,
+            textureName = "CleanHero",
+            renderMode = "SVG",
+            placements = mapOf(
+                AtlasPartSlot.HEAD.id to AtlasPartPlacement(
+                    slotId = AtlasPartSlot.HEAD.id,
+                    visible = true,
+                    svgInline = "<circle cx=\"128\" cy=\"128\" r=\"90\" fill=\"#FFCC99\"/>"
+                )
+            )
+        )
+        val composed = com.example.engine.SvgAtlasRenderer.composeCleanAtlasSvg(config, emptyMap())
+        assertTrue(com.example.engine.SvgAtlasRenderer.isSafeSvgContent(composed))
+        assertTrue(composed.contains("slot_head"))
+        assertTrue(composed.contains("viewBox=\"0 0 2048 2048\""))
+    }
+
+    @Test
+    fun `zip pack importer blocks zip slip traversal and extracts clean character pack`() {
+        val tempRoot = java.nio.file.Files.createTempDirectory("fc_zip_test").toFile()
+        try {
+            // Path traversal checks
+            assertNull(com.example.engine.CharacterPackImporter.resolveSafeZipEntryFile(tempRoot, "../evil.png"))
+            assertNull(com.example.engine.CharacterPackImporter.resolveSafeZipEntryFile(tempRoot, "../../etc/passwd"))
+            assertNull(com.example.engine.CharacterPackImporter.resolveSafeZipEntryFile(tempRoot, "parts/../../escape.svg"))
+            val safeNested = com.example.engine.CharacterPackImporter.resolveSafeZipEntryFile(tempRoot, "parts/head.svg")
+            assertNotNull(safeNested)
+            assertTrue(safeNested!!.canonicalPath.startsWith(tempRoot.canonicalPath))
+
+            // In-memory malicious ZIP with Zip Slip entry fails cleanly
+            val evilBytes = java.io.ByteArrayOutputStream().apply {
+                java.util.zip.ZipOutputStream(this).use { zos ->
+                    zos.putNextEntry(java.util.zip.ZipEntry("../escape.png"))
+                    zos.write(byteArrayOf(1, 2, 3))
+                    zos.closeEntry()
+                }
+            }.toByteArray()
+            val evilDir = java.io.File(tempRoot, "evil_out")
+            val evilResult = com.example.engine.CharacterPackImporter.extractZipSafely(
+                java.io.ByteArrayInputStream(evilBytes),
+                evilDir
+            )
+            assertTrue(evilResult.isFailure)
+
+            // In-memory valid ZIP extracts .fcchar.json + atlas.svg and skips disallowed extensions
+            val goodBytes = java.io.ByteArrayOutputStream().apply {
+                java.util.zip.ZipOutputStream(this).use { zos ->
+                    zos.putNextEntry(java.util.zip.ZipEntry("character.fcchar.json"))
+                    zos.write("""{"schemaVersion":1,"name":"PackHero","renderMode":"SVG","atlasSize":2048}""".toByteArray())
+                    zos.closeEntry()
+
+                    zos.putNextEntry(java.util.zip.ZipEntry("atlas.svg"))
+                    zos.write("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048"><rect width="100" height="100"/></svg>""".toByteArray())
+                    zos.closeEntry()
+
+                    zos.putNextEntry(java.util.zip.ZipEntry("ignored.exe"))
+                    zos.write(byteArrayOf(0x4D, 0x5A))
+                    zos.closeEntry()
+                }
+            }.toByteArray()
+            val goodDir = java.io.File(tempRoot, "good_out")
+            val goodResult = com.example.engine.CharacterPackImporter.extractZipSafely(
+                java.io.ByteArrayInputStream(goodBytes),
+                goodDir
+            )
+            assertTrue(goodResult.isSuccess)
+            val extractedNames = goodResult.getOrThrow().map { it.name }.toSet()
+            assertEquals(setOf("character.fcchar.json", "atlas.svg"), extractedNames)
+            assertFalse(java.io.File(goodDir, "ignored.exe").exists())
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
 }
