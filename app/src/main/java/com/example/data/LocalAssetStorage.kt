@@ -128,6 +128,18 @@ class LocalAssetStorage(private val context: Context) {
         com.example.engine.PngSkeletonProcessor.removeSolidBackgroundToPng(bmp, outFile, tolerance)
     }
 
+    suspend fun saveBlank2048ModularChartTemplate(): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val bmp = com.example.engine.PropAndModularChartRenderer.generateBlank2048ChartTemplate(2048)
+            val outFile = File(assetsDir, "FrameCraft_2048x2048_Modular_Chart_Template.png")
+            FileOutputStream(outFile).use { out ->
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            bitmapCache.put("file:${outFile.absolutePath}:1280", bmp)
+            outFile.absolutePath
+        }.getOrNull()
+    }
+
     private fun queryDisplayName(uri: Uri): String? {
         return runCatching {
             context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->

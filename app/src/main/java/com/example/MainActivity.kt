@@ -178,7 +178,21 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onStartExport = { fmt, res, fps, dur ->
                     viewModel.startExport(fmt, res, fps, dur)
                 },
-                onCancelExport = { viewModel.cancelExport() }
+                onCancelExport = { viewModel.cancelExport() },
+                onDragIkHandle = { handle, nx, ny, w, h ->
+                    viewModel.dragIkHandleOnStage(handle, nx, ny, w, h)
+                },
+                onPanCamera = { dx, dy -> viewModel.panCameraByNormalizedDelta(dx, dy) },
+                onToggleIkPosingMode = { viewModel.toggleIkPosingMode() },
+                onToggleCameraKeyMode = { viewModel.toggleCameraKeyMode() },
+                onStepAdjacentKeyframe = { forward -> viewModel.stepToAdjacentKeyframe(forward) },
+                onStampPoseKey = { viewModel.stampPoseAndCameraKeyframe() },
+                onResetPoseAtCurrentFrame = { viewModel.resetSelectedClipPoseAtCurrentFrame() },
+                onSetChromaKeyMode = { mode -> viewModel.setSceneChromaKeyMode(mode) },
+                onUpdateCamera = { mutator -> viewModel.updateCameraAtCurrentFrame(mutator) },
+                onDeleteCameraKeyframeAtFrame = { viewModel.deleteCameraKeyframeAtCurrentFrame() },
+                onResetAllCameraKeyframes = { viewModel.resetAllCameraKeyframes() },
+                onImportCustomPropUri = { uri, onPath -> viewModel.importCharacterSpriteUri(uri, onPath) }
             )
         }
     }

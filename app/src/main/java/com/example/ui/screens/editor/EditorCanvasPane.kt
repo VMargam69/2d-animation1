@@ -38,15 +38,25 @@ fun EditorCanvasPane(
     canvasPanX: Float,
     canvasPanY: Float,
     isDrawingMode: Boolean,
+    isIkPosingMode: Boolean = false,
+    isCameraKeyMode: Boolean = false,
     brushColorHex: String,
     brushWidthRatio: Float,
     sceneRenderer: SceneRenderer,
     onSelectClip: (String?) -> Unit,
     onDragSelectedClip: (dxNorm: Float, dyNorm: Float) -> Unit,
+    onDragIkHandle: (IkHandleId, Float, Float, Float, Float) -> Unit = { _, _, _, _, _ -> },
+    onPanCamera: (Float, Float) -> Unit = { _, _ -> },
     onCommitDrag: () -> Unit,
     onFinishStroke: (List<NormalizedPoint>) -> Unit,
     onBrushStyleChange: (String, Float) -> Unit,
     onExitDrawingMode: () -> Unit,
+    onToggleIkPosingMode: () -> Unit = {},
+    onToggleCameraKeyMode: () -> Unit = {},
+    onStepAdjacentKeyframe: (forward: Boolean) -> Unit = {},
+    onStampPoseKey: () -> Unit = {},
+    onOpenActingProps: () -> Unit = {},
+    onOpenCameraChroma: () -> Unit = {},
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
     onResetViewport: () -> Unit,
@@ -60,6 +70,22 @@ fun EditorCanvasPane(
     val selectedClip = scene.clips.firstOrNull { it.id == selectedClipId }
     val selectedEval = remember(selectedClip, currentFrame) {
         selectedClip?.let { KeyframeEvaluator.evaluate(it, currentFrame) }
+    }
+
+    // Compute ChromaToons-style Keyframe Counter (# / Total) for active clip or camera
+    val kfCounterText = remember(selectedClip, scene.cameraKeyframes, currentFrame, isCameraKeyMode) {
+        if (isCameraKeyMode) {
+            val total = scene.cameraKeyframes.size
+            val idx = scene.cameraKeyframes.sortedBy { it.frame }.indexOfLast { it.frame <= currentFrame } + 1
+            "Cam KF ${idx.coerceAtLeast(0)}/$total"
+        } else if (selectedClip != null) {
+            val localF = (currentFrame - selectedClip.startFrame).coerceAtLeast(0)
+            val sorted = selectedClip.keyframes.sortedBy { it.frame }
+            val idx = (sorted.indexOfLast { it.frame <= localF } + 1).coerceAtLeast(1)
+            "KF $idx/${sorted.size}"
+        } else {
+            "F${currentFrame + 1}"
+        }
     }
 
     BoxWithConstraints(
@@ -86,7 +112,13 @@ fun EditorCanvasPane(
                 .clip(RoundedCornerShape(8.dp))
                 .border(
                     width = 1.5.dp,
-                    color = if (isDrawingMode) PinkLayer else StudioBorder,
+                    color = when {
+                        isDrawingMode -> PinkLayer
+                        isIkPosingMode -> ElectricCyan
+                        isCameraKeyMode -> AmberKeyframe
+                        scene.chromaKeyMode != ChromaKeyMode.NONE -> EmeraldLayer
+                        else -> StudioBorder
+                    },
                     shape = RoundedCornerShape(8.dp)
                 )
                 .testTag("animation_stage_canvas")
@@ -99,11 +131,15 @@ fun EditorCanvasPane(
                 selectedClipId = selectedClipId,
                 canvasZoom = canvasZoom,
                 isDrawingMode = isDrawingMode,
+                isIkPosingMode = isIkPosingMode,
+                isCameraKeyMode = isCameraKeyMode,
                 brushColorHex = brushColorHex,
                 brushWidthRatio = brushWidthRatio,
                 sceneRenderer = sceneRenderer,
                 onSelectClip = onSelectClip,
                 onTranslateSelectedClip = onDragSelectedClip,
+                onDragIkHandle = onDragIkHandle,
+                onPanCamera = onPanCamera,
                 onDragStateChanged = { dragging -> isDraggingObject = dragging },
                 onCommitTranslation = onCommitDrag,
                 onFinishStroke = onFinishStroke,
@@ -141,10 +177,212 @@ fun EditorCanvasPane(
             }
         }
 
-        // Top-Left Active Mode & Live Coordinate Translation HUD
+        // ChromaToons-Style Floating Top Stage Bar: Keyframe Counter + "+ Pose Key" + IK Pose + Expression/Prop + Camera
+        if (!isDrawingMode) {
+            Surface(
+                color = StudioCharcoal.copy(alpha = 0.92f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, StudioBorder),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 6.dp, start = 8.dp, end = 8.dp)
+                    .testTag("chromatoons_top_stage_bar")
+            ) {
+                LazyRow(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // < Prev Keyframe
+                    item {
+                        Surface(
+                            color = StudioPanel,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, StudioBorderSubtle),
+                            modifier = Modifier
+                                .clickable { onStepAdjacentKeyframe(false) }
+                                .testTag("top_bar_prev_kf_btn")
+                        ) {
+                            Icon(
+                                Icons.Rounded.ChevronLeft,
+                                contentDescription = "Previous keyframe",
+                                tint = StudioTextPrimary,
+                                modifier = Modifier
+                                    .padding(horizontal = 4.dp, vertical = 4.dp)
+                                    .size(18.dp)
+                            )
+                        }
+                    }
+
+                    // Keyframe Counter Badge
+                    item {
+                        Surface(
+                            color = StudioObsidian,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.7f))
+                        ) {
+                            Text(
+                                text = kfCounterText,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = AmberKeyframe,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+
+                    // > Next Keyframe
+                    item {
+                        Surface(
+                            color = StudioPanel,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, StudioBorderSubtle),
+                            modifier = Modifier
+                                .clickable { onStepAdjacentKeyframe(true) }
+                                .testTag("top_bar_next_kf_btn")
+                        ) {
+                            Icon(
+                                Icons.Rounded.ChevronRight,
+                                contentDescription = "Next keyframe",
+                                tint = StudioTextPrimary,
+                                modifier = Modifier
+                                    .padding(horizontal = 4.dp, vertical = 4.dp)
+                                    .size(18.dp)
+                            )
+                        }
+                    }
+
+                    // "+ Pose Key" Quick Keyframe Record Button
+                    item {
+                        Surface(
+                            color = AmberKeyframe,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .clickable(onClick = onStampPoseKey)
+                                .testTag("top_bar_stamp_pose_key_btn")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(Icons.Rounded.Add, null, tint = StudioObsidian, modifier = Modifier.size(14.dp))
+                                Text(
+                                    text = "Pose Key",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioObsidian
+                                )
+                            }
+                        }
+                    }
+
+                    // Direct Stage IK Posing Mode Toggle
+                    item {
+                        Surface(
+                            color = if (isIkPosingMode) ElectricCyan else StudioPanel,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, if (isIkPosingMode) ElectricCyan else StudioBorderSubtle),
+                            modifier = Modifier
+                                .clickable(onClick = onToggleIkPosingMode)
+                                .testTag("top_bar_ik_pose_toggle")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Hub,
+                                    contentDescription = "Toggle IK limb posing handles",
+                                    tint = if (isIkPosingMode) StudioObsidian else ElectricCyan,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = if (isIkPosingMode) "IK ON" else "IK Pose",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isIkPosingMode) StudioObsidian else StudioTextPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    // Expression & Hand/Head Prop Chip
+                    if (selectedClip?.characterId != null) {
+                        item {
+                            val exprBadge = (selectedEval?.expressionOverride ?: selectedClip.facialExpression).badgeText
+                            val propBadge = if (selectedClip.propType != CharacterPropType.NONE) {
+                                " • ${selectedClip.propType.displayName}"
+                            } else ""
+                            Surface(
+                                color = StudioPanel,
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, VioletLayer.copy(alpha = 0.8f)),
+                                modifier = Modifier
+                                    .clickable(onClick = onOpenActingProps)
+                                    .testTag("top_bar_acting_props_btn")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Rounded.EmojiEmotions, null, tint = VioletLayer, modifier = Modifier.size(14.dp))
+                                    Text(
+                                        text = "Face: $exprBadge$propBadge",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = StudioTextPrimary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Camera Keyframe & Chroma Key Chip
+                    item {
+                        val hasCamKfs = scene.cameraKeyframes.isNotEmpty()
+                        val isChroma = scene.chromaKeyMode != ChromaKeyMode.NONE
+                        Surface(
+                            color = if (isCameraKeyMode) AmberKeyframe else StudioPanel,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                when {
+                                    isCameraKeyMode -> AmberKeyframe
+                                    isChroma -> EmeraldLayer
+                                    hasCamKfs -> ElectricCyan
+                                    else -> StudioBorderSubtle
+                                }
+                            ),
+                            modifier = Modifier
+                                .clickable(onClick = onOpenCameraChroma)
+                                .testTag("top_bar_camera_chroma_btn")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Videocam,
+                                    contentDescription = "Camera and Chroma Key",
+                                    tint = if (isCameraKeyMode) StudioObsidian else if (isChroma) EmeraldLayer else AmberKeyframe,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = if (isChroma) "Chroma" else if (hasCamKfs) "Cam (${scene.cameraKeyframes.size})" else "Cam/Chroma",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isCameraKeyMode) StudioObsidian else StudioTextPrimary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Bottom-Left Active Mode & Live Coordinate Translation HUD
         Row(
             modifier = Modifier
-                .align(Alignment.TopStart)
+                .align(Alignment.BottomStart)
                 .padding(8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -155,7 +393,8 @@ fun EditorCanvasPane(
                     border = BorderStroke(1.dp, ElectricCyan)
                 ) {
                     Text(
-                        text = "X:${(selectedEval.x * project.width).toInt()}px  Y:${(selectedEval.y * project.height).toInt()}px",
+                        text = if (isIkPosingMode) "Posing Limb IK"
+                        else "X:${(selectedEval.x * project.width).toInt()}px  Y:${(selectedEval.y * project.height).toInt()}px",
                         style = MaterialTheme.typography.labelSmall,
                         color = ElectricCyan,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)

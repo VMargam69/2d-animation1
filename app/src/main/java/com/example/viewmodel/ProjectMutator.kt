@@ -275,7 +275,9 @@ object ProjectMutator {
                 rotation = eval.rotation,
                 scaleX = eval.scaleX,
                 scaleY = eval.scaleY,
-                opacity = eval.opacity
+                opacity = eval.opacity,
+                poseOffsets = eval.poseOffsets,
+                expressionOverride = eval.expressionOverride
             )
         }
         val nextKf = transformUpdater(base)
@@ -307,12 +309,47 @@ object ProjectMutator {
                 rotation = eval.rotation,
                 scaleX = eval.scaleX,
                 scaleY = eval.scaleY,
-                opacity = eval.opacity
+                opacity = eval.opacity,
+                poseOffsets = eval.poseOffsets,
+                expressionOverride = eval.expressionOverride
             )).sortedBy { it.frame }
         } else {
             clip.keyframes
         }
         scene.copy(clips = scene.clips.map { if (it.id == clipId) it.copy(keyframes = newKfs) else it })
+    }
+
+    fun upsertCameraKeyframeAtFrame(
+        project: ProjectDocument,
+        globalFrame: Int,
+        updater: (CameraKeyframe) -> CameraKeyframe
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val clampedFrame = globalFrame.coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0))
+        val existing = scene.cameraKeyframes.firstOrNull { it.frame == clampedFrame }
+        val base = existing ?: run {
+            val evalCam = KeyframeEvaluator.evaluateCamera(scene.cameraKeyframes, clampedFrame)
+            CameraKeyframe(
+                frame = clampedFrame,
+                x = evalCam.x,
+                y = evalCam.y,
+                zoom = evalCam.zoom,
+                rotation = evalCam.rotation
+            )
+        }
+        val nextCamKf = updater(base)
+        val merged = (scene.cameraKeyframes.filterNot { it.frame == clampedFrame } + nextCamKf).sortedBy { it.frame }
+        scene.copy(cameraKeyframes = merged)
+    }
+
+    fun deleteCameraKeyframeAtFrame(
+        project: ProjectDocument,
+        globalFrame: Int
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        scene.copy(cameraKeyframes = scene.cameraKeyframes.filterNot { it.frame == globalFrame })
+    }
+
+    fun resetCameraKeyframes(project: ProjectDocument): ProjectDocument = updateActiveScene(project) { scene ->
+        scene.copy(cameraKeyframes = emptyList())
     }
 
     fun splitClipAtFrame(
@@ -330,7 +367,19 @@ object ProjectMutator {
         val splitLocal = globalFrame - clip.startFrame
         val evalAtSplit = KeyframeEvaluator.evaluate(clip, globalFrame)
         val firstKfs = clip.keyframes.filter { it.frame < splitLocal }.ifEmpty {
-            listOf(TransformKeyframe(frame = 0, x = evalAtSplit.x, y = evalAtSplit.y, rotation = evalAtSplit.rotation, scaleX = evalAtSplit.scaleX, scaleY = evalAtSplit.scaleY, opacity = evalAtSplit.opacity))
+            listOf(
+                TransformKeyframe(
+                    frame = 0,
+                    x = evalAtSplit.x,
+                    y = evalAtSplit.y,
+                    rotation = evalAtSplit.rotation,
+                    scaleX = evalAtSplit.scaleX,
+                    scaleY = evalAtSplit.scaleY,
+                    opacity = evalAtSplit.opacity,
+                    poseOffsets = evalAtSplit.poseOffsets,
+                    expressionOverride = evalAtSplit.expressionOverride
+                )
+            )
         }
         val secondKfs = (listOf(
             TransformKeyframe(
@@ -340,7 +389,9 @@ object ProjectMutator {
                 rotation = evalAtSplit.rotation,
                 scaleX = evalAtSplit.scaleX,
                 scaleY = evalAtSplit.scaleY,
-                opacity = evalAtSplit.opacity
+                opacity = evalAtSplit.opacity,
+                poseOffsets = evalAtSplit.poseOffsets,
+                expressionOverride = evalAtSplit.expressionOverride
             )
         ) + clip.keyframes.filter { it.frame > splitLocal }.map { it.copy(frame = it.frame - splitLocal) })
             .distinctBy { it.frame }

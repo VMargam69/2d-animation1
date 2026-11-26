@@ -236,4 +236,82 @@ class AnimationEngineTest {
         assertEquals(posed[7 * 4 + 2], posed[8 * 4], 0.0005f)
         assertEquals(posed[7 * 4 + 3], posed[8 * 4 + 1], 0.0005f)
     }
+
+    @Test
+    fun `ik pose keyframe offsets and facial expression overrides interpolate accurately`() {
+        val clip = TimelineClip(
+            layerId = "l1",
+            name = "Hero Acting",
+            startFrame = 0,
+            durationFrames = 40,
+            facialExpression = FacialExpression.HAPPY,
+            propType = CharacterPropType.MAGIC_WAND,
+            propAttachment = PropAttachmentPoint.RIGHT_HAND,
+            keyframes = listOf(
+                TransformKeyframe(
+                    frame = 0,
+                    x = 0.5f,
+                    y = 0.7f,
+                    poseOffsets = PoseKeyframeOffsets(headNodOffset = -10f, rightArmOffset = -40f, rightForearmOffset = -20f),
+                    expressionOverride = FacialExpression.ANGRY
+                ),
+                TransformKeyframe(
+                    frame = 20,
+                    x = 0.5f,
+                    y = 0.7f,
+                    poseOffsets = PoseKeyframeOffsets(headNodOffset = 20f, rightArmOffset = 40f, rightForearmOffset = 10f),
+                    expressionOverride = FacialExpression.SHOCKED
+                )
+            )
+        )
+
+        val mid = KeyframeEvaluator.evaluate(clip, globalFrame = 10)
+        assertEquals(5f, mid.poseOffsets.headNodOffset, 0.01f)
+        assertEquals(0f, mid.poseOffsets.rightArmOffset, 0.01f)
+        assertEquals(-5f, mid.poseOffsets.rightForearmOffset, 0.01f)
+        assertEquals(FacialExpression.ANGRY, mid.expressionOverride)
+
+        val end = KeyframeEvaluator.evaluate(clip, globalFrame = 20)
+        assertEquals(20f, end.poseOffsets.headNodOffset, 0.01f)
+        assertEquals(40f, end.poseOffsets.rightArmOffset, 0.01f)
+        assertEquals(FacialExpression.SHOCKED, end.expressionOverride)
+    }
+
+    @Test
+    fun `camera keyframe evaluation and project mutator camera and ik pose operations work`() {
+        val baseProject = BuiltInCatalog.sceneTemplates.first().buildProject("Camera & IK Test")
+        val p1 = ProjectMutator.upsertCameraKeyframeAtFrame(baseProject, globalFrame = 0) {
+            it.copy(x = 0.5f, y = 0.5f, zoom = 1.0f, rotation = 0f, easing = EasingType.LINEAR)
+        }
+        val p2 = ProjectMutator.upsertCameraKeyframeAtFrame(p1, globalFrame = 20) {
+            it.copy(x = 0.3f, y = 0.4f, zoom = 2.0f, rotation = 10f, easing = EasingType.LINEAR)
+        }
+
+        val midCam = KeyframeEvaluator.evaluateCamera(p2.activeScene.cameraKeyframes, globalFrame = 10)
+        assertEquals(0.4f, midCam.x, 0.001f)
+        assertEquals(0.45f, midCam.y, 0.001f)
+        assertEquals(1.5f, midCam.zoom, 0.001f)
+        assertEquals(5f, midCam.rotation, 0.01f)
+        assertFalse(midCam.isIdentity)
+
+        // Verify IK drag solver produces modified pose angle offsets
+        val testClip = p2.activeScene.clips.first { it.characterId != null }
+        val testRig = BuiltInCatalog.builtInCharacters.first()
+        val evalTransform = KeyframeEvaluator.evaluate(testClip, globalFrame = 0)
+        val basePose = com.example.engine.ProceduralRigRenderer.PoseAngles()
+        val solved = com.example.engine.PropAndModularChartRenderer.solveIkDragToOffsets(
+            handleId = IkHandleId.RIGHT_HAND,
+            targetNx = 0.72f,
+            targetNy = 0.25f,
+            clip = testClip,
+            rig = testRig,
+            transform = evalTransform,
+            basePose = basePose,
+            currentOffsets = PoseKeyframeOffsets(),
+            stageWidth = 1280f,
+            stageHeight = 720f
+        )
+        assertNotEquals(0f, solved.rightArmOffset)
+        assertEquals(10, com.example.engine.PropAndModularChartRenderer.MODULAR_CHART_ZONES.size)
+    }
 }

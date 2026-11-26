@@ -78,7 +78,19 @@ fun EditorScreen(
     onApplyTemplate: (String) -> Unit,
     onUpdateProjectSettings: (String, AspectRatioPreset, Int, Int, Int, Int, PreviewQuality) -> Unit,
     onStartExport: (ExportFormat, ExportResolution, Int, Int) -> Unit,
-    onCancelExport: () -> Unit
+    onCancelExport: () -> Unit,
+    onDragIkHandle: (IkHandleId, Float, Float, Float, Float) -> Unit = { _, _, _, _, _ -> },
+    onPanCamera: (Float, Float) -> Unit = { _, _ -> },
+    onToggleIkPosingMode: () -> Unit = {},
+    onToggleCameraKeyMode: () -> Unit = {},
+    onStepAdjacentKeyframe: (Boolean) -> Unit = {},
+    onStampPoseKey: () -> Unit = {},
+    onResetPoseAtCurrentFrame: () -> Unit = {},
+    onSetChromaKeyMode: (ChromaKeyMode) -> Unit = {},
+    onUpdateCamera: ((CameraKeyframe) -> CameraKeyframe) -> Unit = {},
+    onDeleteCameraKeyframeAtFrame: () -> Unit = {},
+    onResetAllCameraKeyframes: () -> Unit = {},
+    onImportCustomPropUri: (Uri, (String) -> Unit) -> Unit = { _, _ -> }
 ) {
     BackHandler { onBack() }
 
@@ -92,6 +104,21 @@ fun EditorScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) onQuickImportAudioUri(uri)
+    }
+
+    val customPropPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            onImportCustomPropUri(uri) { savedPath ->
+                onUpdateSelectedClip { clip ->
+                    clip.copy(
+                        propType = CharacterPropType.CUSTOM_PNG,
+                        customPropImagePath = savedPath
+                    )
+                }
+            }
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -130,15 +157,25 @@ fun EditorScreen(
                             canvasPanX = state.canvasPanX,
                             canvasPanY = state.canvasPanY,
                             isDrawingMode = state.isDrawingMode,
+                            isIkPosingMode = state.isIkPosingMode,
+                            isCameraKeyMode = state.isCameraKeyMode,
                             brushColorHex = state.brushColorHex,
                             brushWidthRatio = state.brushWidthRatio,
                             sceneRenderer = sceneRenderer,
                             onSelectClip = onSelectClip,
                             onDragSelectedClip = onDragSelectedClip,
+                            onDragIkHandle = onDragIkHandle,
+                            onPanCamera = onPanCamera,
                             onCommitDrag = onCommitDrag,
                             onFinishStroke = onFinishStroke,
                             onBrushStyleChange = onBrushStyleChange,
                             onExitDrawingMode = onToggleDrawingMode,
+                            onToggleIkPosingMode = onToggleIkPosingMode,
+                            onToggleCameraKeyMode = onToggleCameraKeyMode,
+                            onStepAdjacentKeyframe = onStepAdjacentKeyframe,
+                            onStampPoseKey = onStampPoseKey,
+                            onOpenActingProps = { onOpenSheet(ActiveEditorSheet.CHARACTER_ACTING_PROPS) },
+                            onOpenCameraChroma = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
                             onZoomIn = { onZoomCanvas(1.2f) },
                             onZoomOut = { onZoomCanvas(0.84f) },
                             onResetViewport = onResetViewport,
@@ -186,15 +223,25 @@ fun EditorScreen(
                             canvasPanX = state.canvasPanX,
                             canvasPanY = state.canvasPanY,
                             isDrawingMode = state.isDrawingMode,
+                            isIkPosingMode = state.isIkPosingMode,
+                            isCameraKeyMode = state.isCameraKeyMode,
                             brushColorHex = state.brushColorHex,
                             brushWidthRatio = state.brushWidthRatio,
                             sceneRenderer = sceneRenderer,
                             onSelectClip = onSelectClip,
                             onDragSelectedClip = onDragSelectedClip,
+                            onDragIkHandle = onDragIkHandle,
+                            onPanCamera = onPanCamera,
                             onCommitDrag = onCommitDrag,
                             onFinishStroke = onFinishStroke,
                             onBrushStyleChange = onBrushStyleChange,
                             onExitDrawingMode = onToggleDrawingMode,
+                            onToggleIkPosingMode = onToggleIkPosingMode,
+                            onToggleCameraKeyMode = onToggleCameraKeyMode,
+                            onStepAdjacentKeyframe = onStepAdjacentKeyframe,
+                            onStampPoseKey = onStampPoseKey,
+                            onOpenActingProps = { onOpenSheet(ActiveEditorSheet.CHARACTER_ACTING_PROPS) },
+                            onOpenCameraChroma = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
                             onZoomIn = { onZoomCanvas(1.2f) },
                             onZoomOut = { onZoomCanvas(0.84f) },
                             onResetViewport = onResetViewport,
@@ -235,6 +282,8 @@ fun EditorScreen(
             BottomEditingToolbar(
                 selectedClip = state.selectedClip,
                 isDrawingMode = state.isDrawingMode,
+                isIkPosingMode = state.isIkPosingMode,
+                isCameraKeyMode = state.isCameraKeyMode,
                 showMotionPaths = state.project.showMotionPaths,
                 onOpenGuide = { onOpenSheet(ActiveEditorSheet.TUTORIAL_GUIDE) },
                 onOpenCharacters = onOpenCharacterLibrary,
@@ -245,6 +294,9 @@ fun EditorScreen(
                         onOpenPresetsForSelectedChar(charId, clip.id)
                     }
                 },
+                onToggleIkPosing = onToggleIkPosingMode,
+                onOpenCharacterActingProps = { onOpenSheet(ActiveEditorSheet.CHARACTER_ACTING_PROPS) },
+                onOpenCameraChroma = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
                 onOpenMedia = onOpenMediaLibrary,
                 onOpenTemplates = { onOpenSheet(ActiveEditorSheet.TEMPLATES) },
                 onQuickAddImage = {
@@ -317,6 +369,38 @@ fun EditorScreen(
                     onDismiss = onCloseSheet
                 )
             }
+        }
+        ActiveEditorSheet.CHARACTER_ACTING_PROPS -> {
+            state.selectedClip?.let { clip ->
+                CharacterActingAndPropsDialog(
+                    clip = clip,
+                    currentFrame = state.currentFrame,
+                    isIkPosingMode = state.isIkPosingMode,
+                    onToggleIkPosingMode = onToggleIkPosingMode,
+                    onUpdateClip = onUpdateSelectedClip,
+                    onUpdateTransform = onUpdateTransform,
+                    onResetPoseAtFrame = onResetPoseAtCurrentFrame,
+                    onImportCustomPropPng = { _ ->
+                        customPropPicker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    onDismiss = onCloseSheet
+                )
+            }
+        }
+        ActiveEditorSheet.CAMERA_CHROMA_STUDIO -> {
+            CameraAndChromaKeyDialog(
+                scene = state.project.activeScene,
+                currentFrame = state.currentFrame,
+                isCameraKeyMode = state.isCameraKeyMode,
+                onToggleCameraKeyMode = onToggleCameraKeyMode,
+                onSetChromaKeyMode = onSetChromaKeyMode,
+                onUpdateCamera = onUpdateCamera,
+                onDeleteCameraKeyframeAtFrame = onDeleteCameraKeyframeAtFrame,
+                onResetAllCameraKeyframes = onResetAllCameraKeyframes,
+                onDismiss = onCloseSheet
+            )
         }
         ActiveEditorSheet.SPEED_SETTINGS -> {
             state.selectedClip?.let { clip ->

@@ -373,7 +373,8 @@ fun CustomCharacterStudioDialog(
                         SectionLabel("Eye Color")
                         StudioColorSwatchRow(eyeSwatches, draft.eyeColorHex) { draft = draft.copy(eyeColorHex = it) }
                     } else {
-                        // --- TAB 2: ADVANCED PNG-TO-SKELETON CHARACTER CONVERTER ---
+                        // --- TAB 2: ADVANCED PNG-TO-SKELETON & 2048x2048 MODULAR CHART CONVERTER ---
+                        val currentSkeleton = draft.skeletonRig ?: SkeletonRigConfig(enabled = true)
                         Surface(
                             color = StudioCard,
                             shape = RoundedCornerShape(12.dp),
@@ -385,12 +386,44 @@ fun CustomCharacterStudioDialog(
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text(
-                                    text = "Convert PNG Image into Skeleton-Rigged Character",
+                                    text = "Custom PNG Character Rigging Mode",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = ElectricCyan
                                 )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    CustomRigMode.entries.forEach { mode ->
+                                        val selected = currentSkeleton.rigMode == mode
+                                        FilterChip(
+                                            selected = selected,
+                                            onClick = {
+                                                draft = draft.copy(
+                                                    skeletonRig = currentSkeleton.copy(
+                                                        enabled = true,
+                                                        rigMode = mode
+                                                    )
+                                                )
+                                            },
+                                            label = {
+                                                Text(
+                                                    text = mode.displayName,
+                                                    style = MaterialTheme.typography.labelSmall
+                                                )
+                                            },
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("rig_mode_${mode.name.lowercase()}")
+                                        )
+                                    }
+                                }
                                 Text(
-                                    text = "Import any local PNG/image, remove solid background if needed, auto-detect or drag the 12 skeleton joints, and animate head, arms & legs!",
+                                    text = if (currentSkeleton.rigMode == CustomRigMode.MODULAR_CHART_2048) {
+                                        "ChromaToons-style 2048×2048 10-Part Modular Texture Chart: Head, Torso, Upper Arms, Forearms+Hands, Thighs & Shins+Feet pivot rigidly inside dedicated UV zones with zero mesh stretching."
+                                    } else {
+                                        "Single-PNG Mesh Rig: Import any full-body PNG, remove solid background if needed, and auto-detect or drag the 12 skeleton joints."
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = StudioTextSecondary
                                 )
@@ -411,16 +444,47 @@ fun CustomCharacterStudioDialog(
                                     ) {
                                         Icon(Icons.Rounded.AddPhotoAlternate, null, modifier = Modifier.size(18.dp))
                                         Spacer(Modifier.width(6.dp))
-                                        Text(if (customBitmap == null) "Import PNG" else "Change PNG", fontWeight = FontWeight.Bold)
+                                        Text(
+                                            text = if (customBitmap == null) {
+                                                if (currentSkeleton.rigMode == CustomRigMode.MODULAR_CHART_2048) "Import 2048 Chart" else "Import PNG"
+                                            } else {
+                                                "Change PNG"
+                                            },
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     }
 
-                                    if (customBitmap != null) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            scope.launch {
+                                                val path = assetStorage.saveBlank2048ModularChartTemplate()
+                                                if (path != null) {
+                                                    draft = draft.copy(
+                                                        customImagePath = path,
+                                                        skeletonRig = currentSkeleton.copy(
+                                                            enabled = true,
+                                                            rigMode = CustomRigMode.MODULAR_CHART_2048
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        border = BorderStroke(1.dp, EmeraldLayer),
+                                        modifier = Modifier.testTag("generate_2048_chart_template_btn")
+                                    ) {
+                                        Icon(Icons.Rounded.GridOn, null, tint = EmeraldLayer, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("2048 Template", color = EmeraldLayer)
+                                    }
+
+                                    if (customBitmap != null && currentSkeleton.rigMode == CustomRigMode.SINGLE_PNG_MESH) {
                                         OutlinedButton(
                                             onClick = {
                                                 val detected = PngSkeletonProcessor.autoDetectHumanoidSkeleton(customBitmap)
                                                 val prev = draft.skeletonRig ?: SkeletonRigConfig(enabled = true)
                                                 draft = draft.copy(
                                                     skeletonRig = detected.copy(
+                                                        rigMode = prev.rigMode,
                                                         showBoneOverlay = prev.showBoneOverlay,
                                                         removeBackground = prev.removeBackground,
                                                         bgTolerance = prev.bgTolerance
@@ -442,7 +506,7 @@ fun CustomCharacterStudioDialog(
                         if (customBitmap != null) {
                             val skeleton = draft.skeletonRig ?: SkeletonRigConfig(enabled = true)
 
-                            // Toggle between Interactive Joint Drag Editor & Live Skeleton Animation Test
+                            // Toggle between Interactive Joint Drag / UV Chart Preview & Live Skeleton Animation Test
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -450,7 +514,15 @@ fun CustomCharacterStudioDialog(
                                 FilterChip(
                                     selected = !testSkeletonAnimation,
                                     onClick = { testSkeletonAnimation = false },
-                                    label = { Text("Drag Skeleton Joints") },
+                                    label = {
+                                        Text(
+                                            if (skeleton.rigMode == CustomRigMode.MODULAR_CHART_2048) {
+                                                "10-Zone Chart Map"
+                                            } else {
+                                                "Drag Skeleton Joints"
+                                            }
+                                        )
+                                    },
                                     leadingIcon = { Icon(Icons.Rounded.Hub, null, modifier = Modifier.size(16.dp)) },
                                     modifier = Modifier.weight(1f)
                                 )
@@ -734,33 +806,53 @@ private fun InteractiveSkeletonRigCanvas(
 
             fun pt(nx: Float, ny: Float) = Offset(rect.left + nx * rect.width, rect.top + ny * rect.height)
 
-            val bones = listOf(
-                pt(skeleton.headX, skeleton.headY) to pt(skeleton.neckX, skeleton.neckY),
-                pt(skeleton.neckX, skeleton.neckY) to pt(skeleton.torsoX, skeleton.torsoY),
-                pt(skeleton.torsoX, skeleton.torsoY) to pt(skeleton.pelvisX, skeleton.pelvisY),
-                pt(skeleton.neckX, skeleton.neckY) to pt(skeleton.leftShoulderX, skeleton.leftShoulderY),
-                pt(skeleton.leftShoulderX, skeleton.leftShoulderY) to pt(skeleton.leftHandX, skeleton.leftHandY),
-                pt(skeleton.neckX, skeleton.neckY) to pt(skeleton.rightShoulderX, skeleton.rightShoulderY),
-                pt(skeleton.rightShoulderX, skeleton.rightShoulderY) to pt(skeleton.rightHandX, skeleton.rightHandY),
-                pt(skeleton.pelvisX, skeleton.pelvisY) to pt(skeleton.leftHipX, skeleton.leftHipY),
-                pt(skeleton.leftHipX, skeleton.leftHipY) to pt(skeleton.leftFootX, skeleton.leftFootY),
-                pt(skeleton.pelvisX, skeleton.pelvisY) to pt(skeleton.rightHipX, skeleton.rightHipY),
-                pt(skeleton.rightHipX, skeleton.rightHipY) to pt(skeleton.rightFootX, skeleton.rightFootY)
-            )
-            bones.forEach { (a, b) ->
-                drawLine(color = ElectricCyan, start = a, end = b, strokeWidth = 4.5f)
-            }
+            if (skeleton.rigMode == CustomRigMode.MODULAR_CHART_2048) {
+                com.example.engine.PropAndModularChartRenderer.MODULAR_CHART_ZONES.forEach { zone ->
+                    val topLeft = pt(zone.u0, zone.v0)
+                    val boxW = (zone.u1 - zone.u0) * rect.width
+                    val boxH = (zone.v1 - zone.v0) * rect.height
+                    drawRect(
+                        color = Color(zone.guideColor),
+                        topLeft = topLeft,
+                        size = androidx.compose.ui.geometry.Size(boxW, boxH),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f)
+                    )
+                    val pivot = Offset(
+                        topLeft.x + zone.pivotU * boxW,
+                        topLeft.y + zone.pivotV * boxH
+                    )
+                    drawCircle(color = StudioObsidian, radius = 6f, center = pivot)
+                    drawCircle(color = Color(zone.guideColor), radius = 4f, center = pivot)
+                }
+            } else {
+                val bones = listOf(
+                    pt(skeleton.headX, skeleton.headY) to pt(skeleton.neckX, skeleton.neckY),
+                    pt(skeleton.neckX, skeleton.neckY) to pt(skeleton.torsoX, skeleton.torsoY),
+                    pt(skeleton.torsoX, skeleton.torsoY) to pt(skeleton.pelvisX, skeleton.pelvisY),
+                    pt(skeleton.neckX, skeleton.neckY) to pt(skeleton.leftShoulderX, skeleton.leftShoulderY),
+                    pt(skeleton.leftShoulderX, skeleton.leftShoulderY) to pt(skeleton.leftHandX, skeleton.leftHandY),
+                    pt(skeleton.neckX, skeleton.neckY) to pt(skeleton.rightShoulderX, skeleton.rightShoulderY),
+                    pt(skeleton.rightShoulderX, skeleton.rightShoulderY) to pt(skeleton.rightHandX, skeleton.rightHandY),
+                    pt(skeleton.pelvisX, skeleton.pelvisY) to pt(skeleton.leftHipX, skeleton.leftHipY),
+                    pt(skeleton.leftHipX, skeleton.leftHipY) to pt(skeleton.leftFootX, skeleton.leftFootY),
+                    pt(skeleton.pelvisX, skeleton.pelvisY) to pt(skeleton.rightHipX, skeleton.rightHipY),
+                    pt(skeleton.rightHipX, skeleton.rightHipY) to pt(skeleton.rightFootX, skeleton.rightFootY)
+                )
+                bones.forEach { (a, b) ->
+                    drawLine(color = ElectricCyan, start = a, end = b, strokeWidth = 4.5f)
+                }
 
-            SkeletonJointId.entries.forEach { j ->
-                val (jx, jy) = jointCoords(skeleton, j)
-                val center = pt(jx, jy)
-                val isDragging = j == activeJoint
-                drawCircle(color = StudioObsidian, radius = if (isDragging) 14f else 10f, center = center)
-                drawCircle(color = j.color, radius = if (isDragging) 10f else 7f, center = center)
+                SkeletonJointId.entries.forEach { j ->
+                    val (jx, jy) = jointCoords(skeleton, j)
+                    val center = pt(jx, jy)
+                    val isDragging = j == activeJoint
+                    drawCircle(color = StudioObsidian, radius = if (isDragging) 14f else 10f, center = center)
+                    drawCircle(color = j.color, radius = if (isDragging) 10f else 7f, center = center)
+                }
             }
         }
 
-        // Active Joint Hint Pill
+        // Active Joint / Chart Hint Pill
         Surface(
             color = StudioObsidian.copy(alpha = 0.85f),
             shape = RoundedCornerShape(8.dp),
@@ -769,7 +861,11 @@ private fun InteractiveSkeletonRigCanvas(
                 .padding(8.dp)
         ) {
             Text(
-                text = activeJoint?.let { "Dragging: ${it.label}" } ?: "Drag any colored bone dot to fit PNG",
+                text = if (skeleton.rigMode == CustomRigMode.MODULAR_CHART_2048) {
+                    "2048×2048 10-Zone Modular Chart (Tap Live Motion Test)"
+                } else {
+                    activeJoint?.let { "Dragging: ${it.label}" } ?: "Drag any colored bone dot to fit PNG"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = ElectricCyan,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)

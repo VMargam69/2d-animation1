@@ -37,10 +37,15 @@ data class BottomToolItem(
 fun BottomEditingToolbar(
     selectedClip: TimelineClip?,
     isDrawingMode: Boolean,
+    isIkPosingMode: Boolean = false,
+    isCameraKeyMode: Boolean = false,
     showMotionPaths: Boolean,
     onOpenGuide: () -> Unit,
     onOpenCharacters: () -> Unit,
     onOpenPresetsForSelectedChar: () -> Unit,
+    onToggleIkPosing: () -> Unit = {},
+    onOpenCharacterActingProps: () -> Unit = {},
+    onOpenCameraChroma: () -> Unit = {},
     onOpenMedia: () -> Unit,
     onOpenTemplates: () -> Unit,
     onQuickAddImage: () -> Unit,
@@ -66,6 +71,8 @@ fun BottomEditingToolbar(
         if (selectedClip != null) {
             if (isCharSelected) {
                 add(BottomToolItem("presets", "Presets", Icons.Rounded.DirectionsRun, ElectricCyan, false, onOpenPresetsForSelectedChar))
+                add(BottomToolItem("ik_pose", "IK Pose", Icons.Rounded.Hub, ElectricCyan, isIkPosingMode, onToggleIkPosing))
+                add(BottomToolItem("acting_props", "Face & Prop", Icons.Rounded.EmojiEmotions, VioletLayer, false, onOpenCharacterActingProps))
             }
             add(BottomToolItem("transform", "Transform", Icons.Rounded.OpenWith, ElectricCyan, false, onOpenTransform))
             add(BottomToolItem("speed", "Speed", Icons.Rounded.Speed, AmberKeyframe, false, onOpenSpeed))
@@ -79,6 +86,7 @@ fun BottomEditingToolbar(
 
         // Core Offline Studio Creation Tools
         add(BottomToolItem("character", "Character", Icons.Rounded.Groups, ElectricCyan, false, onOpenCharacters))
+        add(BottomToolItem("camera_chroma", "Cam/Chroma", Icons.Rounded.Videocam, EmeraldLayer, isCameraKeyMode, onOpenCameraChroma))
         add(BottomToolItem("media", "Media", Icons.Rounded.PermMedia, VioletLayer, false, onOpenMedia))
         add(BottomToolItem("add_image", "Add Image", Icons.Rounded.AddPhotoAlternate, EmeraldLayer, false, onQuickAddImage))
         add(BottomToolItem("add_audio", "Add Audio", Icons.Rounded.MusicNote, EmeraldLayer, false, onQuickAddAudio))

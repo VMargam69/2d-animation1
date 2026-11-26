@@ -88,9 +88,93 @@ enum class HumanBuildType(val displayName: String, val shoulderScale: Float, val
     BROAD("Broad", 1.20f, 1.16f)
 }
 
-@JsonClass(generateAdapter = true)
+enum class CustomRigMode(val displayName: String, val shortLabel: String) {
+    SINGLE_PNG_MESH("Single PNG Mesh Rig", "Single PNG Mesh"),
+    MODULAR_CHART_2048("2048×2048 Modular Chart", "2048×2048 Chart")
+}
+
+enum class FacialExpression(val displayName: String, val badgeText: String) {
+    AUTO("Auto (Preset)", "Auto"),
+    NEUTRAL("Neutral", "Neutral"),
+    HAPPY("Happy", "Happy"),
+    ANGRY("Angry", "Angry"),
+    SAD("Sad", "Sad"),
+    SHOCKED("Shocked", "Shock"),
+    LAUGHING("Laughing", "Laugh"),
+    TALKING("Talking", "Talk"),
+    SLEEPING("Sleeping", "Sleep")
+}
+
+enum class CharacterPropType(val displayName: String) {
+    NONE("No Prop"),
+    MICROPHONE("Microphone"),
+    SWORD("Hero Sword"),
+    MAGIC_WAND("Magic Wand"),
+    SMARTPHONE("Smartphone"),
+    COFFEE_MUG("Coffee Mug"),
+    LANTERN("Village Lantern"),
+    SHIELD("Round Shield"),
+    UMBRELLA("Umbrella"),
+    BOOK("Story Book"),
+    FLOWER("Lotus Flower"),
+    CUSTOM_PNG("Custom PNG Prop")
+}
+
+enum class PropAttachmentPoint(val displayName: String, val shortLabel: String) {
+    RIGHT_HAND("Right Hand", "R. Hand"),
+    LEFT_HAND("Left Hand", "L. Hand"),
+    HEAD("Head Top", "Head")
+}
+
+enum class IkHandleId(val label: String) {
+    HEAD("Head"),
+    TORSO("Torso"),
+    LEFT_ELBOW("L.Arm"),
+    LEFT_HAND("L.Hand"),
+    RIGHT_ELBOW("R.Arm"),
+    RIGHT_HAND("R.Hand"),
+    LEFT_FOOT("L.Leg"),
+    RIGHT_FOOT("R.Leg")
+}
+
+enum class ChromaKeyMode(val displayName: String, val colorHex: String?) {
+    NONE("Normal Stage", null),
+    GREEN_SCREEN("Green Screen (#00FF00)", "#00FF00"),
+    BLUE_SCREEN("Blue Screen (#0000FF)", "#0000FF")
+}
+
+data class PoseKeyframeOffsets(
+    val headNodOffset: Float = 0f,
+    val torsoTiltOffset: Float = 0f,
+    val leftArmOffset: Float = 0f,
+    val leftForearmOffset: Float = 0f,
+    val rightArmOffset: Float = 0f,
+    val rightForearmOffset: Float = 0f,
+    val leftLegOffset: Float = 0f,
+    val leftKneeOffset: Float = 0f,
+    val rightLegOffset: Float = 0f,
+    val rightKneeOffset: Float = 0f
+) {
+    val hasCustomOffsets: Boolean
+        get() = headNodOffset != 0f || torsoTiltOffset != 0f ||
+            leftArmOffset != 0f || leftForearmOffset != 0f ||
+            rightArmOffset != 0f || rightForearmOffset != 0f ||
+            leftLegOffset != 0f || leftKneeOffset != 0f ||
+            rightLegOffset != 0f || rightKneeOffset != 0f
+}
+
+data class CameraKeyframe(
+    val frame: Int,
+    val x: Float = 0.5f,
+    val y: Float = 0.5f,
+    val zoom: Float = 1.0f,
+    val rotation: Float = 0f,
+    val easing: EasingType = EasingType.EASE_IN_OUT
+)
+
 data class SkeletonRigConfig(
     val enabled: Boolean = false,
+    val rigMode: CustomRigMode = CustomRigMode.SINGLE_PNG_MESH,
     val removeBackground: Boolean = false,
     val bgTolerance: Int = 36,
     val showBoneOverlay: Boolean = false,
@@ -120,7 +204,6 @@ data class SkeletonRigConfig(
     val rightFootY: Float = 0.91f
 )
 
-@JsonClass(generateAdapter = true)
 data class CharacterRigDefinition(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
@@ -205,13 +288,11 @@ enum class ShapeKind(val displayName: String) {
     ARROW("Arrow")
 }
 
-@JsonClass(generateAdapter = true)
 data class NormalizedPoint(
     val x: Float,
     val y: Float
 )
 
-@JsonClass(generateAdapter = true)
 data class DrawingStroke(
     val id: String = UUID.randomUUID().toString(),
     val points: List<NormalizedPoint>,
@@ -219,7 +300,6 @@ data class DrawingStroke(
     val strokeWidthRatio: Float = 0.008f
 )
 
-@JsonClass(generateAdapter = true)
 data class TransformKeyframe(
     val frame: Int,
     val x: Float = 0.5f,          // Normalized 0..1 of canvas width
@@ -228,10 +308,11 @@ data class TransformKeyframe(
     val scaleX: Float = 1f,
     val scaleY: Float = 1f,
     val opacity: Float = 1f,
-    val easing: EasingType = EasingType.LINEAR
+    val easing: EasingType = EasingType.LINEAR,
+    val poseOffsets: PoseKeyframeOffsets = PoseKeyframeOffsets(),
+    val expressionOverride: FacialExpression? = null
 )
 
-@JsonClass(generateAdapter = true)
 data class TimelineClip(
     val id: String = UUID.randomUUID().toString(),
     val layerId: String,
@@ -241,6 +322,12 @@ data class TimelineClip(
     val characterId: String? = null,
     val orientation: CharacterOrientation = CharacterOrientation.FRONT,
     val animationPresetType: AnimationPresetType = AnimationPresetType.IDLE,
+    val facialExpression: FacialExpression = FacialExpression.AUTO,
+    val propType: CharacterPropType = CharacterPropType.NONE,
+    val propAttachment: PropAttachmentPoint = PropAttachmentPoint.RIGHT_HAND,
+    val customPropImagePath: String? = null,
+    val propSwayEnabled: Boolean = true,
+    val propScale: Float = 1.0f,
     val speedMultiplier: Float = 1.0f,
     val loopAnimation: Boolean = true,
     val transitionIn: TransitionType = TransitionType.NONE,
@@ -264,7 +351,6 @@ data class TimelineClip(
     val endFrame: Int get() = startFrame + durationFrames
 }
 
-@JsonClass(generateAdapter = true)
 data class AnimationLayer(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
@@ -275,19 +361,19 @@ data class AnimationLayer(
     val orderIndex: Int = 0
 )
 
-@JsonClass(generateAdapter = true)
 data class AnimationScene(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Scene 1",
     val backgroundColorHex: String = "#162033",
     val backgroundBundledKey: String? = null,
     val backgroundImagePath: String? = null,
+    val chromaKeyMode: ChromaKeyMode = ChromaKeyMode.NONE,
+    val cameraKeyframes: List<CameraKeyframe> = emptyList(),
     val durationFrames: Int = 144,
     val layers: List<AnimationLayer> = emptyList(),
     val clips: List<TimelineClip> = emptyList()
 )
 
-@JsonClass(generateAdapter = true)
 data class ProjectDocument(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Untitled Animation",

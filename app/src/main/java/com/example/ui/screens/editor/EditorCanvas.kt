@@ -17,6 +17,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import com.example.engine.KeyframeEvaluator
 import com.example.engine.ProceduralRigRenderer
+import com.example.engine.PropAndModularChartRenderer
 import com.example.engine.SceneRenderer
 import com.example.model.*
 import kotlin.math.abs
@@ -26,7 +27,8 @@ import kotlin.math.min
 /**
  * Core interactive 2D animation stage component using Jetpack Compose [Canvas] and
  * [Modifier.pointerInput] for touch-based hit-test object selection, direct coordinate
- * translation (normalized 0f..1f stage coordinates), and freehand vector drawing.
+ * translation (normalized 0f..1f stage coordinates), Direct Stage IK limb/head posing,
+ * Camera Keyframe stage panning, and freehand vector drawing.
  */
 @Composable
 fun EditorCanvas(
@@ -37,11 +39,15 @@ fun EditorCanvas(
     selectedClipId: String?,
     canvasZoom: Float,
     isDrawingMode: Boolean,
+    isIkPosingMode: Boolean = false,
+    isCameraKeyMode: Boolean = false,
     brushColorHex: String,
     brushWidthRatio: Float,
     sceneRenderer: SceneRenderer,
     onSelectClip: (String?) -> Unit,
     onTranslateSelectedClip: (dxNormalized: Float, dyNormalized: Float) -> Unit,
+    onDragIkHandle: (handleId: IkHandleId, targetNx: Float, targetNy: Float, stageW: Float, stageH: Float) -> Unit = { _, _, _, _, _ -> },
+    onPanCamera: (dxNormalized: Float, dyNormalized: Float) -> Unit = { _, _ -> },
     onDragStateChanged: (isDragging: Boolean) -> Unit,
     onCommitTranslation: () -> Unit,
     onFinishStroke: (List<NormalizedPoint>) -> Unit,
@@ -49,11 +55,15 @@ fun EditorCanvas(
 ) {
     val scene = project.activeScene
     var activeStrokePoints by remember { mutableStateOf<List<NormalizedPoint>>(emptyList()) }
+    var activeIkHandle by remember { mutableStateOf<IkHandleId?>(null) }
 
     val latestScene by rememberUpdatedState(scene)
+    val latestCharactersById by rememberUpdatedState(charactersById)
     val latestSelectedId by rememberUpdatedState(selectedClipId)
     val latestZoom by rememberUpdatedState(canvasZoom)
     val latestDrawingMode by rememberUpdatedState(isDrawingMode)
+    val latestIkPosingMode by rememberUpdatedState(isIkPosingMode)
+    val latestCameraKeyMode by rememberUpdatedState(isCameraKeyMode)
     val latestIsPlaying by rememberUpdatedState(isPlaying)
     val liveFrameState = playbackFrameFlow.collectAsState()
 
@@ -71,39 +81,83 @@ fun EditorCanvas(
                     onSelectClip(hitClip?.id)
                 }
             }
-            // Drag gesture: either draw freehand stroke or select-and-translate object in stage coordinates
+            // Drag gesture: freehand draw, IK limb/head handle drag, camera pan, or object translation
             .pointerInput(Unit) {
                 var activeDragClipId: String? = null
+                var draggingCamera = false
                 detectDragGestures(
                     onDragStart = { startOffset ->
                         if (latestIsPlaying) return@detectDragGestures
-                        val nx = (startOffset.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
-                        val ny = (startOffset.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f)
+                        val w = size.width.coerceAtLeast(1).toFloat()
+                        val h = size.height.coerceAtLeast(1).toFloat()
+                        val nx = (startOffset.x / w).coerceIn(0f, 1f)
+                        val ny = (startOffset.y / h).coerceIn(0f, 1f)
+                        val frame = liveFrameState.value
+
                         if (latestDrawingMode) {
                             activeStrokePoints = listOf(NormalizedPoint(nx, ny))
-                        } else {
-                            // Hit-test on touch down so the user can immediately grab & translate any unlocked object
-                            val hit = hitTestClipAtPoint(latestScene, liveFrameState.value, nx, ny)
-                            activeDragClipId = hit?.id ?: latestSelectedId
-                            if (hit != null && hit.id != latestSelectedId) {
-                                onSelectClip(hit.id)
+                            return@detectDragGestures
+                        }
+
+                        if (latestCameraKeyMode) {
+                            draggingCamera = true
+                            onDragStateChanged(true)
+                            return@detectDragGestures
+                        }
+
+                        // When IK Posing Mode is active, first check if user grabbed one of the 8 IK handles
+                        if (latestIkPosingMode) {
+                            val selClip = latestScene.clips.firstOrNull { it.id == latestSelectedId }
+                            val rig = selClip?.characterId?.let { latestCharactersById[it] }
+                            if (selClip != null && rig != null && frame in selClip.startFrame until selClip.endFrame) {
+                                val hitHandle = hitTestIkHandleAtPoint(
+                                    clip = selClip,
+                                    rig = rig,
+                                    frame = frame,
+                                    nx = nx,
+                                    ny = ny,
+                                    stageWidth = w,
+                                    stageHeight = h
+                                )
+                                if (hitHandle != null) {
+                                    activeIkHandle = hitHandle
+                                    onDragStateChanged(true)
+                                    return@detectDragGestures
+                                }
                             }
-                            if (activeDragClipId != null) {
-                                onDragStateChanged(true)
-                            }
+                        }
+
+                        // Standard object hit-test & translation
+                        val hit = hitTestClipAtPoint(latestScene, frame, nx, ny)
+                        activeDragClipId = hit?.id ?: latestSelectedId
+                        if (hit != null && hit.id != latestSelectedId) {
+                            onSelectClip(hit.id)
+                        }
+                        if (activeDragClipId != null) {
+                            onDragStateChanged(true)
                         }
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
+                        val w = size.width.coerceAtLeast(1).toFloat()
+                        val h = size.height.coerceAtLeast(1).toFloat()
                         if (latestDrawingMode) {
-                            val nx = (change.position.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
-                            val ny = (change.position.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f)
+                            val nx = (change.position.x / w).coerceIn(0f, 1f)
+                            val ny = (change.position.y / h).coerceIn(0f, 1f)
                             activeStrokePoints = activeStrokePoints + NormalizedPoint(nx, ny)
-                        } else if (activeDragClipId != null) {
-                            // Convert raw pointer pixels into normalized stage coordinate deltas
+                        } else if (draggingCamera) {
                             val zoomFactor = latestZoom.coerceAtLeast(0.25f)
-                            val dxNorm = dragAmount.x / (size.width.coerceAtLeast(1) * zoomFactor)
-                            val dyNorm = dragAmount.y / (size.height.coerceAtLeast(1) * zoomFactor)
+                            val dxNorm = dragAmount.x / (w * zoomFactor)
+                            val dyNorm = dragAmount.y / (h * zoomFactor)
+                            onPanCamera(dxNorm, dyNorm)
+                        } else if (activeIkHandle != null) {
+                            val nx = (change.position.x / w).coerceIn(0.01f, 0.99f)
+                            val ny = (change.position.y / h).coerceIn(0.01f, 0.99f)
+                            onDragIkHandle(activeIkHandle!!, nx, ny, w, h)
+                        } else if (activeDragClipId != null) {
+                            val zoomFactor = latestZoom.coerceAtLeast(0.25f)
+                            val dxNorm = dragAmount.x / (w * zoomFactor)
+                            val dyNorm = dragAmount.y / (h * zoomFactor)
                             onTranslateSelectedClip(dxNorm, dyNorm)
                         }
                     },
@@ -113,7 +167,9 @@ fun EditorCanvas(
                                 onFinishStroke(activeStrokePoints)
                             }
                             activeStrokePoints = emptyList()
-                        } else if (activeDragClipId != null) {
+                        } else if (draggingCamera || activeIkHandle != null || activeDragClipId != null) {
+                            draggingCamera = false
+                            activeIkHandle = null
                             activeDragClipId = null
                             onDragStateChanged(false)
                             onCommitTranslation()
@@ -121,6 +177,8 @@ fun EditorCanvas(
                     },
                     onDragCancel = {
                         activeStrokePoints = emptyList()
+                        draggingCamera = false
+                        activeIkHandle = null
                         activeDragClipId = null
                         onDragStateChanged(false)
                     }
@@ -143,7 +201,10 @@ fun EditorCanvas(
                 showMotionPaths = project.showMotionPaths,
                 selectedClipId = selectedClipId,
                 drawEditorOverlays = true,
-                isPlaying = isPlaying
+                isPlaying = isPlaying,
+                isIkPosingMode = isIkPosingMode,
+                isCameraKeyMode = isCameraKeyMode,
+                activeIkHandle = activeIkHandle
             )
         }
 
@@ -167,6 +228,42 @@ fun EditorCanvas(
             )
         }
     }
+}
+
+private fun hitTestIkHandleAtPoint(
+    clip: TimelineClip,
+    rig: CharacterRigDefinition,
+    frame: Int,
+    nx: Float,
+    ny: Float,
+    stageWidth: Float,
+    stageHeight: Float
+): IkHandleId? {
+    val eval = KeyframeEvaluator.evaluate(clip, frame)
+    val localFrame = (frame - clip.startFrame).coerceAtLeast(0)
+    val cycleFrames = clip.animationPresetType.defaultDurationFrames.coerceAtLeast(8).toFloat()
+    val rawPhase = (localFrame * clip.speedMultiplier) / cycleFrames
+    val phase = if (clip.loopAnimation) rawPhase % 1f else rawPhase.coerceIn(0f, 0.999f)
+    val basePose = ProceduralRigRenderer.computePose(clip.animationPresetType, phase)
+    val posed = basePose.withOffsets(eval.poseOffsets, eval.expressionOverride ?: clip.facialExpression)
+    val handles = PropAndModularChartRenderer.computeStageIkHandles(
+        clip = clip,
+        rig = rig,
+        transform = eval,
+        pose = posed,
+        stageWidth = stageWidth,
+        stageHeight = stageHeight
+    )
+    var bestId: IkHandleId? = null
+    var bestDist = 0.085f
+    for (h in handles) {
+        val d = hypot(nx - h.nx, ny - h.ny)
+        if (d < bestDist) {
+            bestDist = d
+            bestId = h.id
+        }
+    }
+    return bestId
 }
 
 /**

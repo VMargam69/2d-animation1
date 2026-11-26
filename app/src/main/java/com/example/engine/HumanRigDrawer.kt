@@ -23,6 +23,10 @@ internal object HumanRigDrawer {
         accent: Int,
         hair: Int,
         eyeColor: Int,
+        propType: CharacterPropType = CharacterPropType.NONE,
+        propAttachment: PropAttachmentPoint = PropAttachmentPoint.RIGHT_HAND,
+        customPropBitmap: Bitmap? = null,
+        propScale: Float = 1.0f,
         drawAccessory: (Canvas, CharacterAccessory, Float, Int, Int, Paint, Int) -> Unit
     ) {
         val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
@@ -83,8 +87,22 @@ internal object HumanRigDrawer {
         // Far Arm (Upper arm + Elbow + Forearm + Sculpted Hand)
         val sleeveColor = if (rig.costumeStyle == HumanCostumeStyle.SPORT_ATHLETIC) skin else primary
         drawAnatomicalArm(
-            canvas, -shoulderHalf, -30f * s, pose.leftArmDeg, pose.leftForearmDeg,
-            s, primary, sleeveColor, skin, clothOutline, alphaInt, mirrorThumb = true
+            canvas = canvas,
+            ox = -shoulderHalf,
+            oy = -30f * s,
+            upperDeg = pose.leftArmDeg,
+            forearmDeg = pose.leftForearmDeg,
+            s = s,
+            upperColor = primary,
+            sleeveColor = sleeveColor,
+            skin = skin,
+            outline = clothOutline,
+            alphaInt = alphaInt,
+            mirrorThumb = true,
+            propType = if (propAttachment == PropAttachmentPoint.LEFT_HAND) propType else CharacterPropType.NONE,
+            customPropBitmap = customPropBitmap,
+            propScale = propScale,
+            propSwayDeg = pose.propSwayDeg
         )
 
         // Far Leg & Near Leg (Thigh + Knee + Calf + Structured Shoe)
@@ -193,12 +211,36 @@ internal object HumanRigDrawer {
 
         // Head Accessories
         drawAccessory(canvas, rig.accessory, s, accent, primary, clothOutline, alphaInt)
+
+        // Head-mounted prop if attached to HEAD
+        if (propType != CharacterPropType.NONE && propAttachment == PropAttachmentPoint.HEAD) {
+            canvas.save()
+            canvas.translate(0f, -25f * s)
+            PropAndModularChartRenderer.drawPropAtSocket(
+                canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg, alphaInt
+            )
+            canvas.restore()
+        }
         canvas.restore()
 
         // Near Arm (drawn cleanly in front of torso)
         drawAnatomicalArm(
-            canvas, shoulderHalf, -30f * s, pose.rightArmDeg, pose.rightForearmDeg,
-            s, primary, sleeveColor, skin, clothOutline, alphaInt, mirrorThumb = false
+            canvas = canvas,
+            ox = shoulderHalf,
+            oy = -30f * s,
+            upperDeg = pose.rightArmDeg,
+            forearmDeg = pose.rightForearmDeg,
+            s = s,
+            upperColor = primary,
+            sleeveColor = sleeveColor,
+            skin = skin,
+            outline = clothOutline,
+            alphaInt = alphaInt,
+            mirrorThumb = false,
+            propType = if (propAttachment == PropAttachmentPoint.RIGHT_HAND) propType else CharacterPropType.NONE,
+            customPropBitmap = customPropBitmap,
+            propScale = propScale,
+            propSwayDeg = pose.propSwayDeg
         )
     }
 
@@ -382,6 +424,7 @@ internal object HumanRigDrawer {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
         }
+        val expr = pose.facialExpression
 
         val eyePositions = if (isSide) {
             listOf(9.5f * s)
@@ -389,40 +432,83 @@ internal object HumanRigDrawer {
             listOf(-7.5f * s + faceShiftX * 0.55f, 7.5f * s + faceShiftX * 0.55f)
         }
 
-        // Expressive Eyebrows
+        // Expressive Eyebrows (Angry V-slant, Sad inner lift, Shocked high arch, or standard)
         stroke.color = withAlpha(darken(hair, 0.9f), alphaInt)
-        stroke.strokeWidth = 2.1f * s
-        val browLift = if (pose.happySmile) -1.6f * s else 0f
-        for (ex in eyePositions) {
-            canvas.drawArc(
-                RectF(ex - 4.8f * s, -11.5f * s + browLift, ex + 4.8f * s, -5.5f * s + browLift),
-                200f, 140f, false, stroke
-            )
+        stroke.strokeWidth = 2.2f * s
+        when (expr) {
+            FacialExpression.ANGRY -> {
+                for ((idx, ex) in eyePositions.withIndex()) {
+                    val isLeft = idx == 0 && !isSide
+                    val outerY = -10.8f * s
+                    val innerY = -6.8f * s
+                    if (isLeft) {
+                        canvas.drawLine(ex - 4.8f * s, outerY, ex + 4.4f * s, innerY, stroke)
+                    } else {
+                        canvas.drawLine(ex - 4.4f * s, innerY, ex + 4.8f * s, outerY, stroke)
+                    }
+                }
+            }
+            FacialExpression.SAD -> {
+                for ((idx, ex) in eyePositions.withIndex()) {
+                    val isLeft = idx == 0 && !isSide
+                    val outerY = -6.8f * s
+                    val innerY = -10.8f * s
+                    if (isLeft) {
+                        canvas.drawLine(ex - 4.8f * s, outerY, ex + 4.4f * s, innerY, stroke)
+                    } else {
+                        canvas.drawLine(ex - 4.4f * s, innerY, ex + 4.8f * s, outerY, stroke)
+                    }
+                }
+            }
+            else -> {
+                val browLift = when (expr) {
+                    FacialExpression.SHOCKED -> -3.4f * s
+                    FacialExpression.HAPPY, FacialExpression.LAUGHING -> -1.8f * s
+                    else -> if (pose.happySmile) -1.6f * s else 0f
+                }
+                for (ex in eyePositions) {
+                    canvas.drawArc(
+                        RectF(ex - 4.8f * s, -11.5f * s + browLift, ex + 4.8f * s, -5.5f * s + browLift),
+                        200f, 140f, false, stroke
+                    )
+                }
+            }
         }
 
         // Almond Human Eyes (Sclera + Colored Iris + Pupil + Specular Glint + Lash)
         for (ex in eyePositions) {
-            if (pose.blinkClosed) {
+            if (expr == FacialExpression.LAUGHING) {
+                stroke.color = withAlpha(0xFF1F1B18.toInt(), alphaInt)
+                stroke.strokeWidth = 2.3f * s
+                canvas.drawArc(RectF(ex - 4.4f * s, -5.0f * s, ex + 4.4f * s, 0.8f * s), 195f, 150f, false, stroke)
+            } else if (pose.blinkClosed || expr == FacialExpression.SLEEPING) {
                 stroke.color = withAlpha(0xFF1F1B18.toInt(), alphaInt)
                 stroke.strokeWidth = 2.0f * s
                 canvas.drawArc(RectF(ex - 4.2f * s, -4f * s, ex + 4.2f * s, 1f * s), 10f, 160f, false, stroke)
             } else {
+                val eyeScaleY = if (expr == FacialExpression.SHOCKED) 1.32f else 1.0f
                 // Sclera
                 fill.color = withAlpha(0xFFFAFAFA.toInt(), alphaInt)
-                canvas.drawOval(RectF(ex - 4.5f * s, -5.2f * s, ex + 4.5f * s, 1.4f * s), fill)
+                canvas.drawOval(RectF(ex - 4.5f * s, -5.2f * s * eyeScaleY, ex + 4.5f * s, 1.4f * s * eyeScaleY), fill)
                 // Iris
+                val irisR = if (expr == FacialExpression.SHOCKED) 2.2f * s else 2.7f * s
                 fill.color = withAlpha(eyeColor, alphaInt)
-                canvas.drawCircle(ex + faceShiftX * 0.08f, -2.0f * s, 2.7f * s, fill)
+                canvas.drawCircle(ex + faceShiftX * 0.08f, -2.0f * s, irisR, fill)
                 // Pupil
                 fill.color = withAlpha(0xFF0A0D12.toInt(), alphaInt)
-                canvas.drawCircle(ex + faceShiftX * 0.08f, -2.0f * s, 1.45f * s, fill)
+                canvas.drawCircle(ex + faceShiftX * 0.08f, -2.0f * s, irisR * 0.54f, fill)
                 // Eye sparkle highlight
                 fill.color = withAlpha(0xFFFFFFFF.toInt(), alphaInt)
                 canvas.drawCircle(ex + 1.0f * s, -3.1f * s, 0.9f * s, fill)
                 // Upper lash contour
                 stroke.color = withAlpha(0xFF141210.toInt(), alphaInt)
                 stroke.strokeWidth = 1.6f * s
-                canvas.drawArc(RectF(ex - 4.6f * s, -5.5f * s, ex + 4.6f * s, 1.2f * s), 195f, 150f, false, stroke)
+                canvas.drawArc(RectF(ex - 4.6f * s, -5.5f * s * eyeScaleY, ex + 4.6f * s, 1.2f * s), 195f, 150f, false, stroke)
+                // Sad tear droplet glint
+                if (expr == FacialExpression.SAD) {
+                    fill.color = withAlpha(0xFF38BDF8.toInt(), alphaInt)
+                    canvas.drawOval(RectF(ex + 2.2f * s, 0.5f * s, ex + 4.6f * s, 4.5f * s), fill)
+                }
             }
         }
 
@@ -444,21 +530,42 @@ internal object HumanRigDrawer {
             canvas.drawOval(RectF(6f * s + faceShiftX * 0.35f, 3f * s, 14f * s + faceShiftX * 0.35f, 8.5f * s), fill)
         }
 
-        // Sculpted Human Lips / Talking Mouth
+        // Sculpted Human Lips / Expression Mouth
         val mouthX = faceShiftX * 0.55f
         val mouthY = 12.2f * s
-        if (pose.mouthOpen > 0.14f) {
-            val openH = (2.8f + pose.mouthOpen * 5.6f) * s
-            fill.color = withAlpha(0xFF7F1D1D.toInt(), alphaInt)
-            canvas.drawOval(RectF(mouthX - 6f * s, mouthY - openH * 0.35f, mouthX + 6f * s, mouthY + openH), fill)
-            // Upper teeth bar
-            fill.color = withAlpha(0xFFF8FAFC.toInt(), alphaInt)
-            canvas.drawRoundRect(RectF(mouthX - 4.2f * s, mouthY - openH * 0.28f, mouthX + 4.2f * s, mouthY + 0.8f * s), 1.5f * s, 1.5f * s, fill)
-        } else {
-            stroke.color = withAlpha(0xFF8C3D3D.toInt(), alphaInt)
-            stroke.strokeWidth = 2.0f * s
-            val lipRect = RectF(mouthX - 6.2f * s, mouthY - 3.2f * s, mouthX + 6.2f * s, mouthY + if (pose.happySmile) 5.5f * s else 2.2f * s)
-            canvas.drawArc(lipRect, 15f, 150f, false, stroke)
+        when (expr) {
+            FacialExpression.SAD -> {
+                stroke.color = withAlpha(0xFF8C3D3D.toInt(), alphaInt)
+                stroke.strokeWidth = 2.2f * s
+                val sadRect = RectF(mouthX - 5.8f * s, mouthY - 1.2f * s, mouthX + 5.8f * s, mouthY + 4.6f * s)
+                canvas.drawArc(sadRect, 200f, 140f, false, stroke)
+            }
+            FacialExpression.ANGRY -> {
+                fill.color = withAlpha(0xFF7F1D1D.toInt(), alphaInt)
+                val gritted = RectF(mouthX - 6.0f * s, mouthY - 1.6f * s, mouthX + 6.0f * s, mouthY + 2.6f * s)
+                canvas.drawRoundRect(gritted, 2f * s, 2f * s, fill)
+                fill.color = withAlpha(0xFFF8FAFC.toInt(), alphaInt)
+                canvas.drawRect(mouthX - 4.8f * s, mouthY - 0.8f * s, mouthX + 4.8f * s, mouthY + 1.4f * s, fill)
+            }
+            FacialExpression.SHOCKED -> {
+                fill.color = withAlpha(0xFF7F1D1D.toInt(), alphaInt)
+                canvas.drawOval(RectF(mouthX - 4.6f * s, mouthY - 3.2f * s, mouthX + 4.6f * s, mouthY + 5.8f * s), fill)
+            }
+            else -> {
+                if (pose.mouthOpen > 0.14f) {
+                    val openH = (2.8f + pose.mouthOpen * 5.6f) * s
+                    fill.color = withAlpha(0xFF7F1D1D.toInt(), alphaInt)
+                    canvas.drawOval(RectF(mouthX - 6f * s, mouthY - openH * 0.35f, mouthX + 6f * s, mouthY + openH), fill)
+                    // Upper teeth bar
+                    fill.color = withAlpha(0xFFF8FAFC.toInt(), alphaInt)
+                    canvas.drawRoundRect(RectF(mouthX - 4.2f * s, mouthY - openH * 0.28f, mouthX + 4.2f * s, mouthY + 0.8f * s), 1.5f * s, 1.5f * s, fill)
+                } else {
+                    stroke.color = withAlpha(0xFF8C3D3D.toInt(), alphaInt)
+                    stroke.strokeWidth = 2.0f * s
+                    val lipRect = RectF(mouthX - 6.2f * s, mouthY - 3.2f * s, mouthX + 6.2f * s, mouthY + if (pose.happySmile) 5.5f * s else 2.2f * s)
+                    canvas.drawArc(lipRect, 15f, 150f, false, stroke)
+                }
+            }
         }
     }
 
@@ -557,7 +664,11 @@ internal object HumanRigDrawer {
         skin: Int,
         outline: Paint,
         alphaInt: Int,
-        mirrorThumb: Boolean
+        mirrorThumb: Boolean,
+        propType: CharacterPropType = CharacterPropType.NONE,
+        customPropBitmap: Bitmap? = null,
+        propScale: Float = 1.0f,
+        propSwayDeg: Float = 0f
     ) {
         val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
         canvas.save()
@@ -589,6 +700,15 @@ internal object HumanRigDrawer {
         canvas.drawOval(RectF(-4.8f * s, -3f * s, 4.8f * s, 7.5f * s), outline)
         val thumbSign = if (mirrorThumb) 1f else -1f
         canvas.drawOval(RectF(thumbSign * 2.5f * s - 2.2f * s, -1f * s, thumbSign * 2.5f * s + 2.2f * s, 4.5f * s), fill)
+
+        if (propType != CharacterPropType.NONE) {
+            canvas.save()
+            canvas.translate(0f, 3f * s)
+            PropAndModularChartRenderer.drawPropAtSocket(
+                canvas, propType, customPropBitmap, s * propScale, propSwayDeg, alphaInt
+            )
+            canvas.restore()
+        }
 
         canvas.restore()
     }
@@ -666,7 +786,11 @@ internal object HumanRigDrawer {
         pose: ProceduralRigRenderer.PoseAngles,
         rigScale: Float,
         alpha: Float,
-        tintOverlayColor: Int?
+        tintOverlayColor: Int?,
+        propType: CharacterPropType = CharacterPropType.NONE,
+        propAttachment: PropAttachmentPoint = PropAttachmentPoint.RIGHT_HAND,
+        customPropBitmap: Bitmap? = null,
+        propScale: Float = 1.0f
     ) {
         SkeletonMeshDeformer.drawDeformedSkeletonRig(
             canvas = canvas,
@@ -677,6 +801,36 @@ internal object HumanRigDrawer {
             alpha = alpha,
             tintOverlayColor = tintOverlayColor
         )
+        if (propType != CharacterPropType.NONE) {
+            val alphaInt = (alpha.coerceIn(0f, 1f) * 255).toInt()
+            val s = rigScale
+            canvas.save()
+            when (propAttachment) {
+                PropAttachmentPoint.LEFT_HAND -> {
+                    canvas.translate(-24f * s, -30f * s)
+                    canvas.rotate(pose.leftArmDeg)
+                    canvas.translate(0f, 25f * s)
+                    canvas.rotate(pose.leftForearmDeg)
+                    canvas.translate(0f, 26f * s)
+                }
+                PropAttachmentPoint.RIGHT_HAND -> {
+                    canvas.translate(24f * s, -30f * s)
+                    canvas.rotate(pose.rightArmDeg)
+                    canvas.translate(0f, 25f * s)
+                    canvas.rotate(pose.rightForearmDeg)
+                    canvas.translate(0f, 26f * s)
+                }
+                PropAttachmentPoint.HEAD -> {
+                    canvas.translate(0f, -68f * s)
+                    canvas.rotate(pose.headNodDeg)
+                    canvas.translate(0f, -26f * s)
+                }
+            }
+            PropAndModularChartRenderer.drawPropAtSocket(
+                canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg, alphaInt
+            )
+            canvas.restore()
+        }
     }
 
     private fun withAlpha(color: Int, alpha: Int): Int =

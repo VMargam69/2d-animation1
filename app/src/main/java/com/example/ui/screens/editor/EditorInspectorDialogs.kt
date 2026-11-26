@@ -493,6 +493,354 @@ fun LayerManagerDialog(
 }
 
 @Composable
+fun CharacterActingAndPropsDialog(
+    clip: TimelineClip,
+    currentFrame: Int,
+    isIkPosingMode: Boolean,
+    onUpdateClip: ((TimelineClip) -> TimelineClip) -> Unit,
+    onUpdateTransform: ((TransformKeyframe) -> TransformKeyframe) -> Unit,
+    onResetPoseAtFrame: () -> Unit,
+    onToggleIkPosingMode: () -> Unit,
+    onImportCustomPropPng: ((String) -> Unit) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val eval = remember(clip, currentFrame) { KeyframeEvaluator.evaluate(clip, currentFrame) }
+    val activeExpression = eval.expressionOverride ?: clip.facialExpression
+    val pose = eval.poseOffsets
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = StudioPanel,
+        title = {
+            Column {
+                Text("Expression, Hand Props & IK Pose", color = StudioTextPrimary)
+                Text(
+                    "${clip.name} • Frame ${currentFrame + 1}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ElectricCyan
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // 1. Facial Expression Override
+                Text("Facial Expression Override", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(FacialExpression.entries) { expr ->
+                        FilterChip(
+                            selected = activeExpression == expr,
+                            onClick = {
+                                onUpdateClip { it.copy(facialExpression = expr) }
+                                onUpdateTransform { it.copy(expressionOverride = expr) }
+                            },
+                            label = { Text(expr.displayName) },
+                            modifier = Modifier.testTag("expression_chip_${expr.name.lowercase()}")
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 2. Hand & Head Prop Attachment System
+                Text("Attach Prop to Hand or Head", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(CharacterPropType.entries) { prop ->
+                        FilterChip(
+                            selected = clip.propType == prop,
+                            onClick = {
+                                if (prop == CharacterPropType.CUSTOM_PNG && clip.customPropImagePath.isNullOrBlank()) {
+                                    onImportCustomPropPng { savedPath ->
+                                        onUpdateClip { it.copy(propType = CharacterPropType.CUSTOM_PNG, customPropImagePath = savedPath) }
+                                    }
+                                } else {
+                                    onUpdateClip { it.copy(propType = prop) }
+                                }
+                            },
+                            label = { Text(prop.displayName) },
+                            modifier = Modifier.testTag("prop_chip_${prop.name.lowercase()}")
+                        )
+                    }
+                }
+
+                if (clip.propType != CharacterPropType.NONE) {
+                    Text("Attachment Socket", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        PropAttachmentPoint.entries.forEach { socket ->
+                            FilterChip(
+                                selected = clip.propAttachment == socket,
+                                onClick = { onUpdateClip { it.copy(propAttachment = socket) } },
+                                label = { Text(socket.displayName) }
+                            )
+                        }
+                    }
+
+                    if (clip.propType == CharacterPropType.CUSTOM_PNG) {
+                        OutlinedButton(
+                            onClick = {
+                                onImportCustomPropPng { savedPath ->
+                                    onUpdateClip { it.copy(propType = CharacterPropType.CUSTOM_PNG, customPropImagePath = savedPath) }
+                                }
+                            },
+                            border = BorderStroke(1.dp, ElectricCyan),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Rounded.AddPhotoAlternate, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (clip.customPropImagePath == null) "Choose Custom Prop PNG" else "Change Custom Prop PNG", color = ElectricCyan)
+                        }
+                    }
+
+                    LabeledSlider(
+                        "Prop Size Scale",
+                        clip.propScale,
+                        0.4f..2.2f,
+                        String.format(Locale.US, "%.2fx", clip.propScale)
+                    ) { v ->
+                        onUpdateClip { it.copy(propScale = v) }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Secondary Motion Sway Physics", style = MaterialTheme.typography.bodyMedium, color = StudioTextPrimary)
+                        Switch(
+                            checked = clip.propSwayEnabled,
+                            onCheckedChange = { sway -> onUpdateClip { it.copy(propSwayEnabled = sway) } }
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 3. Direct Stage IK Limb & Head Pose Offsets at Current Keyframe
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Keyframe IK Limb & Head Pose", style = MaterialTheme.typography.labelLarge, color = AmberKeyframe)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                onToggleIkPosingMode()
+                                onDismiss()
+                            },
+                            border = BorderStroke(1.dp, ElectricCyan),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(if (isIkPosingMode) "Stage IK Active" else "Pose on Stage", color = ElectricCyan, style = MaterialTheme.typography.labelSmall)
+                        }
+                        if (pose.hasCustomOffsets) {
+                            TextButton(
+                                onClick = onResetPoseAtFrame,
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                            ) {
+                                Text("Reset Pose", color = CoralPlayhead, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+
+                LabeledSlider("Head Nod Angle", pose.headNodOffset, -55f..55f, "${pose.headNodOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(headNodOffset = v)) }
+                }
+                LabeledSlider("Torso Lean Angle", pose.torsoTiltOffset, -45f..45f, "${pose.torsoTiltOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(torsoTiltOffset = v)) }
+                }
+                LabeledSlider("Right Arm Shoulder", pose.rightArmOffset, -160f..160f, "${pose.rightArmOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(rightArmOffset = v)) }
+                }
+                LabeledSlider("Right Forearm Elbow", pose.rightForearmOffset, -150f..150f, "${pose.rightForearmOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(rightForearmOffset = v)) }
+                }
+                LabeledSlider("Left Arm Shoulder", pose.leftArmOffset, -160f..160f, "${pose.leftArmOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(leftArmOffset = v)) }
+                }
+                LabeledSlider("Left Forearm Elbow", pose.leftForearmOffset, -150f..150f, "${pose.leftForearmOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(leftForearmOffset = v)) }
+                }
+                LabeledSlider("Right Leg Hip", pose.rightLegOffset, -110f..110f, "${pose.rightLegOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(rightLegOffset = v)) }
+                }
+                LabeledSlider("Left Leg Hip", pose.leftLegOffset, -110f..110f, "${pose.leftLegOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(leftLegOffset = v)) }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = StudioObsidian)
+            ) {
+                Text("Done", fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
+fun CameraAndChromaKeyDialog(
+    scene: AnimationScene,
+    currentFrame: Int,
+    isCameraKeyMode: Boolean,
+    onSetChromaKeyMode: (ChromaKeyMode) -> Unit,
+    onUpdateCamera: ((CameraKeyframe) -> CameraKeyframe) -> Unit,
+    onDeleteCameraKeyframeAtFrame: () -> Unit,
+    onResetAllCameraKeyframes: () -> Unit,
+    onToggleCameraKeyMode: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val evalCam = remember(scene.cameraKeyframes, currentFrame) {
+        KeyframeEvaluator.evaluateCamera(scene.cameraKeyframes, currentFrame)
+    }
+    val hasKfAtFrame = scene.cameraKeyframes.any { it.frame == currentFrame }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = StudioPanel,
+        title = {
+            Column {
+                Text("Camera Keyframing & Chroma Key", color = StudioTextPrimary)
+                Text(
+                    "Frame ${currentFrame + 1} • ${scene.cameraKeyframes.size} Camera Keyframe(s)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AmberKeyframe
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // 1. Chroma Key Green / Blue Screen Background Mode
+                Text("Chroma Key Compositing Background", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(ChromaKeyMode.entries) { mode ->
+                        FilterChip(
+                            selected = scene.chromaKeyMode == mode,
+                            onClick = { onSetChromaKeyMode(mode) },
+                            label = { Text(mode.displayName) },
+                            modifier = Modifier.testTag("chroma_mode_${mode.name.lowercase()}")
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 2. Stage Camera Keyframe Controls
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Stage Camera Transform", style = MaterialTheme.typography.labelLarge, color = ElectricCyan)
+                    OutlinedButton(
+                        onClick = {
+                            onToggleCameraKeyMode()
+                            onDismiss()
+                        },
+                        border = BorderStroke(1.dp, AmberKeyframe),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Rounded.OpenWith, null, tint = AmberKeyframe, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (isCameraKeyMode) "Stage Pan ON" else "Pan Camera on Stage",
+                            color = AmberKeyframe,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+
+                LabeledSlider(
+                    "Camera Zoom",
+                    evalCam.zoom,
+                    0.5f..2.5f,
+                    "${(evalCam.zoom * 100).toInt()}%"
+                ) { v ->
+                    onUpdateCamera { it.copy(zoom = v) }
+                }
+                LabeledSlider(
+                    "Camera Focus X",
+                    evalCam.x,
+                    0.15f..0.85f,
+                    "${(evalCam.x * 100).toInt()}%"
+                ) { v ->
+                    onUpdateCamera { it.copy(x = v) }
+                }
+                LabeledSlider(
+                    "Camera Focus Y",
+                    evalCam.y,
+                    0.15f..0.85f,
+                    "${(evalCam.y * 100).toInt()}%"
+                ) { v ->
+                    onUpdateCamera { it.copy(y = v) }
+                }
+                LabeledSlider(
+                    "Camera Roll / Dutch Tilt",
+                    evalCam.rotation,
+                    -45f..45f,
+                    "${evalCam.rotation.toInt()}°"
+                ) { v ->
+                    onUpdateCamera { it.copy(rotation = v) }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onUpdateCamera { it } },
+                        colors = ButtonDefaults.buttonColors(containerColor = AmberKeyframe, contentColor = StudioObsidian),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("record_camera_kf_btn")
+                    ) {
+                        Icon(Icons.Rounded.Add, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (hasKfAtFrame) "Update Cam KF" else "Stamp Cam KF", fontWeight = FontWeight.Bold)
+                    }
+                    if (hasKfAtFrame) {
+                        OutlinedButton(
+                            onClick = onDeleteCameraKeyframeAtFrame,
+                            border = BorderStroke(1.dp, CoralPlayhead)
+                        ) {
+                            Text("Del KF", color = CoralPlayhead)
+                        }
+                    }
+                }
+
+                if (scene.cameraKeyframes.isNotEmpty()) {
+                    TextButton(
+                        onClick = onResetAllCameraKeyframes,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Reset All Camera Keyframes (100% Center View)", color = CoralPlayhead)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = StudioObsidian)
+            ) {
+                Text("Done", fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
 private fun LabeledSlider(
     label: String,
     value: Float,

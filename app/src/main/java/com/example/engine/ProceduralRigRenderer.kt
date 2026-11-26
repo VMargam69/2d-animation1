@@ -27,8 +27,51 @@ object ProceduralRigRenderer {
         val happySmile: Boolean = false,
         val blinkClosed: Boolean = false,
         val wingFlapDeg: Float = 0f,
-        val wheelSpinDeg: Float = 0f
-    )
+        val wheelSpinDeg: Float = 0f,
+        val facialExpression: FacialExpression = FacialExpression.AUTO,
+        val propSwayDeg: Float = 0f
+    ) {
+        fun withOffsets(
+            offsets: PoseKeyframeOffsets,
+            expression: FacialExpression = FacialExpression.AUTO,
+            swayDeg: Float = 0f
+        ): PoseAngles {
+            val effectiveMouth = when (expression) {
+                FacialExpression.TALKING -> if (mouthOpen > 0.1f) mouthOpen else 0.65f
+                FacialExpression.SHOCKED -> 0.85f
+                FacialExpression.LAUGHING -> 0.72f
+                FacialExpression.NEUTRAL, FacialExpression.SAD, FacialExpression.ANGRY, FacialExpression.SLEEPING -> 0f
+                FacialExpression.HAPPY, FacialExpression.AUTO -> mouthOpen
+            }
+            val effectiveSmile = when (expression) {
+                FacialExpression.HAPPY, FacialExpression.LAUGHING -> true
+                FacialExpression.ANGRY, FacialExpression.SAD, FacialExpression.NEUTRAL, FacialExpression.SHOCKED -> false
+                FacialExpression.AUTO, FacialExpression.TALKING, FacialExpression.SLEEPING -> happySmile
+            }
+            val effectiveBlink = when (expression) {
+                FacialExpression.SLEEPING, FacialExpression.LAUGHING -> true
+                FacialExpression.SHOCKED, FacialExpression.ANGRY -> false
+                else -> blinkClosed
+            }
+            return copy(
+                bodyTiltDeg = bodyTiltDeg + offsets.torsoTiltOffset,
+                headNodDeg = headNodDeg + offsets.headNodOffset,
+                leftArmDeg = leftArmDeg + offsets.leftArmOffset,
+                leftForearmDeg = leftForearmDeg + offsets.leftForearmOffset,
+                rightArmDeg = rightArmDeg + offsets.rightArmOffset,
+                rightForearmDeg = rightForearmDeg + offsets.rightForearmOffset,
+                leftLegDeg = leftLegDeg + offsets.leftLegOffset,
+                leftKneeDeg = leftKneeDeg + offsets.leftKneeOffset,
+                rightLegDeg = rightLegDeg + offsets.rightLegOffset,
+                rightKneeDeg = rightKneeDeg + offsets.rightKneeOffset,
+                mouthOpen = effectiveMouth,
+                happySmile = effectiveSmile,
+                blinkClosed = effectiveBlink,
+                facialExpression = expression,
+                propSwayDeg = swayDeg
+            )
+        }
+    }
 
     fun drawCharacter(
         canvas: Canvas,
@@ -39,10 +82,19 @@ object ProceduralRigRenderer {
         rigScale: Float,
         alpha: Float = 1f,
         customBitmap: Bitmap? = null,
-        tintOverlayColor: Int? = null
+        tintOverlayColor: Int? = null,
+        poseOffsets: PoseKeyframeOffsets = PoseKeyframeOffsets(),
+        facialExpression: FacialExpression = FacialExpression.AUTO,
+        propType: CharacterPropType = CharacterPropType.NONE,
+        propAttachment: PropAttachmentPoint = PropAttachmentPoint.RIGHT_HAND,
+        customPropBitmap: Bitmap? = null,
+        propSwayEnabled: Boolean = true,
+        propScale: Float = 1.0f
     ) {
         val p = ((phase % 1f) + 1f) % 1f
-        val pose = computePose(preset, p)
+        val swayDeg = if (propSwayEnabled) (sin(p * 2.0 * PI) * 11.0).toFloat() else 0f
+        val basePose = computePose(preset, p)
+        val pose = basePose.withOffsets(poseOffsets, facialExpression, swayDeg)
 
         canvas.save()
         canvas.translate(0f, pose.bodyBobY * rigScale)
@@ -52,17 +104,50 @@ object ProceduralRigRenderer {
         if (customBitmap != null && !customBitmap.isRecycled) {
             val skeleton = rig.skeletonRig
             if (skeleton != null && skeleton.enabled) {
-                HumanRigDrawer.drawSkeletonPngRig(
-                    canvas = canvas,
-                    bitmap = customBitmap,
-                    skeleton = skeleton,
-                    pose = pose,
-                    rigScale = rigScale,
-                    alpha = alpha,
-                    tintOverlayColor = tintOverlayColor
-                )
+                if (skeleton.rigMode == CustomRigMode.MODULAR_CHART_2048) {
+                    PropAndModularChartRenderer.drawModularChartRig(
+                        canvas = canvas,
+                        bitmap = customBitmap,
+                        skeleton = skeleton,
+                        pose = pose,
+                        rigScale = rigScale,
+                        alpha = alpha,
+                        tintOverlayColor = tintOverlayColor,
+                        propType = propType,
+                        propAttachment = propAttachment,
+                        customPropBitmap = customPropBitmap,
+                        propScale = propScale
+                    )
+                } else {
+                    HumanRigDrawer.drawSkeletonPngRig(
+                        canvas = canvas,
+                        bitmap = customBitmap,
+                        skeleton = skeleton,
+                        pose = pose,
+                        rigScale = rigScale,
+                        alpha = alpha,
+                        tintOverlayColor = tintOverlayColor,
+                        propType = propType,
+                        propAttachment = propAttachment,
+                        customPropBitmap = customPropBitmap,
+                        propScale = propScale
+                    )
+                }
             } else {
                 drawCustomSpriteRig(canvas, customBitmap, rigScale, alpha, tintOverlayColor)
+                if (propType != CharacterPropType.NONE) {
+                    val alphaInt = (alpha.coerceIn(0f, 1f) * 255).toInt()
+                    canvas.save()
+                    when (propAttachment) {
+                        PropAttachmentPoint.LEFT_HAND -> canvas.translate(-28f * rigScale, 4f * rigScale)
+                        PropAttachmentPoint.RIGHT_HAND -> canvas.translate(28f * rigScale, 4f * rigScale)
+                        PropAttachmentPoint.HEAD -> canvas.translate(0f, -86f * rigScale)
+                    }
+                    PropAndModularChartRenderer.drawPropAtSocket(
+                        canvas, propType, customPropBitmap, rigScale * propScale, pose.propSwayDeg, alphaInt
+                    )
+                    canvas.restore()
+                }
             }
             canvas.restore()
             return
@@ -90,28 +175,67 @@ object ProceduralRigRenderer {
                 accent = accentColor,
                 hair = hairColor,
                 eyeColor = eyeColor,
+                propType = propType,
+                propAttachment = propAttachment,
+                customPropBitmap = customPropBitmap,
+                propScale = propScale,
                 drawAccessory = { c, acc, sc, acCol, prCol, st, al ->
                     drawHeadAccessory(c, acc, sc, acCol, prCol, st, al)
                 }
             )
-            CharacterBodyType.BIRD -> drawBird(
-                canvas, rig, orientation, pose, rigScale, alphaInt,
-                skinColor, primaryColor, secondaryColor, accentColor
-            )
-            CharacterBodyType.QUADRUPED -> drawQuadruped(
-                canvas, rig, orientation, pose, rigScale, alphaInt,
-                skinColor, primaryColor, secondaryColor, accentColor
-            )
-            CharacterBodyType.VEHICLE -> drawVehicle(
-                canvas, orientation, pose, rigScale, alphaInt,
-                skinColor, primaryColor, secondaryColor, accentColor
-            )
-            CharacterBodyType.SPIRIT -> drawSpirit(
-                canvas, rig, orientation, pose, rigScale, alphaInt,
-                skinColor, primaryColor, secondaryColor, accentColor
-            )
+            CharacterBodyType.BIRD -> {
+                drawBird(
+                    canvas, rig, orientation, pose, rigScale, alphaInt,
+                    skinColor, primaryColor, secondaryColor, accentColor
+                )
+                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose.propSwayDeg, alphaInt)
+            }
+            CharacterBodyType.QUADRUPED -> {
+                drawQuadruped(
+                    canvas, rig, orientation, pose, rigScale, alphaInt,
+                    skinColor, primaryColor, secondaryColor, accentColor
+                )
+                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose.propSwayDeg, alphaInt)
+            }
+            CharacterBodyType.VEHICLE -> {
+                drawVehicle(
+                    canvas, orientation, pose, rigScale, alphaInt,
+                    skinColor, primaryColor, secondaryColor, accentColor
+                )
+                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose.propSwayDeg, alphaInt)
+            }
+            CharacterBodyType.SPIRIT -> {
+                drawSpirit(
+                    canvas, rig, orientation, pose, rigScale, alphaInt,
+                    skinColor, primaryColor, secondaryColor, accentColor
+                )
+                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose.propSwayDeg, alphaInt)
+            }
         }
 
+        canvas.restore()
+    }
+
+    private fun drawNonHumanoidPropIfEquipped(
+        canvas: Canvas,
+        propType: CharacterPropType,
+        propAttachment: PropAttachmentPoint,
+        customPropBitmap: Bitmap?,
+        rigScale: Float,
+        propScale: Float,
+        swayDeg: Float,
+        alphaInt: Int
+    ) {
+        if (propType == CharacterPropType.NONE) return
+        canvas.save()
+        when (propAttachment) {
+            PropAttachmentPoint.LEFT_HAND -> canvas.translate(-32f * rigScale, 4f * rigScale)
+            PropAttachmentPoint.RIGHT_HAND -> canvas.translate(32f * rigScale, 4f * rigScale)
+            PropAttachmentPoint.HEAD -> canvas.translate(0f, -56f * rigScale)
+        }
+        PropAndModularChartRenderer.drawPropAtSocket(
+            canvas, propType, customPropBitmap, rigScale * propScale, swayDeg, alphaInt
+        )
         canvas.restore()
     }
 
@@ -794,7 +918,7 @@ object ProceduralRigRenderer {
         canvas.restore()
     }
 
-    private fun computePose(preset: AnimationPresetType, phase: Float): PoseAngles {
+    internal fun computePose(preset: AnimationPresetType, phase: Float): PoseAngles {
         val rad = (phase * 2.0 * PI).toFloat()
         val s1 = sin(rad)
         val c1 = cos(rad)

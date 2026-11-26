@@ -37,6 +37,8 @@ enum class ActiveEditorSheet {
     NONE,
     PROJECT_SETTINGS,
     TRANSFORM_INSPECTOR,
+    CHARACTER_ACTING_PROPS,
+    CAMERA_CHROMA_STUDIO,
     SPEED_SETTINGS,
     TRANSITIONS,
     LAYER_MANAGER,
@@ -75,6 +77,8 @@ data class StudioUiState(
     val canvasPanY: Float = 0f,
     val timelineZoom: Float = 1f,
     val isDrawingMode: Boolean = false,
+    val isIkPosingMode: Boolean = false,
+    val isCameraKeyMode: Boolean = false,
     val brushColorHex: String = "#38BDF8",
     val brushWidthRatio: Float = 0.009f,
     val activeSheet: ActiveEditorSheet = ActiveEditorSheet.NONE,
@@ -697,7 +701,202 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleDrawingMode() {
         stopPlayback()
-        _uiState.update { it.copy(isDrawingMode = !it.isDrawingMode, activeSheet = ActiveEditorSheet.NONE) }
+        _uiState.update {
+            it.copy(
+                isDrawingMode = !it.isDrawingMode,
+                isIkPosingMode = false,
+                isCameraKeyMode = false,
+                activeSheet = ActiveEditorSheet.NONE
+            )
+        }
+    }
+
+    fun toggleIkPosingMode() {
+        stopPlayback()
+        val state = _uiState.value
+        val next = !state.isIkPosingMode
+        val charClipId = state.selectedClip?.takeIf { it.characterId != null }?.id
+            ?: state.project.activeScene.clips.firstOrNull { it.characterId != null }?.id
+        _uiState.update {
+            it.copy(
+                isIkPosingMode = next,
+                isDrawingMode = false,
+                isCameraKeyMode = false,
+                selectedClipId = charClipId ?: it.selectedClipId,
+                activeSheet = ActiveEditorSheet.NONE
+            )
+        }
+        if (next) {
+            showStatus("IK Pose Mode ON: Drag limb or head handles on stage")
+        } else {
+            showStatus("IK Pose Mode OFF")
+        }
+    }
+
+    fun toggleCameraKeyMode() {
+        stopPlayback()
+        val next = !_uiState.value.isCameraKeyMode
+        _uiState.update {
+            it.copy(
+                isCameraKeyMode = next,
+                isIkPosingMode = false,
+                isDrawingMode = false,
+                activeSheet = ActiveEditorSheet.NONE
+            )
+        }
+        if (next) {
+            showStatus("Camera Key Mode ON: Drag stage to pan camera")
+        } else {
+            showStatus("Camera Key Mode OFF")
+        }
+    }
+
+    fun dragIkHandleOnStage(
+        handleId: IkHandleId,
+        targetNx: Float,
+        targetNy: Float,
+        stageWidth: Float,
+        stageHeight: Float
+    ) {
+        val state = _uiState.value
+        val clip = state.selectedClip ?: return
+        val rig = clip.characterId?.let { state.charactersById[it] } ?: return
+        val frame = _playbackFrame.value
+        val eval = com.example.engine.KeyframeEvaluator.evaluate(clip, frame)
+        val localFrame = (frame - clip.startFrame).coerceAtLeast(0)
+        val cycleFrames = clip.animationPresetType.defaultDurationFrames.coerceAtLeast(8).toFloat()
+        val rawPhase = (localFrame * clip.speedMultiplier) / cycleFrames
+        val phase = if (clip.loopAnimation) rawPhase % 1f else rawPhase.coerceIn(0f, 0.999f)
+        val basePose = com.example.engine.ProceduralRigRenderer.computePose(clip.animationPresetType, phase)
+
+        val newOffsets = com.example.engine.PropAndModularChartRenderer.solveIkDragToOffsets(
+            handleId = handleId,
+            targetNx = targetNx,
+            targetNy = targetNy,
+            clip = clip,
+            rig = rig,
+            transform = eval,
+            basePose = basePose,
+            currentOffsets = eval.poseOffsets,
+            stageWidth = stageWidth,
+            stageHeight = stageHeight
+        )
+        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clip.id, frame) { kf ->
+            kf.copy(poseOffsets = newOffsets)
+        }
+        _uiState.update { it.copy(project = updated) }
+    }
+
+    fun resetSelectedClipPoseAtCurrentFrame() {
+        val state = _uiState.value
+        val clipId = state.selectedClipId ?: return
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clipId, frame) { kf ->
+            kf.copy(poseOffsets = PoseKeyframeOffsets())
+        }
+        commitProjectChange(updated)
+        showStatus("Reset IK pose offsets at F${frame + 1}")
+    }
+
+    fun stampPoseAndCameraKeyframe() {
+        stopPlayback()
+        val state = _uiState.value
+        val frame = _playbackFrame.value
+        var proj = state.project
+        if (state.isCameraKeyMode) {
+            proj = ProjectMutator.upsertCameraKeyframeAtFrame(proj, frame) { it }
+            commitProjectChange(proj)
+            showStatus("Recorded Camera Keyframe at F${frame + 1}")
+            return
+        }
+        val targetClip = state.selectedClip
+            ?: proj.activeScene.clips.firstOrNull { it.characterId != null && frame in it.startFrame until it.endFrame }
+            ?: proj.activeScene.clips.firstOrNull()
+        if (targetClip != null) {
+            proj = ProjectMutator.upsertKeyframeAtFrame(proj, targetClip.id, frame) { it }
+            commitProjectChange(proj)
+            _uiState.update { it.copy(selectedClipId = targetClip.id) }
+            showStatus("Stamped Pose Keyframe #${(targetClip.keyframes.size)} at F${frame + 1}")
+        } else {
+            showStatus("Add or select a character first")
+        }
+    }
+
+    fun stepToAdjacentKeyframe(forward: Boolean) {
+        stopPlayback()
+        val state = _uiState.value
+        val curFrame = _playbackFrame.value
+        val scene = state.project.activeScene
+        val candidateFrames = sortedSetOf<Int>()
+        candidateFrames.add(0)
+        for (camKf in scene.cameraKeyframes) {
+            candidateFrames.add(camKf.frame)
+        }
+        val clip = state.selectedClip ?: scene.clips.firstOrNull { it.characterId != null }
+        if (clip != null) {
+            for (kf in clip.keyframes) {
+                candidateFrames.add((clip.startFrame + kf.frame).coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0)))
+            }
+        }
+        val target = if (forward) {
+            candidateFrames.firstOrNull { it > curFrame } ?: candidateFrames.lastOrNull() ?: curFrame
+        } else {
+            candidateFrames.lastOrNull { it < curFrame } ?: candidateFrames.firstOrNull() ?: curFrame
+        }
+        seekToFrame(target)
+    }
+
+    fun panCameraByNormalizedDelta(dx: Float, dy: Float) {
+        val state = _uiState.value
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.upsertCameraKeyframeAtFrame(state.project, frame) { cam ->
+            cam.copy(
+                x = (cam.x - dx).coerceIn(0.1f, 0.9f),
+                y = (cam.y - dy).coerceIn(0.1f, 0.9f)
+            )
+        }
+        _uiState.update { it.copy(project = updated) }
+    }
+
+    fun updateCameraAtCurrentFrame(updater: (CameraKeyframe) -> CameraKeyframe) {
+        val state = _uiState.value
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.upsertCameraKeyframeAtFrame(state.project, frame, updater)
+        commitProjectChange(updated)
+    }
+
+    fun deleteCameraKeyframeAtCurrentFrame() {
+        val state = _uiState.value
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.deleteCameraKeyframeAtFrame(state.project, frame)
+        commitProjectChange(updated)
+        showStatus("Removed camera keyframe at F${frame + 1}")
+    }
+
+    fun resetAllCameraKeyframes() {
+        val updated = ProjectMutator.resetCameraKeyframes(_uiState.value.project)
+        commitProjectChange(updated)
+        showStatus("Camera reset to default 100% stage view")
+    }
+
+    fun setSceneChromaKeyMode(mode: ChromaKeyMode) {
+        val updated = ProjectMutator.updateActiveScene(_uiState.value.project) { scene ->
+            scene.copy(chromaKeyMode = mode)
+        }
+        commitProjectChange(updated)
+        showStatus("Stage Background: ${mode.displayName}")
+    }
+
+    fun exportBlank2048ModularChartTemplate(onSavedPath: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            val savedPath = assetStorage.saveBlank2048ModularChartTemplate()
+            if (savedPath != null) {
+                onSavedPath(savedPath)
+                showStatus("Saved 2048×2048 Modular Chart Template PNG")
+            } else {
+                showStatus("Failed to generate 2048×2048 template")
+            }
+        }
     }
 
     fun setBrushStyle(colorHex: String, widthRatio: Float) {
@@ -719,14 +918,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setSceneBackgroundColor(hex: String) {
         val updated = ProjectMutator.updateActiveScene(_uiState.value.project) { scene ->
-            scene.copy(backgroundColorHex = hex, backgroundBundledKey = null, backgroundImagePath = null)
+            scene.copy(
+                backgroundColorHex = hex,
+                backgroundBundledKey = null,
+                backgroundImagePath = null,
+                chromaKeyMode = ChromaKeyMode.NONE
+            )
         }
         commitProjectChange(updated)
     }
 
     fun setSceneBackgroundBundled(key: String) {
         val updated = ProjectMutator.updateActiveScene(_uiState.value.project) { scene ->
-            scene.copy(backgroundBundledKey = key, backgroundImagePath = null)
+            scene.copy(
+                backgroundBundledKey = key,
+                backgroundImagePath = null,
+                chromaKeyMode = ChromaKeyMode.NONE
+            )
         }
         commitProjectChange(updated)
     }

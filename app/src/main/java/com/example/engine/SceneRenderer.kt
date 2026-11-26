@@ -94,7 +94,10 @@ class SceneRenderer(
         showMotionPaths: Boolean = false,
         selectedClipId: String? = null,
         drawEditorOverlays: Boolean = false,
-        isPlaying: Boolean = false
+        isPlaying: Boolean = false,
+        isIkPosingMode: Boolean = false,
+        isCameraKeyMode: Boolean = false,
+        activeIkHandle: IkHandleId? = null
     ) {
         val w = width.toFloat().coerceAtLeast(1f)
         val h = height.toFloat().coerceAtLeast(1f)
@@ -103,17 +106,35 @@ class SceneRenderer(
         canvas.save()
         canvas.clipRect(0f, 0f, w, h)
 
-        // 1. Base Scene Background (1:1 cached blit when image is set)
-        scratch.bgPaint.color = ProceduralRigRenderer.parseColorSafe(scene.backgroundColorHex, 0xFF151B28.toInt())
+        val chromaHex = scene.chromaKeyMode.colorHex
+        val isChromaActive = chromaHex != null
+
+        // 1. Base Scene Background (or Chroma Key Green/Blue screen override)
+        val baseBgColor = if (chromaHex != null) {
+            ProceduralRigRenderer.parseColorSafe(chromaHex, 0xFF00FF00.toInt())
+        } else {
+            ProceduralRigRenderer.parseColorSafe(scene.backgroundColorHex, 0xFF151B28.toInt())
+        }
+        scratch.bgPaint.color = baseBgColor
         canvas.drawRect(0f, 0f, w, h, scratch.bgPaint)
 
-        val sceneBgBitmap = bitmapProvider(scene.backgroundImagePath, scene.backgroundBundledKey)
+        // Apply Keyframed Stage Camera Transform (Pan, Zoom, Rotation)
+        val camera = KeyframeEvaluator.evaluateCamera(scene.cameraKeyframes, frame)
+        canvas.save()
+        if (!camera.isIdentity) {
+            canvas.translate(w * 0.5f, h * 0.5f)
+            canvas.scale(camera.zoom, camera.zoom)
+            canvas.rotate(-camera.rotation)
+            canvas.translate(-camera.x * w, -camera.y * h)
+        }
+
+        val sceneBgBitmap = if (isChromaActive) null else bitmapProvider(scene.backgroundImagePath, scene.backgroundBundledKey)
         if (sceneBgBitmap != null && !sceneBgBitmap.isRecycled) {
             drawBitmapCenterCropFast(canvas, sceneBgBitmap, width, height, 255, scratch)
         }
 
         // 2. Subtle stage grid when empty & in editor mode (paused)
-        if (drawEditorOverlays && !isPlaying && sceneBgBitmap == null) {
+        if (drawEditorOverlays && !isPlaying && sceneBgBitmap == null && !isChromaActive) {
             drawSubtleStageGrid(canvas, w, h, scratch)
         }
 
@@ -130,9 +151,19 @@ class SceneRenderer(
 
         // 4. Current Frame Layers
         drawLayersAtFrame(
-            canvas, width, height, w, h, visibleLayers, scene.clips, frame,
-            charactersById, alphaMultiplier = 1f, tintOverlay = null,
-            skipBackgroundLayers = false, scratch = scratch
+            canvas = canvas,
+            intW = width,
+            intH = height,
+            w = w,
+            h = h,
+            visibleLayers = visibleLayers,
+            clips = scene.clips,
+            frame = frame,
+            charactersById = charactersById,
+            alphaMultiplier = 1f,
+            tintOverlay = null,
+            skipBackgroundLayers = isChromaActive,
+            scratch = scratch
         )
 
         // 5. Editor Overlays (skip heavy dashed gizmo/motion-path overlays while actively playing)
@@ -146,8 +177,30 @@ class SceneRenderer(
                 if (selectedClip != null && layerVisible && frame in selectedClip.startFrame until selectedClip.endFrame) {
                     val eval = KeyframeEvaluator.evaluate(selectedClip, frame)
                     drawSelectionGizmo(canvas, w, h, eval, scratch)
+                    if (isIkPosingMode && selectedClip.characterId != null) {
+                        val rig = charactersById[selectedClip.characterId]
+                        if (rig != null) {
+                            drawIkHandlesOverlay(
+                                canvas = canvas,
+                                w = w,
+                                h = h,
+                                clip = selectedClip,
+                                rig = rig,
+                                eval = eval,
+                                frame = frame,
+                                activeIkHandle = activeIkHandle,
+                                scratch = scratch
+                            )
+                        }
+                    }
                 }
             }
+        }
+
+        canvas.restore() // restore camera transform
+
+        if (drawEditorOverlays && !isPlaying && isCameraKeyMode) {
+            drawCameraViewfinderOverlay(canvas, w, h, camera, scratch)
         }
 
         canvas.restore()
@@ -233,6 +286,10 @@ class SceneRenderer(
                             val rawPhase = (localFrame * clip.speedMultiplier) / cycleFrames
                             val phase = if (clip.loopAnimation) rawPhase % 1f else rawPhase.coerceIn(0f, 0.999f)
                             val customBmp = bitmapProvider(rig.customImagePath, null)
+                            val customPropBmp = if (clip.propType == CharacterPropType.CUSTOM_PNG) {
+                                bitmapProvider(clip.customPropImagePath, null)
+                            } else null
+                            val effectiveExpression = transform.expressionOverride ?: clip.facialExpression
                             ProceduralRigRenderer.drawCharacter(
                                 canvas = canvas,
                                 rig = rig,
@@ -242,7 +299,14 @@ class SceneRenderer(
                                 rigScale = baseScale,
                                 alpha = effectiveAlpha,
                                 customBitmap = customBmp,
-                                tintOverlayColor = tintOverlay
+                                tintOverlayColor = tintOverlay,
+                                poseOffsets = transform.poseOffsets,
+                                facialExpression = effectiveExpression,
+                                propType = clip.propType,
+                                propAttachment = clip.propAttachment,
+                                customPropBitmap = customPropBmp,
+                                propSwayEnabled = clip.propSwayEnabled,
+                                propScale = clip.propScale
                             )
                         }
                     }
@@ -466,6 +530,122 @@ class SceneRenderer(
         canvas.drawCircle(r, b, 7f, scratch.handleStrokePaint)
         canvas.drawCircle(0f, 0f, 5f, scratch.handleStrokePaint)
         canvas.restore()
+    }
+
+    private fun drawIkHandlesOverlay(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        clip: TimelineClip,
+        rig: CharacterRigDefinition,
+        eval: EvaluatedTransform,
+        frame: Int,
+        activeIkHandle: IkHandleId?,
+        scratch: RenderScratch
+    ) {
+        val localFrame = (frame - clip.startFrame).coerceAtLeast(0)
+        val cycleFrames = clip.animationPresetType.defaultDurationFrames.coerceAtLeast(8).toFloat()
+        val rawPhase = (localFrame * clip.speedMultiplier) / cycleFrames
+        val phase = if (clip.loopAnimation) rawPhase % 1f else rawPhase.coerceIn(0f, 0.999f)
+        val basePose = ProceduralRigRenderer.computePose(clip.animationPresetType, phase)
+        val posed = basePose.withOffsets(eval.poseOffsets, eval.expressionOverride ?: clip.facialExpression)
+
+        val handles = PropAndModularChartRenderer.computeStageIkHandles(
+            clip = clip,
+            rig = rig,
+            transform = eval,
+            pose = posed,
+            stageWidth = w,
+            stageHeight = h
+        )
+
+        val byId = handles.associateBy { it.id }
+        val linkPaint = scratch.strokePaint
+        linkPaint.strokeWidth = 2.8f
+        linkPaint.color = 0xAA38BDF8.toInt()
+
+        fun drawLink(a: IkHandleId, b: IkHandleId) {
+            val ha = byId[a] ?: return
+            val hb = byId[b] ?: return
+            canvas.drawLine(ha.nx * w, ha.ny * h, hb.nx * w, hb.ny * h, linkPaint)
+        }
+
+        drawLink(IkHandleId.TORSO, IkHandleId.HEAD)
+        drawLink(IkHandleId.TORSO, IkHandleId.LEFT_ELBOW)
+        drawLink(IkHandleId.LEFT_ELBOW, IkHandleId.LEFT_HAND)
+        drawLink(IkHandleId.TORSO, IkHandleId.RIGHT_ELBOW)
+        drawLink(IkHandleId.RIGHT_ELBOW, IkHandleId.RIGHT_HAND)
+        drawLink(IkHandleId.TORSO, IkHandleId.LEFT_FOOT)
+        drawLink(IkHandleId.TORSO, IkHandleId.RIGHT_FOOT)
+
+        val fill = scratch.fillPaint
+        val ring = scratch.strokePaint
+        val labelPaint = scratch.textPaint
+        labelPaint.textSize = (min(w, h) * 0.022f).coerceIn(14f, 22f)
+
+        for (hnd in handles) {
+            val px = hnd.nx * w
+            val py = hnd.ny * h
+            val isActive = hnd.id == activeIkHandle
+            val radius = if (isActive) 13f else 9.5f
+
+            // Outer glow
+            fill.color = Color.argb(if (isActive) 110 else 65, Color.red(hnd.color), Color.green(hnd.color), Color.blue(hnd.color))
+            canvas.drawCircle(px, py, radius + 6f, fill)
+
+            // Handle core
+            fill.color = hnd.color
+            canvas.drawCircle(px, py, radius, fill)
+
+            // Crisp white ring
+            ring.strokeWidth = if (isActive) 3.2f else 2.2f
+            ring.color = Color.WHITE
+            canvas.drawCircle(px, py, radius, ring)
+
+            // Label pill above active or primary hand/head handles
+            if (isActive || hnd.id == IkHandleId.HEAD || hnd.id == IkHandleId.LEFT_HAND || hnd.id == IkHandleId.RIGHT_HAND) {
+                labelPaint.color = Color.WHITE
+                canvas.drawText(hnd.id.label, px, py - radius - 8f, labelPaint)
+            }
+        }
+    }
+
+    private fun drawCameraViewfinderOverlay(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        camera: EvaluatedCamera,
+        scratch: RenderScratch
+    ) {
+        val stroke = scratch.strokePaint
+        stroke.strokeWidth = 3f
+        stroke.color = 0xFFFACC15.toInt()
+        val inset = min(w, h) * 0.04f
+        val corner = min(w, h) * 0.06f
+
+        // Corner brackets
+        canvas.drawLine(inset, inset, inset + corner, inset, stroke)
+        canvas.drawLine(inset, inset, inset, inset + corner, stroke)
+        canvas.drawLine(w - inset, inset, w - inset - corner, inset, stroke)
+        canvas.drawLine(w - inset, inset, w - inset, inset + corner, stroke)
+        canvas.drawLine(inset, h - inset, inset + corner, h - inset, stroke)
+        canvas.drawLine(inset, h - inset, inset, h - inset - corner, stroke)
+        canvas.drawLine(w - inset, h - inset, w - inset - corner, h - inset, stroke)
+        canvas.drawLine(w - inset, h - inset, w - inset, h - inset - corner, stroke)
+
+        // Center crosshair
+        val cx = w * 0.5f
+        val cy = h * 0.5f
+        canvas.drawCircle(cx, cy, 10f, stroke)
+        canvas.drawLine(cx - 18f, cy, cx + 18f, cy, stroke)
+        canvas.drawLine(cx, cy - 18f, cx, cy + 18f, stroke)
+
+        // HUD status badge
+        val label = scratch.textPaint
+        label.textSize = (min(w, h) * 0.024f).coerceIn(16f, 24f)
+        label.color = 0xFFFACC15.toInt()
+        val zoomPct = (camera.zoom * 100).toInt()
+        canvas.drawText("CAM ${zoomPct}% • (${"%.2f".format(camera.x)}, ${"%.2f".format(camera.y)})", cx, inset + label.textSize + 4f, label)
     }
 
     private fun drawSubtleStageGrid(canvas: Canvas, w: Float, h: Float, scratch: RenderScratch) {
