@@ -3,14 +3,14 @@ package com.example.ui.theme
 import androidx.compose.ui.graphics.Color
 
 // Core Obsidian & Charcoal Studio Surfaces
-val StudioObsidian = Color(0xFF0A0D12)
-val StudioCanvasBackdrop = Color(0xFF0E121A)
-val StudioCharcoal = Color(0xFF141822)
+val StudioObsidian = Color(0xFF0B0E14)
+val StudioCanvasBackdrop = Color(0xFF0B0E14)
+val StudioCharcoal = Color(0xFF141923)
 val StudioPanel = Color(0xFF1A202D)
 val StudioCard = Color(0xFF212838)
 val StudioCardElevated = Color(0xFF283145)
-val StudioBorder = Color(0xFF313B52)
-val StudioBorderSubtle = Color(0xFF242C3E)
+val StudioBorder = Color(0xFF2E374B)
+val StudioBorderSubtle = Color(0xFF232A38)
 
 // Typography & Ink
 val StudioTextPrimary = Color(0xFFF3F6FC)

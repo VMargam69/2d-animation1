@@ -1,6 +1,7 @@
 package com.example.ui.screens.editor
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,15 +14,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.ProjectDocument
 import com.example.ui.theme.*
 
+/**
+ * Compact Single-Row Top Bar (~50dp height) preserving comfortable touch targets
+ * and sleek 20dp icons with zero horizontal clipping on 360dp portrait screens.
+ */
 @Composable
 fun EditorTopToolbar(
     project: ProjectDocument,
@@ -40,166 +47,164 @@ fun EditorTopToolbar(
     var overflowOpen by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
 
-    Surface(
-        color = StudioCharcoal,
-        border = BorderStroke(1.dp, StudioBorderSubtle),
-        modifier = Modifier.fillMaxWidth()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(StudioCharcoal)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 6.dp, vertical = 6.dp),
+                .height(50.dp)
+                .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            IconButton(
-                onClick = onBack,
+            // Back arrow (48dp vertical touch target)
+            Box(
+                contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(40.dp)
+                    .width(36.dp)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(onClick = onBack)
                     .testTag("editor_back_btn")
             ) {
                 Icon(
-                    Icons.AutoMirrored.Rounded.ArrowBack,
+                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                     contentDescription = stringResource(R.string.nav_back),
-                    tint = StudioTextPrimary
+                    tint = StudioTextPrimary,
+                    modifier = Modifier.size(21.dp)
                 )
             }
 
-            // Project Title & Quick Settings Pill (Aspect Ratio, FPS, Quality)
+            // Compact Project Name (single line with ellipsis) + tiny aspect-ratio badge stacked neatly under it
             Column(
+                verticalArrangement = Arrangement.Center,
                 modifier = Modifier
                     .weight(1f)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .clickable(onClick = onOpenSettings)
-                    .padding(horizontal = 4.dp)
+                    .padding(horizontal = 3.dp)
                     .testTag("editor_settings_pill")
             ) {
                 Text(
                     text = project.name,
-                    style = MaterialTheme.typography.titleSmall,
+                    fontSize = 12.5.sp,
+                    lineHeight = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
                     color = StudioTextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Spacer(Modifier.height(1.dp))
+                Surface(
+                    color = ElectricCyanDim.copy(alpha = 0.65f),
+                    shape = RoundedCornerShape(4.dp),
+                    border = BorderStroke(0.8.dp, ElectricCyan.copy(alpha = 0.45f))
                 ) {
                     Text(
                         text = project.aspectRatioPreset.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = ElectricCyan
-                    )
-                    Text("•", style = MaterialTheme.typography.labelSmall, color = StudioTextMuted)
-                    Text(
-                        text = "${project.fps}FPS",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StudioTextSecondary
-                    )
-                    Text("•", style = MaterialTheme.typography.labelSmall, color = StudioTextMuted)
-                    Text(
-                        text = project.previewQuality.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StudioTextMuted
+                        fontSize = 9.sp,
+                        lineHeight = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = ElectricCyan,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.5.dp)
                     )
                 }
             }
 
-            // Undo / Redo
-            IconButton(
-                onClick = onUndo,
+            // Undo
+            CompactTopIconAction(
+                icon = Icons.AutoMirrored.Rounded.Undo,
+                contentDescription = "Undo",
+                tint = if (canUndo) StudioTextPrimary else StudioTextMuted.copy(alpha = 0.45f),
                 enabled = canUndo,
-                modifier = Modifier
-                    .size(38.dp)
-                    .testTag("editor_undo_btn")
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Rounded.Undo,
-                    contentDescription = "Undo",
-                    tint = if (canUndo) StudioTextPrimary else StudioTextMuted,
-                    modifier = Modifier.size(19.dp)
-                )
-            }
-            IconButton(
-                onClick = onRedo,
+                testTag = "editor_undo_btn",
+                onClick = onUndo
+            )
+
+            // Redo
+            CompactTopIconAction(
+                icon = Icons.AutoMirrored.Rounded.Redo,
+                contentDescription = "Redo",
+                tint = if (canRedo) StudioTextPrimary else StudioTextMuted.copy(alpha = 0.45f),
                 enabled = canRedo,
-                modifier = Modifier
-                    .size(38.dp)
-                    .testTag("editor_redo_btn")
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Rounded.Redo,
-                    contentDescription = "Redo",
-                    tint = if (canRedo) StudioTextPrimary else StudioTextMuted,
-                    modifier = Modifier.size(19.dp)
-                )
-            }
+                testTag = "editor_redo_btn",
+                onClick = onRedo
+            )
 
             // Onion Skin Toggle
-            IconButton(
-                onClick = onToggleOnionSkin,
-                modifier = Modifier
-                    .size(38.dp)
-                    .testTag("editor_onion_skin_btn")
-            ) {
-                Icon(
-                    Icons.Rounded.Layers,
-                    contentDescription = stringResource(R.string.editor_onion_skin),
-                    tint = if (project.onionSkinEnabled) AmberKeyframe else StudioTextSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+            CompactTopIconAction(
+                icon = Icons.Rounded.Layers,
+                contentDescription = stringResource(R.string.editor_onion_skin),
+                tint = if (project.onionSkinEnabled) ElectricCyan else StudioTextSecondary,
+                enabled = true,
+                testTag = "editor_onion_skin_btn",
+                onClick = onToggleOnionSkin
+            )
 
-            // Save Button
-            IconButton(
-                onClick = onSave,
-                modifier = Modifier
-                    .size(38.dp)
-                    .testTag("editor_save_btn")
-            ) {
-                Icon(
-                    Icons.Rounded.Save,
-                    contentDescription = stringResource(R.string.editor_save),
-                    tint = EmeraldLayer,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+            // Save
+            CompactTopIconAction(
+                icon = Icons.Rounded.Save,
+                contentDescription = stringResource(R.string.editor_save),
+                tint = EmeraldLayer,
+                enabled = true,
+                testTag = "editor_save_btn",
+                onClick = onSave
+            )
 
-            // Export CTA
-            Button(
-                onClick = onOpenExport,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ElectricCyan,
-                    contentColor = StudioObsidian
-                ),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            // Compact Primary "Export" Pill Button
+            Surface(
+                color = ElectricCyan,
+                shape = RoundedCornerShape(18.dp),
                 modifier = Modifier
-                    .height(36.dp)
+                    .height(32.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .clickable(onClick = onOpenExport)
                     .testTag("editor_export_btn")
             ) {
-                Icon(Icons.Rounded.IosShare, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Export", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.IosShare,
+                        contentDescription = null,
+                        tint = StudioObsidian,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Export",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = StudioObsidian,
+                        maxLines = 1
+                    )
+                }
             }
 
-            // Overflow (Settings, Frame Rate, Guide, Clear/Reset)
+            // 3-dot Overflow Menu (Project Settings, Guide, Reset)
             Box {
-                IconButton(
-                    onClick = { overflowOpen = true },
-                    modifier = Modifier
-                        .size(38.dp)
-                        .testTag("editor_overflow_btn")
-                ) {
-                    Icon(Icons.Rounded.MoreVert, contentDescription = "More editor options", tint = StudioTextPrimary)
-                }
+                CompactTopIconAction(
+                    icon = Icons.Rounded.MoreVert,
+                    contentDescription = "More editor options",
+                    tint = StudioTextPrimary,
+                    enabled = true,
+                    testTag = "editor_overflow_btn",
+                    onClick = { overflowOpen = true }
+                )
                 DropdownMenu(
                     expanded = overflowOpen,
                     onDismissRequest = { overflowOpen = false },
                     containerColor = StudioPanel
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Project & Frame Settings", color = StudioTextPrimary) },
+                        text = { Text("Project Settings (${project.fps} FPS)", color = StudioTextPrimary) },
                         leadingIcon = { Icon(Icons.Rounded.Tune, null, tint = ElectricCyan) },
                         onClick = { overflowOpen = false; onOpenSettings() }
                     )
@@ -209,13 +214,14 @@ fun EditorTopToolbar(
                         onClick = { overflowOpen = false; onOpenGuide() }
                     )
                     DropdownMenuItem(
-                        text = { Text("Clear / Reset Stage", color = CoralPlayhead) },
+                        text = { Text("Reset Stage", color = CoralPlayhead) },
                         leadingIcon = { Icon(Icons.Rounded.RestartAlt, null, tint = CoralPlayhead) },
                         onClick = { overflowOpen = false; confirmReset = true }
                     )
                 }
             }
         }
+        HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
     }
 
     if (confirmReset) {
@@ -240,6 +246,33 @@ fun EditorTopToolbar(
             dismissButton = {
                 TextButton(onClick = { confirmReset = false }) { Text("Cancel", color = StudioTextSecondary) }
             }
+        )
+    }
+}
+
+@Composable
+private fun CompactTopIconAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    tint: androidx.compose.ui.graphics.Color,
+    enabled: Boolean,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .width(34.dp)
+            .height(48.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .testTag(testTag)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(20.dp)
         )
     }
 }

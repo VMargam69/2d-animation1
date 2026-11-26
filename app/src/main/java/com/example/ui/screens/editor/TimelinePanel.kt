@@ -1,11 +1,10 @@
 package com.example.ui.screens.editor
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,6 +28,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.engine.ProceduralRigRenderer
 import com.example.model.*
 import com.example.ui.theme.*
@@ -36,8 +36,10 @@ import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
 
 /**
- * Bottom-aligned horizontal timeline displaying animation layers with 1-tap visibility/lock
- * toggles and individually selectable keyframe diamond nodes with quick easing/navigation actions.
+ * Compact, high-density CapCut Pro-style Timeline Panel:
+ * - Single unified 42dp Transport + Scene + Keyframe strip (merges the old two-row header).
+ * - Collapsible left LAYERS rail (116dp full <-> 40dp icon-only rail) to maximize track width.
+ * - Deduplicated frame-scrubbing & GPU-translated playhead for lag-free interaction.
  */
 @Composable
 fun TimelinePanel(
@@ -52,13 +54,11 @@ fun TimelinePanel(
     onSelectScene: (Int) -> Unit,
     onAddScene: () -> Unit,
     onTogglePlayback: () -> Unit,
-    onStepFrame: (Int) -> Unit,
     onSeekFrame: (Int) -> Unit,
     onToggleLoop: () -> Unit,
     onToggleKeyframe: () -> Unit,
     onSelectKeyframeNode: (clipId: String, globalFrame: Int) -> Unit,
     onCycleSelectedKeyframeEasing: () -> Unit,
-    onOpenTransformForKeyframe: () -> Unit,
     onAdjustTimelineZoom: (Float) -> Unit,
     onSelectClip: (String) -> Unit,
     onToggleLayerVisibility: (String) -> Unit,
@@ -74,6 +74,15 @@ fun TimelinePanel(
         it.frame == (currentFrame - selectedClip.startFrame)
     }
     val hasKeyframeHere = selectedKeyframe != null
+    val activeEasingLabel = remember(selectedClip, currentFrame, selectedKeyframe) {
+        val easing = selectedKeyframe?.easing
+            ?: selectedClip?.keyframes
+                ?.filter { it.frame <= (currentFrame - selectedClip.startFrame) }
+                ?.maxByOrNull { it.frame }
+                ?.easing
+            ?: EasingType.LINEAR
+        shortEasingLabel(easing)
+    }
 
     val frameWidthDp = (10.dp * timelineZoom).coerceIn(6.dp, 24.dp)
     val density = LocalDensity.current
@@ -82,207 +91,301 @@ fun TimelinePanel(
 
     val horizontalScroll = rememberScrollState()
     val verticalScroll = rememberScrollState()
+    var sceneDropdownOpen by remember { mutableStateOf(false) }
+    var isLayerRailCollapsed by remember { mutableStateOf(false) }
+    val layerRailWidth by animateDpAsState(
+        targetValue = if (isLayerRailCollapsed) 40.dp else 116.dp,
+        label = "timeline_layer_rail_width"
+    )
+    val latestOnSeekFrame by rememberUpdatedState(onSeekFrame)
 
     Surface(
         color = StudioCharcoal,
-        border = BorderStroke(1.dp, StudioBorderSubtle),
         modifier = modifier
             .fillMaxWidth()
             .testTag("bottom_horizontal_timeline")
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // 1. Scene Tabs & Timecode Header
-            Row(
+            // 1. Unified Single Control Strip (~42dp): Scene Switcher | Transport + Timecode | Keyframe + Easing + Zoom
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(StudioPanel)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                LazyRow(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    itemsIndexed(project.scenes) { idx, sc ->
-                        val active = idx == project.activeSceneIndex
-                        Surface(
-                            color = if (active) ElectricCyanDim else StudioCard,
-                            shape = RoundedCornerShape(7.dp),
-                            border = BorderStroke(1.dp, if (active) ElectricCyan else StudioBorderSubtle),
-                            modifier = Modifier
-                                .clickable { onSelectScene(idx) }
-                                .testTag("scene_tab_$idx")
-                        ) {
-                            Text(
-                                text = sc.name,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (active) StudioTextPrimary else StudioTextSecondary,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-                    item {
-                        IconButton(
-                            onClick = onAddScene,
-                            modifier = Modifier
-                                .size(28.dp)
-                                .testTag("add_scene_btn")
-                        ) {
-                            Icon(Icons.Rounded.Add, contentDescription = "Add scene", tint = ElectricCyan, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                }
-
-                LiveTimecodeBadge(
-                    playbackFrameFlow = playbackFrameFlow,
-                    fps = project.fps,
-                    durationFrames = scene.durationFrames
-                )
-            }
-
-            // 2. Transport Controls + Selected Keyframe Node Inspector Strip
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
+                    .height(42.dp)
                     .background(StudioCharcoal)
-                    .padding(horizontal = 6.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    IconButton(
-                        onClick = { onSeekFrame(0) },
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("timeline_jump_start_btn")
-                    ) {
-                        Icon(Icons.Rounded.SkipPrevious, contentDescription = "Jump to start", tint = StudioTextSecondary, modifier = Modifier.size(18.dp))
-                    }
-                    IconButton(
-                        onClick = { onStepFrame(-1) },
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("timeline_prev_frame_btn")
-                    ) {
-                        Icon(Icons.Rounded.ChevronLeft, contentDescription = "Previous frame", tint = StudioTextPrimary, modifier = Modifier.size(19.dp))
-                    }
-                    FilledIconButton(
-                        onClick = onTogglePlayback,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = if (isPlaying) CoralPlayhead else ElectricCyan,
-                            contentColor = if (isPlaying) StudioTextPrimary else StudioObsidian
-                        ),
-                        modifier = Modifier
-                            .size(34.dp)
-                            .testTag("timeline_play_pause_btn")
-                    ) {
-                        Icon(
-                            if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = if (isPlaying) "Pause" else "Play",
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = { onStepFrame(1) },
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("timeline_next_frame_btn")
-                    ) {
-                        Icon(Icons.Rounded.ChevronRight, contentDescription = "Next frame", tint = StudioTextPrimary, modifier = Modifier.size(19.dp))
-                    }
-                    IconButton(
-                        onClick = onToggleLoop,
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("timeline_loop_btn")
-                    ) {
-                        Icon(
-                            Icons.Rounded.Repeat,
-                            contentDescription = "Toggle loop",
-                            tint = if (isLooping) EmeraldLayer else StudioTextMuted,
-                            modifier = Modifier.size(17.dp)
-                        )
-                    }
-                }
-
-                // Right side: Keyframe Node Actions (Easing cycler when on a node + Add/Remove Key + Zoom)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (selectedKeyframe != null) {
+                val stripMinWidth = maxWidth
+                Row(
+                    modifier = Modifier
+                        .widthIn(min = stripMinWidth)
+                        .fillMaxHeight()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // LEFT: Compact Scene Dropdown Chip
+                    Box {
                         Surface(
-                            color = ElectricCyanDim,
+                            color = StudioPanel,
                             shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, ElectricCyan),
+                            border = BorderStroke(1.dp, StudioBorderSubtle),
                             modifier = Modifier
-                                .clickable(onClick = onCycleSelectedKeyframeEasing)
-                                .testTag("selected_keyframe_easing_btn")
+                                .height(28.dp)
+                                .clickable { sceneDropdownOpen = true }
+                                .testTag("scene_switcher_btn")
                         ) {
-                            Text(
-                                text = selectedKeyframe.easing.displayName,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = StudioTextPrimary,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                            Row(
+                                modifier = Modifier.padding(start = 8.dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = scene.name,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = StudioTextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 64.dp)
+                                )
+                                Icon(
+                                    imageVector = Icons.Rounded.ArrowDropDown,
+                                    contentDescription = "Switch scene",
+                                    tint = StudioTextSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = sceneDropdownOpen,
+                            onDismissRequest = { sceneDropdownOpen = false },
+                            containerColor = StudioPanel
+                        ) {
+                            project.scenes.forEachIndexed { idx, sc ->
+                                val isActive = idx == project.activeSceneIndex
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = sc.name,
+                                            color = if (isActive) ElectricCyan else StudioTextPrimary,
+                                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (isActive) Icons.Rounded.Check else Icons.Rounded.Movie,
+                                            contentDescription = null,
+                                            tint = if (isActive) ElectricCyan else StudioTextMuted,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        sceneDropdownOpen = false
+                                        onSelectScene(idx)
+                                    },
+                                    modifier = Modifier.testTag("scene_tab_$idx")
+                                )
+                            }
+                            HorizontalDivider(color = StudioBorderSubtle)
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "+ Add Scene",
+                                        color = ElectricCyan,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Add,
+                                        contentDescription = "Add scene",
+                                        tint = ElectricCyan,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                onClick = {
+                                    sceneDropdownOpen = false
+                                    onAddScene()
+                                },
+                                modifier = Modifier.testTag("add_scene_btn")
                             )
                         }
-                        IconButton(
-                            onClick = onOpenTransformForKeyframe,
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(Icons.Rounded.Tune, contentDescription = "Edit keyframe transform", tint = ElectricCyan, modifier = Modifier.size(16.dp))
-                        }
                     }
 
-                    Surface(
-                        color = if (hasKeyframeHere) AmberKeyframeDim else StudioPanel,
-                        shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, if (hasKeyframeHere) AmberKeyframe else StudioBorder),
-                        modifier = Modifier
-                            .clickable(onClick = onToggleKeyframe)
-                            .testTag("timeline_keyframe_btn")
+                    Spacer(Modifier.width(6.dp))
+
+                    // CENTER: Play/Pause + Live Compact Timecode + Loop Toggle
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        FilledIconButton(
+                            onClick = onTogglePlayback,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = if (isPlaying) CoralPlayhead else ElectricCyan,
+                                contentColor = if (isPlaying) StudioTextPrimary else StudioObsidian
+                            ),
+                            modifier = Modifier
+                                .size(30.dp)
+                                .testTag("timeline_play_pause_btn")
                         ) {
                             Icon(
-                                Icons.Rounded.Diamond,
-                                contentDescription = "Toggle keyframe",
-                                tint = if (hasKeyframeHere) AmberKeyframe else StudioTextSecondary,
-                                modifier = Modifier.size(13.dp)
+                                imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                modifier = Modifier.size(18.dp)
                             )
-                            Text(
-                                text = if (hasKeyframeHere) "Del KF" else "+ Key",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (hasKeyframeHere) AmberKeyframe else StudioTextPrimary
+                        }
+
+                        LiveCompactTimecode(
+                            playbackFrameFlow = playbackFrameFlow,
+                            fps = project.fps
+                        )
+
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .clickable(onClick = onToggleLoop)
+                                .testTag("timeline_loop_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Repeat,
+                                contentDescription = "Toggle loop",
+                                tint = if (isLooping) ElectricCyan else StudioTextMuted,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
 
-                    IconButton(
-                        onClick = { onAdjustTimelineZoom(-0.25f) },
-                        modifier = Modifier.size(28.dp)
+                    Spacer(Modifier.width(6.dp))
+
+                    // RIGHT: Smart Keyframe Diamond Toggle + Easing Pill + Timeline Zoom (- / +)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Icon(Icons.Rounded.Remove, contentDescription = "Zoom out timeline", tint = StudioTextSecondary, modifier = Modifier.size(15.dp))
-                    }
-                    IconButton(
-                        onClick = { onAdjustTimelineZoom(0.25f) },
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Icon(Icons.Rounded.Add, contentDescription = "Zoom in timeline", tint = StudioTextSecondary, modifier = Modifier.size(15.dp))
+                        Surface(
+                            color = if (hasKeyframeHere) AmberKeyframeDim else StudioPanel,
+                            shape = RoundedCornerShape(7.dp),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (hasKeyframeHere) AmberKeyframe else StudioBorderSubtle
+                            ),
+                            modifier = Modifier
+                                .height(26.dp)
+                                .clickable(onClick = onToggleKeyframe)
+                                .testTag("timeline_keyframe_btn")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Diamond,
+                                    contentDescription = if (hasKeyframeHere) "Delete keyframe" else "Add keyframe",
+                                    tint = if (hasKeyframeHere) AmberKeyframe else StudioTextSecondary,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    text = if (hasKeyframeHere) "−" else "+",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (hasKeyframeHere) AmberKeyframe else StudioTextPrimary
+                                )
+                            }
+                        }
+
+                        Surface(
+                            color = if (hasKeyframeHere) ElectricCyanDim else StudioPanel,
+                            shape = RoundedCornerShape(7.dp),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (hasKeyframeHere) ElectricCyan else StudioBorderSubtle
+                            ),
+                            modifier = Modifier
+                                .height(26.dp)
+                                .clickable(enabled = selectedClip != null) {
+                                    if (hasKeyframeHere) {
+                                        onCycleSelectedKeyframeEasing()
+                                    } else if (selectedClip != null) {
+                                        val prevKf = selectedClip.keyframes
+                                            .filter { it.frame <= (currentFrame - selectedClip.startFrame) }
+                                            .maxByOrNull { it.frame }
+                                            ?: selectedClip.keyframes.firstOrNull()
+                                        if (prevKf != null) {
+                                            onSelectKeyframeNode(selectedClip.id, selectedClip.startFrame + prevKf.frame)
+                                        }
+                                    }
+                                }
+                                .testTag("selected_keyframe_easing_btn")
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(horizontal = 6.dp)
+                            ) {
+                                Text(
+                                    text = activeEasingLabel,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (selectedClip != null) StudioTextPrimary else StudioTextMuted,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .height(26.dp)
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(StudioPanel)
+                                .border(1.dp, StudioBorderSubtle, RoundedCornerShape(7.dp))
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(24.dp, 26.dp)
+                                    .clickable { onAdjustTimelineZoom(-0.25f) }
+                                    .testTag("timeline_zoom_out_btn")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Remove,
+                                    contentDescription = "Zoom out timeline",
+                                    tint = StudioTextSecondary,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                            VerticalDivider(color = StudioBorderSubtle, thickness = 1.dp)
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(24.dp, 26.dp)
+                                    .clickable { onAdjustTimelineZoom(0.25f) }
+                                    .testTag("timeline_zoom_in_btn")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Add,
+                                    contentDescription = "Zoom in timeline",
+                                    tint = StudioTextSecondary,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
 
             HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
 
-            // 3. Synchronized Layer Visibility Column & Horizontal Keyframe Track Area
+            // 2. Synchronized Collapsible Layer Rail & Horizontal Keyframe Track Area
             Row(modifier = Modifier.fillMaxSize()) {
-                // Fixed Left Column: Layers with Prominent Visibility Eye & Lock Controls
+                // Collapsible Left Layer Column (116dp full <-> 40dp icon-only rail)
                 Column(
                     modifier = Modifier
-                        .width(124.dp)
+                        .width(layerRailWidth)
                         .fillMaxHeight()
                         .background(StudioPanel)
                 ) {
@@ -290,13 +393,50 @@ fun TimelinePanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(26.dp)
-                            .clickable(onClick = onOpenLayerManager)
-                            .padding(horizontal = 8.dp),
+                            .padding(horizontal = if (isLayerRailCollapsed) 2.dp else 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = if (isLayerRailCollapsed) Arrangement.Center else Arrangement.SpaceBetween
                     ) {
-                        Text("LAYERS", style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
-                        Icon(Icons.Rounded.AddCircleOutline, contentDescription = "Manage layers", tint = ElectricCyan, modifier = Modifier.size(14.dp))
+                        if (!isLayerRailCollapsed) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable(onClick = onOpenLayerManager)
+                                    .padding(vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "LAYERS",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = StudioTextSecondary,
+                                    maxLines = 1
+                                )
+                                Icon(
+                                    imageVector = Icons.Rounded.AddCircleOutline,
+                                    contentDescription = "Manage layers",
+                                    tint = ElectricCyan,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                        }
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .clickable { isLayerRailCollapsed = !isLayerRailCollapsed }
+                                .testTag("timeline_layers_collapse_btn")
+                        ) {
+                            Icon(
+                                imageVector = if (isLayerRailCollapsed) Icons.Rounded.ChevronRight else Icons.Rounded.ChevronLeft,
+                                contentDescription = if (isLayerRailCollapsed) "Expand layers" else "Collapse layers",
+                                tint = StudioTextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                     HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
 
@@ -311,52 +451,62 @@ fun TimelinePanel(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(38.dp)
+                                    .height(36.dp)
                                     .background(if (isSelLayer) StudioCard else Color.Transparent)
-                                    .padding(horizontal = 4.dp),
+                                    .padding(horizontal = if (isLayerRailCollapsed) 4.dp else 5.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                horizontalArrangement = if (isLayerRailCollapsed) Arrangement.Center else Arrangement.spacedBy(3.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
                                         .width(3.dp)
-                                        .height(22.dp)
+                                        .height(20.dp)
                                         .clip(RoundedCornerShape(2.dp))
                                         .background(if (layer.isVisible) layerColor else StudioTextMuted.copy(alpha = 0.4f))
                                 )
-                                Text(
-                                    text = layer.name,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (layer.isVisible) StudioTextPrimary else StudioTextMuted,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                IconButton(
-                                    onClick = { onToggleLayerVisibility(layer.id) },
+                                if (!isLayerRailCollapsed) {
+                                    Text(
+                                        text = layer.name,
+                                        fontSize = 11.sp,
+                                        color = if (layer.isVisible) StudioTextPrimary else StudioTextMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                } else {
+                                    Spacer(Modifier.width(3.dp))
+                                }
+                                Box(
+                                    contentAlignment = Alignment.Center,
                                     modifier = Modifier
-                                        .size(26.dp)
+                                        .size(24.dp)
+                                        .clip(CircleShape)
+                                        .clickable { onToggleLayerVisibility(layer.id) }
                                         .testTag("layer_vis_${layer.id}")
                                 ) {
                                     Icon(
-                                        if (layer.isVisible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                                        imageVector = if (layer.isVisible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
                                         contentDescription = "Toggle layer visibility",
                                         tint = if (layer.isVisible) ElectricCyan else StudioTextMuted,
-                                        modifier = Modifier.size(15.dp)
+                                        modifier = Modifier.size(14.dp)
                                     )
                                 }
-                                IconButton(
-                                    onClick = { onToggleLayerLock(layer.id) },
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .testTag("layer_lock_${layer.id}")
-                                ) {
-                                    Icon(
-                                        if (layer.isLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
-                                        contentDescription = "Toggle layer lock",
-                                        tint = if (layer.isLocked) AmberKeyframe else StudioTextMuted,
-                                        modifier = Modifier.size(13.dp)
-                                    )
+                                if (!isLayerRailCollapsed) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .clickable { onToggleLayerLock(layer.id) }
+                                            .testTag("layer_lock_${layer.id}")
+                                    ) {
+                                        Icon(
+                                            imageVector = if (layer.isLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                                            contentDescription = "Toggle layer lock",
+                                            tint = if (layer.isLocked) AmberKeyframe else StudioTextMuted,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
                                 }
                             }
                             HorizontalDivider(color = StudioBorderSubtle.copy(alpha = 0.6f), thickness = 1.dp)
@@ -364,7 +514,7 @@ fun TimelinePanel(
                     }
                 }
 
-                VerticalDivider(color = StudioBorder, thickness = 1.dp)
+                VerticalDivider(color = StudioBorderSubtle, thickness = 1.dp)
 
                 // Right Horizontally Scrollable Ruler + Tracks + Selectable Keyframe Nodes + Playhead
                 Box(
@@ -374,7 +524,7 @@ fun TimelinePanel(
                         .horizontalScroll(horizontalScroll)
                 ) {
                     Column(modifier = Modifier.width(totalTrackWidthDp)) {
-                        // Frame Ruler (tap or scrub playhead)
+                        // Frame Ruler (tap or deduplicated scrub playhead)
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -382,13 +532,24 @@ fun TimelinePanel(
                                 .background(StudioObsidian)
                                 .pointerInput(scene.durationFrames, frameWidthPx) {
                                     detectTapGestures { pos ->
-                                        onSeekFrame((pos.x / frameWidthPx).toInt())
+                                        val target = (pos.x / frameWidthPx).toInt().coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0))
+                                        latestOnSeekFrame(target)
                                     }
                                 }
                                 .pointerInput(scene.durationFrames, frameWidthPx) {
-                                    detectHorizontalDragGestures { change, _ ->
+                                    var lastSeekedFrame = -1
+                                    detectHorizontalDragGestures(
+                                        onDragStart = { lastSeekedFrame = -1 },
+                                        onDragEnd = { lastSeekedFrame = -1 },
+                                        onDragCancel = { lastSeekedFrame = -1 }
+                                    ) { change, _ ->
                                         change.consume()
-                                        onSeekFrame((change.position.x / frameWidthPx).toInt())
+                                        val target = (change.position.x / frameWidthPx).toInt()
+                                            .coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0))
+                                        if (target != lastSeekedFrame) {
+                                            lastSeekedFrame = target
+                                            latestOnSeekFrame(target)
+                                        }
                                     }
                                 }
                                 .testTag("timeline_frame_ruler")
@@ -396,12 +557,11 @@ fun TimelinePanel(
                             val rulerTextPaint = remember(density) {
                                 android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                                     color = 0xFF94A3B8.toInt()
-                                    textSize = with(density) { 10.dp.toPx() }
+                                    textSize = with(density) { 9.5.dp.toPx() }
                                 }
                             }
                             Canvas(modifier = Modifier.fillMaxSize()) {
                                 val step = if (timelineZoom < 0.8f) 12 else 6
-                                // Cull ruler ticks & labels to the visible horizontal scroll window (+ generous buffer)
                                 val scrollPx = horizontalScroll.value.toFloat()
                                 val startF = ((scrollPx - 200f) / frameWidthPx).toInt().coerceAtLeast(0)
                                 val endF = ((scrollPx + 1800f) / frameWidthPx).toInt().coerceAtMost(scene.durationFrames - 1)
@@ -426,7 +586,7 @@ fun TimelinePanel(
                                         f += step
                                     }
                                 }
-                                // Draw amber camera keyframe ticks on ruler
+                                // Amber camera keyframe diamonds on ruler
                                 for (camKf in scene.cameraKeyframes) {
                                     if (camKf.frame in startF..endF) {
                                         val cx = camKf.frame * frameWidthPx
@@ -456,7 +616,7 @@ fun TimelinePanel(
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(38.dp)
+                                        .height(36.dp)
                                         .background(if (layer.isVisible) StudioCharcoal else StudioObsidian.copy(alpha = 0.72f))
                                 ) {
                                     layerClips.forEach { clip ->
@@ -469,15 +629,15 @@ fun TimelinePanel(
                                             modifier = Modifier
                                                 .offset(x = clipOffsetX, y = 3.dp)
                                                 .width(clipWidth)
-                                                .height(32.dp)
+                                                .height(30.dp)
                                                 .clip(RoundedCornerShape(6.dp))
                                                 .background(
                                                     if (isSelected) layerColor.copy(alpha = 0.38f * visAlpha)
                                                     else layerColor.copy(alpha = 0.20f * visAlpha)
                                                 )
                                                 .border(
-                                                    width = if (isSelected) 1.6.dp else 1.dp,
-                                                    color = if (isSelected) ElectricCyan else layerColor.copy(alpha = 0.65f * visAlpha),
+                                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                                    color = if (isSelected) ElectricCyan else layerColor.copy(alpha = 0.62f * visAlpha),
                                                     shape = RoundedCornerShape(6.dp)
                                                 )
                                                 .clickable { onSelectClip(clip.id) }
@@ -485,14 +645,14 @@ fun TimelinePanel(
                                         ) {
                                             Text(
                                                 text = clip.name,
-                                                style = MaterialTheme.typography.labelSmall,
+                                                fontSize = 10.sp,
                                                 color = StudioTextPrimary.copy(alpha = visAlpha),
                                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier
                                                     .align(Alignment.TopStart)
-                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    .padding(horizontal = 6.dp, vertical = 1.dp)
                                             )
 
                                             // Individually Selectable Keyframe Diamond Nodes
@@ -505,7 +665,7 @@ fun TimelinePanel(
                                                 Box(
                                                     contentAlignment = Alignment.Center,
                                                     modifier = Modifier
-                                                        .offset(x = clampedX, y = 11.dp)
+                                                        .offset(x = clampedX, y = 10.dp)
                                                         .size(20.dp)
                                                         .clip(CircleShape)
                                                         .clickable {
@@ -513,7 +673,7 @@ fun TimelinePanel(
                                                         }
                                                         .testTag("keyframe_node_${clip.id}_${kf.frame}")
                                                 ) {
-                                                    Canvas(modifier = Modifier.size(12.dp)) {
+                                                    Canvas(modifier = Modifier.size(11.dp)) {
                                                         val side = size.minDimension * 0.66f
                                                         val topLeft = Offset((size.width - side) / 2f, (size.height - side) / 2f)
                                                         rotate(45f) {
@@ -553,19 +713,26 @@ fun TimelinePanel(
     }
 }
 
+private fun shortEasingLabel(easing: EasingType): String = when (easing) {
+    EasingType.LINEAR -> "Linear"
+    EasingType.EASE_IN_OUT -> "Ease"
+    EasingType.HOLD -> "Hold"
+}
+
 @Composable
-private fun LiveTimecodeBadge(
+private fun LiveCompactTimecode(
     playbackFrameFlow: StateFlow<Int>,
-    fps: Int,
-    durationFrames: Int
+    fps: Int
 ) {
     val frame by playbackFrameFlow.collectAsState()
     val seconds = frame.toFloat() / fps.coerceAtLeast(1).toFloat()
     val timecode = String.format(Locale.US, "%02d:%04.1f", (seconds / 60).toInt(), seconds % 60f)
     Text(
-        text = "$timecode • F${frame + 1}/$durationFrames",
-        style = MaterialTheme.typography.labelSmall,
-        color = ElectricCyan
+        text = "$timecode • F${frame + 1}",
+        fontSize = 10.5.sp,
+        fontWeight = FontWeight.Medium,
+        color = ElectricCyan,
+        maxLines = 1
     )
 }
 
@@ -587,7 +754,7 @@ private fun LivePlayheadOverlay(
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .size(11.dp)
+                .size(10.dp)
                 .clip(CircleShape)
                 .background(CoralPlayhead)
         )

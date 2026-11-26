@@ -9,12 +9,18 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.engine.SceneRenderer
 import com.example.model.*
@@ -93,7 +99,21 @@ fun EditorScreen(
     onResetAllCameraKeyframes: () -> Unit = {},
     onImportCustomPropUri: (Uri, (String) -> Unit) -> Unit = { _, _ -> }
 ) {
-    BackHandler { onBack() }
+    // Non-exported stage composition grid toggle & resizable canvas/timeline split
+    var showGridOverlay by remember { mutableStateOf(false) }
+    var canvasSplitFraction by remember { mutableFloatStateOf(0.52f) }
+    var isDraggingSplitHandle by remember { mutableStateOf(false) }
+
+    // Smart back handling: exit active editing modes or deselect clip before exiting editor
+    BackHandler {
+        when {
+            state.isDrawingMode -> onToggleDrawingMode()
+            state.isIkPosingMode -> onToggleIkPosingMode()
+            state.isCameraKeyMode -> onToggleCameraKeyMode()
+            state.selectedClipId != null -> onSelectClip(null)
+            else -> onBack()
+        }
+    }
 
     val quickImagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -122,9 +142,24 @@ fun EditorScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    val activeScene = state.project.activeScene
+    val audioLayer = remember(activeScene.layers) {
+        activeScene.layers.firstOrNull { it.type == LayerType.AUDIO }
+    }
+    val audioClip = remember(activeScene.clips, audioLayer) {
+        activeScene.clips.firstOrNull { clip ->
+            !clip.audioPath.isNullOrBlank() || (audioLayer != null && clip.layerId == audioLayer.id)
+        }
+    }
+    val isAudioMuted = audioLayer?.isVisible == false
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(StudioObsidian)
+    ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // A. Top Toolbar
+            // A. Compact Single-Row Top Toolbar (~50dp)
             EditorTopToolbar(
                 project = state.project,
                 canUndo = state.canUndo,
@@ -140,12 +175,16 @@ fun EditorScreen(
                 onOpenGuide = { onOpenSheet(ActiveEditorSheet.TUTORIAL_GUIDE) }
             )
 
-            // Adaptive Portrait vs Landscape / Tablet Workspace
-            BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            // B. Adaptive Portrait (Resizable Split) vs Landscape Workspace
+            BoxWithConstraints(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
                 val isLandscapeWide = maxWidth > maxHeight && maxWidth >= 600.dp
+                val workspaceHeightPx = with(LocalDensity.current) { maxHeight.toPx().coerceAtLeast(240f) }
 
                 if (isLandscapeWide) {
-                    // Landscape Spacious Split: Larger Canvas on Top/Left + Side-by-Side Timeline
                     Row(modifier = Modifier.fillMaxSize()) {
                         EditorCanvasPane(
                             project = state.project,
@@ -161,6 +200,7 @@ fun EditorScreen(
                             isDrawingMode = state.isDrawingMode,
                             isIkPosingMode = state.isIkPosingMode,
                             isCameraKeyMode = state.isCameraKeyMode,
+                            showGridOverlay = showGridOverlay,
                             brushColorHex = state.brushColorHex,
                             brushWidthRatio = state.brushWidthRatio,
                             sceneRenderer = sceneRenderer,
@@ -171,18 +211,14 @@ fun EditorScreen(
                             onFinishStroke = onFinishStroke,
                             onBrushStyleChange = onBrushStyleChange,
                             onExitDrawingMode = onToggleDrawingMode,
-                            onToggleIkPosingMode = onToggleIkPosingMode,
-                            onToggleCameraKeyMode = onToggleCameraKeyMode,
-                            onStepAdjacentKeyframe = onStepAdjacentKeyframe,
-                            onStampPoseKey = onStampPoseKey,
-                            onOpenActingProps = { onOpenSheet(ActiveEditorSheet.CHARACTER_ACTING_PROPS) },
-                            onOpenCameraChroma = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
-                            onZoomIn = { onZoomCanvas(1.2f) },
-                            onZoomOut = { onZoomCanvas(0.84f) },
+                            onZoomBy = onZoomCanvas,
                             onResetViewport = onResetViewport,
                             onQuickAddCharacter = onOpenCharacterLibrary,
-                            modifier = Modifier.weight(0.58f).fillMaxHeight()
+                            modifier = Modifier
+                                .weight(0.58f)
+                                .fillMaxHeight()
                         )
+                        VerticalDivider(color = StudioBorderSubtle, thickness = 1.dp)
                         TimelinePanel(
                             project = state.project,
                             currentFrame = state.currentFrame,
@@ -195,23 +231,23 @@ fun EditorScreen(
                             onSelectScene = onSelectScene,
                             onAddScene = onAddScene,
                             onTogglePlayback = onTogglePlayback,
-                            onStepFrame = onStepFrame,
                             onSeekFrame = onSeekFrame,
                             onToggleLoop = onToggleLoop,
                             onToggleKeyframe = onToggleKeyframe,
                             onSelectKeyframeNode = onSelectKeyframeNode,
                             onCycleSelectedKeyframeEasing = onCycleSelectedKeyframeEasing,
-                            onOpenTransformForKeyframe = { onOpenSheet(ActiveEditorSheet.TRANSFORM_INSPECTOR) },
                             onAdjustTimelineZoom = onAdjustTimelineZoom,
                             onSelectClip = { onSelectClip(it) },
                             onToggleLayerVisibility = onToggleLayerVisibility,
                             onToggleLayerLock = onToggleLayerLock,
                             onOpenLayerManager = { onOpenSheet(ActiveEditorSheet.LAYER_MANAGER) },
-                            modifier = Modifier.weight(0.42f).fillMaxHeight()
+                            modifier = Modifier
+                                .weight(0.42f)
+                                .fillMaxHeight()
                         )
                     }
                 } else {
-                    // Portrait Stacked Studio Layout (Canvas Upper 56%, Timeline Lower 44%)
+                    // Portrait Resizable Split: Default ~45% Canvas / ~42% Timeline of viewport height
                     Column(modifier = Modifier.fillMaxSize()) {
                         EditorCanvasPane(
                             project = state.project,
@@ -227,6 +263,7 @@ fun EditorScreen(
                             isDrawingMode = state.isDrawingMode,
                             isIkPosingMode = state.isIkPosingMode,
                             isCameraKeyMode = state.isCameraKeyMode,
+                            showGridOverlay = showGridOverlay,
                             brushColorHex = state.brushColorHex,
                             brushWidthRatio = state.brushWidthRatio,
                             sceneRenderer = sceneRenderer,
@@ -237,18 +274,48 @@ fun EditorScreen(
                             onFinishStroke = onFinishStroke,
                             onBrushStyleChange = onBrushStyleChange,
                             onExitDrawingMode = onToggleDrawingMode,
-                            onToggleIkPosingMode = onToggleIkPosingMode,
-                            onToggleCameraKeyMode = onToggleCameraKeyMode,
-                            onStepAdjacentKeyframe = onStepAdjacentKeyframe,
-                            onStampPoseKey = onStampPoseKey,
-                            onOpenActingProps = { onOpenSheet(ActiveEditorSheet.CHARACTER_ACTING_PROPS) },
-                            onOpenCameraChroma = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
-                            onZoomIn = { onZoomCanvas(1.2f) },
-                            onZoomOut = { onZoomCanvas(0.84f) },
+                            onZoomBy = onZoomCanvas,
                             onResetViewport = onResetViewport,
                             onQuickAddCharacter = onOpenCharacterLibrary,
-                            modifier = Modifier.weight(0.55f).fillMaxWidth()
+                            modifier = Modifier
+                                .weight(canvasSplitFraction)
+                                .fillMaxWidth()
                         )
+
+                        // Slim Horizontal Drag Handle to Dynamically Resize Canvas vs. Timeline
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(14.dp)
+                                .background(StudioCharcoal)
+                                .pointerInput(workspaceHeightPx) {
+                                    detectVerticalDragGestures(
+                                        onDragStart = { isDraggingSplitHandle = true },
+                                        onDragEnd = { isDraggingSplitHandle = false },
+                                        onDragCancel = { isDraggingSplitHandle = false }
+                                    ) { change, dragAmount ->
+                                        change.consume()
+                                        val deltaFraction = dragAmount / workspaceHeightPx
+                                        canvasSplitFraction = (canvasSplitFraction + deltaFraction).coerceIn(0.28f, 0.72f)
+                                    }
+                                }
+                                .testTag("canvas_timeline_drag_handle")
+                        ) {
+                            HorizontalDivider(
+                                color = StudioBorderSubtle,
+                                thickness = 1.dp,
+                                modifier = Modifier.align(Alignment.TopCenter)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .width(38.dp)
+                                    .height(3.5.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(if (isDraggingSplitHandle) ElectricCyan else StudioBorder)
+                            )
+                        }
+
                         TimelinePanel(
                             project = state.project,
                             currentFrame = state.currentFrame,
@@ -261,32 +328,35 @@ fun EditorScreen(
                             onSelectScene = onSelectScene,
                             onAddScene = onAddScene,
                             onTogglePlayback = onTogglePlayback,
-                            onStepFrame = onStepFrame,
                             onSeekFrame = onSeekFrame,
                             onToggleLoop = onToggleLoop,
                             onToggleKeyframe = onToggleKeyframe,
                             onSelectKeyframeNode = onSelectKeyframeNode,
                             onCycleSelectedKeyframeEasing = onCycleSelectedKeyframeEasing,
-                            onOpenTransformForKeyframe = { onOpenSheet(ActiveEditorSheet.TRANSFORM_INSPECTOR) },
                             onAdjustTimelineZoom = onAdjustTimelineZoom,
                             onSelectClip = { onSelectClip(it) },
                             onToggleLayerVisibility = onToggleLayerVisibility,
                             onToggleLayerLock = onToggleLayerLock,
                             onOpenLayerManager = { onOpenSheet(ActiveEditorSheet.LAYER_MANAGER) },
-                            modifier = Modifier.weight(0.45f).fillMaxWidth()
+                            modifier = Modifier
+                                .weight(1f - canvasSplitFraction)
+                                .fillMaxWidth()
                         )
                     }
                 }
             }
 
-            // Bottom Context-Aware Editing Toolbar (Zero AI tools!)
+            // C. CapCut Pro-Style Flat Hierarchical Bottom Toolbar (Zero AI tools)
             BottomEditingToolbar(
                 selectedClip = state.selectedClip,
                 isDrawingMode = state.isDrawingMode,
                 isIkPosingMode = state.isIkPosingMode,
                 isCameraKeyMode = state.isCameraKeyMode,
+                onionSkinEnabled = state.project.onionSkinEnabled,
                 showMotionPaths = state.project.showMotionPaths,
-                onOpenGuide = { onOpenSheet(ActiveEditorSheet.TUTORIAL_GUIDE) },
+                showGridOverlay = showGridOverlay,
+                isAudioMuted = isAudioMuted,
+                onDeselectClip = { onSelectClip(null) },
                 onOpenCharacters = onOpenCharacterLibrary,
                 onOpenPresetsForSelectedChar = {
                     val clip = state.selectedClip
@@ -296,25 +366,57 @@ fun EditorScreen(
                     }
                 },
                 onToggleIkPosing = onToggleIkPosingMode,
+                onStampPoseKey = onStampPoseKey,
+                onStepAdjacentKeyframe = onStepAdjacentKeyframe,
+                onResetPoseAtCurrentFrame = onResetPoseAtCurrentFrame,
                 onOpenCharacterActingProps = { onOpenSheet(ActiveEditorSheet.CHARACTER_ACTING_PROPS) },
+                onToggleCameraKeyMode = onToggleCameraKeyMode,
                 onOpenCameraChroma = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
                 onOpenMedia = onOpenMediaLibrary,
                 onOpenTemplates = { onOpenSheet(ActiveEditorSheet.TEMPLATES) },
+                onOpenSettings = { onOpenSheet(ActiveEditorSheet.PROJECT_SETTINGS) },
+                onAddScene = onAddScene,
                 onQuickAddImage = {
                     quickImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 },
                 onQuickAddAudio = {
                     quickAudioPicker.launch(arrayOf("audio/*"))
                 },
+                onToggleAudioMute = {
+                    if (audioLayer != null) {
+                        onToggleLayerVisibility(audioLayer.id)
+                    } else {
+                        quickAudioPicker.launch(arrayOf("audio/*"))
+                    }
+                },
+                onOpenAudioSpeed = {
+                    if (audioClip != null) {
+                        onSelectClip(audioClip.id)
+                        onOpenSheet(ActiveEditorSheet.SPEED_SETTINGS)
+                    } else {
+                        quickAudioPicker.launch(arrayOf("audio/*"))
+                    }
+                },
                 onOpenShapes = { onOpenSheet(ActiveEditorSheet.ADD_SHAPE) },
                 onOpenText = { onOpenSheet(ActiveEditorSheet.ADD_TEXT) },
                 onToggleDrawing = onToggleDrawingMode,
                 onOpenBackground = { onOpenSheet(ActiveEditorSheet.BACKGROUND_PICKER) },
                 onOpenLayers = { onOpenSheet(ActiveEditorSheet.LAYER_MANAGER) },
+                onToggleOnionSkin = onToggleOnionSkin,
+                onToggleGridOverlay = { showGridOverlay = !showGridOverlay },
                 onOpenTransform = { onOpenSheet(ActiveEditorSheet.TRANSFORM_INSPECTOR) },
                 onOpenSpeed = { onOpenSheet(ActiveEditorSheet.SPEED_SETTINGS) },
                 onToggleMotionPath = onToggleMotionPaths,
                 onOpenTransitions = { onOpenSheet(ActiveEditorSheet.TRANSITIONS) },
+                onOpenSceneTransitions = {
+                    val targetClip = state.selectedClip ?: activeScene.clips.firstOrNull()
+                    if (targetClip != null) {
+                        onSelectClip(targetClip.id)
+                        onOpenSheet(ActiveEditorSheet.TRANSITIONS)
+                    } else {
+                        onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO)
+                    }
+                },
                 onSplitClip = onSplitClip,
                 onDuplicateClip = onDuplicateClip,
                 onFlipHorizontal = { onFlipClip(true) },
@@ -330,7 +432,7 @@ fun EditorScreen(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 56.dp)
+                .padding(top = 52.dp)
         ) {
             state.statusBanner?.let { msg ->
                 Surface(
@@ -349,7 +451,7 @@ fun EditorScreen(
         }
     }
 
-    // Active Editor Modals & Inspectors
+    // Active Editor Modals & Inspectors (100% preserved)
     when (state.activeSheet) {
         ActiveEditorSheet.NONE -> Unit
         ActiveEditorSheet.PROJECT_SETTINGS -> {
