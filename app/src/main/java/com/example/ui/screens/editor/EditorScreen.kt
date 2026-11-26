@@ -97,7 +97,17 @@ fun EditorScreen(
     onUpdateCamera: ((CameraKeyframe) -> CameraKeyframe) -> Unit = {},
     onDeleteCameraKeyframeAtFrame: () -> Unit = {},
     onResetAllCameraKeyframes: () -> Unit = {},
-    onImportCustomPropUri: (Uri, (String) -> Unit) -> Unit = { _, _ -> }
+    onImportCustomPropUri: (Uri, (String) -> Unit) -> Unit = { _, _ -> },
+    onTrimAudioClip: (
+        clipId: String,
+        newStartFrame: Int,
+        newDurationFrames: Int,
+        newTrimStartMs: Long,
+        newTrimEndMs: Long
+    ) -> Unit = { _, _, _, _, _ -> },
+    onResetAudioTrim: () -> Unit = {},
+    onSaveWaveformJsonToProject: (clipName: String, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> },
+    onWriteWaveformJsonToSafUri: (uri: Uri, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> }
 ) {
     // Non-exported stage composition grid toggle & resizable canvas/timeline split
     var showGridOverlay by remember { mutableStateOf(false) }
@@ -338,6 +348,7 @@ fun EditorScreen(
                             onToggleLayerVisibility = onToggleLayerVisibility,
                             onToggleLayerLock = onToggleLayerLock,
                             onOpenLayerManager = { onOpenSheet(ActiveEditorSheet.LAYER_MANAGER) },
+                            onTrimAudioClip = onTrimAudioClip,
                             modifier = Modifier
                                 .weight(1f - canvasSplitFraction)
                                 .fillMaxWidth()
@@ -397,6 +408,16 @@ fun EditorScreen(
                         quickAudioPicker.launch(arrayOf("audio/*"))
                     }
                 },
+                onExportWaveformJson = {
+                    val targetAudio = state.selectedClip?.takeIf { !it.audioPath.isNullOrBlank() } ?: audioClip
+                    if (targetAudio != null) {
+                        onSelectClip(targetAudio.id)
+                        onOpenSheet(ActiveEditorSheet.WAVEFORM_EXPORT)
+                    } else {
+                        quickAudioPicker.launch(arrayOf("audio/*"))
+                    }
+                },
+                onResetAudioTrim = onResetAudioTrim,
                 onOpenShapes = { onOpenSheet(ActiveEditorSheet.ADD_SHAPE) },
                 onOpenText = { onOpenSheet(ActiveEditorSheet.ADD_TEXT) },
                 onToggleDrawing = onToggleDrawingMode,
@@ -566,6 +587,20 @@ fun EditorScreen(
                 onCancelExport = onCancelExport,
                 onDismiss = onCloseSheet
             )
+        }
+        ActiveEditorSheet.WAVEFORM_EXPORT -> {
+            val targetAudio = state.selectedClip?.takeIf { !it.audioPath.isNullOrBlank() } ?: audioClip
+            if (targetAudio != null) {
+                WaveformExportDialog(
+                    project = state.project,
+                    audioClip = targetAudio,
+                    onSaveToProject = onSaveWaveformJsonToProject,
+                    onSaveToSafUri = onWriteWaveformJsonToSafUri,
+                    onDismiss = onCloseSheet
+                )
+            } else {
+                onCloseSheet()
+            }
         }
         ActiveEditorSheet.TUTORIAL_GUIDE -> {
             StudioGuideDialog(onDismiss = onCloseSheet)

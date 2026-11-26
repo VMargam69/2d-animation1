@@ -49,6 +49,7 @@ enum class ActiveEditorSheet {
     BACKGROUND_PICKER,
     TEMPLATES,
     EXPORT_DIALOG,
+    WAVEFORM_EXPORT,
     TUTORIAL_GUIDE
 }
 
@@ -1261,6 +1262,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 } else if (targetRaw != _playbackFrame.value) {
                     _playbackFrame.value = targetRaw
+                    syncAudioPreviewForFrame(targetRaw)
                 }
 
                 // Sleep cleanly to the exact next frame boundary (no drift, no busy-spin)
@@ -1282,13 +1284,89 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun trimAudioClip(
+        clipId: String,
+        newStartFrame: Int,
+        newDurationFrames: Int,
+        newTrimStartMs: Long,
+        newTrimEndMs: Long
+    ) {
+        stopPlayback()
+        val updated = ProjectMutator.trimAudioClip(
+            project = _uiState.value.project,
+            clipId = clipId,
+            newStartFrame = newStartFrame,
+            newDurationFrames = newDurationFrames,
+            newTrimStartMs = newTrimStartMs,
+            newTrimEndMs = newTrimEndMs
+        )
+        commitProjectChange(updated)
+        val startSec = newTrimStartMs / 1000f
+        val endSec = if (newTrimEndMs > 0L) newTrimEndMs / 1000f else (newTrimStartMs + (newDurationFrames * 1000L / updated.fps.coerceAtLeast(1))) / 1000f
+        showStatus(String.format(java.util.Locale.US, "Trimmed audio: %.1fs – %.1fs", startSec, endSec))
+    }
+
+    fun resetSelectedAudioTrim() {
+        stopPlayback()
+        val scene = _uiState.value.project.activeScene
+        val targetClip = _uiState.value.selectedClip?.takeIf { !it.audioPath.isNullOrBlank() }
+            ?: scene.clips.firstOrNull { !it.audioPath.isNullOrBlank() }
+            ?: return
+        val fullDurationMs = com.example.engine.AudioWaveformExtractor.getCached(targetClip.audioPath)?.durationMs ?: 0L
+        val updated = ProjectMutator.resetAudioTrim(
+            project = _uiState.value.project,
+            clipId = targetClip.id,
+            fullAudioDurationMs = fullDurationMs
+        )
+        commitProjectChange(updated)
+        showStatus("Reset audio trim to full clip")
+    }
+
+    fun saveWaveformJsonToProject(clipName: String, jsonContent: String, onResult: (String) -> Unit) {
+        val projectId = _uiState.value.project.id
+        viewModelScope.launch {
+            val savedFile = assetStorage.saveProjectWaveformSidecar(projectId, clipName, jsonContent)
+            if (savedFile != null) {
+                showStatus("Saved ${savedFile.name} to project")
+                onResult("Saved to project: ${savedFile.name}")
+            } else {
+                onResult("Could not save waveform JSON to project")
+            }
+        }
+    }
+
+    fun writeWaveformJsonToSafUri(uri: Uri, jsonContent: String, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val ok = assetStorage.writeTextToSafUri(uri, jsonContent)
+            if (ok) {
+                showStatus("Exported waveform lip-sync JSON")
+                onResult("Exported .waveform.json successfully")
+            } else {
+                onResult("Could not write selected file")
+            }
+        }
+    }
+
+    private fun activePlayableAudioClip(): TimelineClip? {
+        val scene = _uiState.value.project.activeScene
+        val visibleAudioLayerIds = scene.layers
+            .filter { it.type == LayerType.AUDIO && it.isVisible }
+            .map { it.id }
+            .toSet()
+        return scene.clips.firstOrNull { clip ->
+            !clip.audioPath.isNullOrBlank() &&
+                (visibleAudioLayerIds.isEmpty() || clip.layerId in visibleAudioLayerIds)
+        }
+    }
+
     private fun startAudioPreviewIfPresent() {
         val state = _uiState.value
-        val audioClip = state.project.activeScene.clips.firstOrNull { !it.audioPath.isNullOrBlank() } ?: return
+        val audioClip = activePlayableAudioClip() ?: return
         val file = File(audioClip.audioPath!!)
         if (!file.exists()) return
         val startFrameAtLaunch = _playbackFrame.value
         val fps = state.project.fps.coerceAtLeast(1)
+        val safeSpeed = audioClip.speedMultiplier.coerceIn(0.1f, 4f)
         runCatching {
             stopAudioPreview()
             val player = MediaPlayer()
@@ -1299,11 +1377,22 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 if (mp === mediaPlayer && _uiState.value.isPlaying) {
                     isAudioPrepared = true
                     val currentF = _playbackFrame.value.coerceAtLeast(startFrameAtLaunch)
-                    val seekMs = ((currentF - audioClip.startFrame).coerceAtLeast(0) * 1000) / fps
-                    if (seekMs in 0 until mp.duration) {
+                    val endLimitMs = if (audioClip.audioTrimEndMs > audioClip.audioTrimStartMs) {
+                        audioClip.audioTrimEndMs.toInt().coerceAtMost(mp.duration)
+                    } else {
+                        mp.duration
+                    }
+                    if (currentF in audioClip.startFrame until audioClip.endFrame) {
+                        val localOffsetMs = (((currentF - audioClip.startFrame) * 1000f * safeSpeed) / fps).toInt()
+                        val seekMs = (audioClip.audioTrimStartMs.toInt() + localOffsetMs).coerceIn(0, endLimitMs)
+                        if (seekMs < endLimitMs) {
+                            mp.seekTo(seekMs)
+                            mp.start()
+                        }
+                    } else if (currentF < audioClip.startFrame) {
+                        val seekMs = audioClip.audioTrimStartMs.toInt().coerceIn(0, endLimitMs)
                         mp.seekTo(seekMs)
                     }
-                    mp.start()
                 }
             }
             player.setOnErrorListener { _, _, _ ->
@@ -1315,12 +1404,46 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun syncAudioPreviewForFrame(frame: Int) {
+        val mp = mediaPlayer ?: return
+        if (!isAudioPrepared) return
+        val audioClip = activePlayableAudioClip() ?: return
+        val fps = _uiState.value.project.fps.coerceAtLeast(1)
+        val safeSpeed = audioClip.speedMultiplier.coerceIn(0.1f, 4f)
+        runCatching {
+            val endLimitMs = if (audioClip.audioTrimEndMs > audioClip.audioTrimStartMs) {
+                audioClip.audioTrimEndMs.toInt().coerceAtMost(mp.duration)
+            } else {
+                mp.duration
+            }
+            val insideClip = frame in audioClip.startFrame until audioClip.endFrame
+            if (!insideClip) {
+                if (mp.isPlaying) mp.pause()
+                return
+            }
+            val expectedMs = audioClip.audioTrimStartMs.toInt() +
+                (((frame - audioClip.startFrame) * 1000f * safeSpeed) / fps).toInt()
+            if (expectedMs >= endLimitMs) {
+                if (mp.isPlaying) mp.pause()
+            } else if (!mp.isPlaying) {
+                mp.seekTo(expectedMs.coerceIn(0, endLimitMs))
+                mp.start()
+            }
+        }
+    }
+
     private fun restartAudioPreview() {
         val mp = mediaPlayer ?: return
         if (!isAudioPrepared) return
+        val audioClip = activePlayableAudioClip()
         runCatching {
-            mp.seekTo(0)
-            mp.start()
+            val startSeekMs = audioClip?.audioTrimStartMs?.toInt()?.coerceIn(0, mp.duration) ?: 0
+            mp.seekTo(startSeekMs)
+            if (audioClip == null || audioClip.startFrame == 0) {
+                mp.start()
+            } else if (mp.isPlaying) {
+                mp.pause()
+            }
         }
     }
 

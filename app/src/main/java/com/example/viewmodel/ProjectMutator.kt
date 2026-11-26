@@ -152,6 +152,73 @@ object ProjectMutator {
         return updated to clipId
     }
 
+    fun trimAudioClip(
+        project: ProjectDocument,
+        clipId: String,
+        newStartFrame: Int,
+        newDurationFrames: Int,
+        newTrimStartMs: Long,
+        newTrimEndMs: Long
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val updatedClips = scene.clips.map { clip ->
+            if (clip.id != clipId) return@map clip
+            val clampedStart = newStartFrame.coerceAtLeast(0)
+            val clampedDuration = newDurationFrames.coerceAtLeast(6)
+            val startDelta = clampedStart - clip.startFrame
+            val safeTrimStart = newTrimStartMs.coerceAtLeast(0L)
+            val safeTrimEnd = if (newTrimEndMs > 0L) newTrimEndMs.coerceAtLeast(safeTrimStart + 50L) else 0L
+
+            val shiftedKeyframes = clip.keyframes
+                .map { kf -> kf.copy(frame = (kf.frame - startDelta).coerceIn(0, clampedDuration - 1)) }
+                .distinctBy { it.frame }
+                .sortedBy { it.frame }
+                .ifEmpty { listOf(TransformKeyframe(frame = 0)) }
+
+            clip.copy(
+                startFrame = clampedStart,
+                durationFrames = clampedDuration,
+                audioTrimStartMs = safeTrimStart,
+                audioTrimEndMs = safeTrimEnd,
+                keyframes = shiftedKeyframes
+            )
+        }
+        val maxClipEnd = updatedClips.maxOfOrNull { it.endFrame } ?: scene.durationFrames
+        scene.copy(
+            durationFrames = maxOf(scene.durationFrames, maxClipEnd),
+            clips = updatedClips
+        )
+    }
+
+    fun resetAudioTrim(
+        project: ProjectDocument,
+        clipId: String,
+        fullAudioDurationMs: Long = 0L
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val fps = project.fps.coerceAtLeast(1)
+        val updatedClips = scene.clips.map { clip ->
+            if (clip.id != clipId) return@map clip
+            val safeSpeed = clip.speedMultiplier.coerceIn(0.1f, 4f)
+            val trimStartFrames = ((clip.audioTrimStartMs * fps) / (1000f * safeSpeed)).toInt()
+            val restoredStart = (clip.startFrame - trimStartFrames).coerceAtLeast(0)
+            val targetDuration = if (fullAudioDurationMs > 0L) {
+                ((fullAudioDurationMs * fps) / (1000f * safeSpeed)).toInt().coerceAtLeast(12)
+            } else {
+                (scene.durationFrames - restoredStart).coerceAtLeast(clip.durationFrames)
+            }
+            clip.copy(
+                startFrame = restoredStart,
+                durationFrames = targetDuration,
+                audioTrimStartMs = 0L,
+                audioTrimEndMs = 0L
+            )
+        }
+        val maxClipEnd = updatedClips.maxOfOrNull { it.endFrame } ?: scene.durationFrames
+        scene.copy(
+            durationFrames = maxOf(scene.durationFrames, maxClipEnd),
+            clips = updatedClips
+        )
+    }
+
     fun addShapeClip(
         project: ProjectDocument,
         kind: ShapeKind,

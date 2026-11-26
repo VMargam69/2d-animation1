@@ -349,6 +349,8 @@ data class TimelineClip(
     val shapeStrokeHex: String = "#F8FAFC",
     val audioPath: String? = null,
     val audioLabel: String? = null,
+    val audioTrimStartMs: Long = 0L,
+    val audioTrimEndMs: Long = 0L,
     val drawingStrokes: List<DrawingStroke> = emptyList(),
     val keyframes: List<TransformKeyframe> = listOf(TransformKeyframe(frame = 0)),
     val flipHorizontal: Boolean = false,

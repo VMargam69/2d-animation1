@@ -220,7 +220,17 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onUpdateCamera = { mutator -> viewModel.updateCameraAtCurrentFrame(mutator) },
                 onDeleteCameraKeyframeAtFrame = { viewModel.deleteCameraKeyframeAtCurrentFrame() },
                 onResetAllCameraKeyframes = { viewModel.resetAllCameraKeyframes() },
-                onImportCustomPropUri = { uri, onPath -> viewModel.importCharacterSpriteUri(uri, onPath) }
+                onImportCustomPropUri = { uri, onPath -> viewModel.importCharacterSpriteUri(uri, onPath) },
+                onTrimAudioClip = { clipId, startF, durF, trimStartMs, trimEndMs ->
+                    viewModel.trimAudioClip(clipId, startF, durF, trimStartMs, trimEndMs)
+                },
+                onResetAudioTrim = { viewModel.resetSelectedAudioTrim() },
+                onSaveWaveformJsonToProject = { clipName, json, onRes ->
+                    viewModel.saveWaveformJsonToProject(clipName, json, onRes)
+                },
+                onWriteWaveformJsonToSafUri = { uri, json, onRes ->
+                    viewModel.writeWaveformJsonToSafUri(uri, json, onRes)
+                }
             )
         }
     }

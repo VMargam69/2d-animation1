@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.engine.ProceduralRigRenderer
@@ -64,6 +65,13 @@ fun TimelinePanel(
     onToggleLayerVisibility: (String) -> Unit,
     onToggleLayerLock: (String) -> Unit,
     onOpenLayerManager: () -> Unit,
+    onTrimAudioClip: (
+        clipId: String,
+        newStartFrame: Int,
+        newDurationFrames: Int,
+        newTrimStartMs: Long,
+        newTrimEndMs: Long
+    ) -> Unit = { _, _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val scene = project.activeScene
@@ -448,10 +456,12 @@ fun TimelinePanel(
                         sortedLayers.forEach { layer ->
                             val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))
                             val isSelLayer = layer.id == selectedLayerId
+                            val isAudioLayer = layer.type == LayerType.AUDIO
+                            val rowHeight = layerRowHeight(layer.type)
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(36.dp)
+                                    .height(rowHeight)
                                     .background(if (isSelLayer) StudioCard else Color.Transparent)
                                     .padding(horizontal = if (isLayerRailCollapsed) 4.dp else 5.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -460,7 +470,7 @@ fun TimelinePanel(
                                 Box(
                                     modifier = Modifier
                                         .width(3.dp)
-                                        .height(20.dp)
+                                        .height(if (isAudioLayer) 28.dp else 20.dp)
                                         .clip(RoundedCornerShape(2.dp))
                                         .background(if (layer.isVisible) layerColor else StudioTextMuted.copy(alpha = 0.4f))
                                 )
@@ -485,9 +495,22 @@ fun TimelinePanel(
                                         .testTag("layer_vis_${layer.id}")
                                 ) {
                                     Icon(
-                                        imageVector = if (layer.isVisible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
-                                        contentDescription = "Toggle layer visibility",
-                                        tint = if (layer.isVisible) ElectricCyan else StudioTextMuted,
+                                        imageVector = when {
+                                            isAudioLayer && layer.isVisible -> Icons.Rounded.VolumeUp
+                                            isAudioLayer -> Icons.Rounded.VolumeOff
+                                            layer.isVisible -> Icons.Rounded.Visibility
+                                            else -> Icons.Rounded.VisibilityOff
+                                        },
+                                        contentDescription = if (isAudioLayer) {
+                                            if (layer.isVisible) "Mute audio layer" else "Unmute audio layer"
+                                        } else {
+                                            "Toggle layer visibility"
+                                        },
+                                        tint = if (layer.isVisible) {
+                                            if (isAudioLayer) EmeraldLayer else ElectricCyan
+                                        } else {
+                                            StudioTextMuted
+                                        },
                                         modifier = Modifier.size(14.dp)
                                     )
                                 }
@@ -617,83 +640,107 @@ fun TimelinePanel(
                             sortedLayers.forEach { layer ->
                                 val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))
                                 val layerClips = clipsByLayer[layer.id].orEmpty()
+                                val rowHeight = layerRowHeight(layer.type)
+                                val clipHeight = rowHeight - 6.dp
 
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(36.dp)
+                                        .height(rowHeight)
                                         .background(if (layer.isVisible) StudioCharcoal else StudioObsidian.copy(alpha = 0.72f))
                                 ) {
                                     layerClips.forEach { clip ->
                                         val isSelected = clip.id == selectedClipId
-                                        val clipOffsetX = frameWidthDp * clip.startFrame
-                                        val clipWidth = (frameWidthDp * clip.durationFrames).coerceAtLeast(32.dp)
-                                        val visAlpha = if (layer.isVisible) 1f else 0.35f
+                                        val isAudioClip = layer.type == LayerType.AUDIO || !clip.audioPath.isNullOrBlank()
 
-                                        Box(
-                                            modifier = Modifier
-                                                .offset(x = clipOffsetX, y = 3.dp)
-                                                .width(clipWidth)
-                                                .height(30.dp)
-                                                .clip(RoundedCornerShape(6.dp))
-                                                .background(
-                                                    if (isSelected) layerColor.copy(alpha = 0.38f * visAlpha)
-                                                    else layerColor.copy(alpha = 0.20f * visAlpha)
-                                                )
-                                                .border(
-                                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                                    color = if (isSelected) ElectricCyan else layerColor.copy(alpha = 0.62f * visAlpha),
-                                                    shape = RoundedCornerShape(6.dp)
-                                                )
-                                                .clickable { onSelectClip(clip.id) }
-                                                .testTag("timeline_clip_${clip.id}")
-                                        ) {
-                                            Text(
-                                                text = clip.name,
-                                                fontSize = 10.sp,
-                                                color = StudioTextPrimary.copy(alpha = visAlpha),
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier
-                                                    .align(Alignment.TopStart)
-                                                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                                        if (isAudioClip) {
+                                            TrimmableAudioTimelineClip(
+                                                clip = clip,
+                                                fps = project.fps,
+                                                sceneDurationFrames = scene.durationFrames,
+                                                frameWidthDp = frameWidthDp,
+                                                frameWidthPx = frameWidthPx,
+                                                clipHeight = clipHeight,
+                                                horizontalScrollPxProvider = { horizontalScroll.value.toFloat() },
+                                                layerColor = layerColor,
+                                                isLayerVisible = layer.isVisible,
+                                                isLayerLocked = layer.isLocked,
+                                                isSelected = isSelected,
+                                                currentFrame = currentFrame,
+                                                onSelectClip = onSelectClip,
+                                                onSelectKeyframeNode = onSelectKeyframeNode,
+                                                onTrimAudioClip = onTrimAudioClip
                                             )
+                                        } else {
+                                            val clipOffsetX = frameWidthDp * clip.startFrame
+                                            val clipWidth = (frameWidthDp * clip.durationFrames).coerceAtLeast(32.dp)
+                                            val visAlpha = if (layer.isVisible) 1f else 0.35f
 
-                                            // Individually Selectable Keyframe Diamond Nodes
-                                            clip.keyframes.forEach { kf ->
-                                                val kfGlobalFrame = clip.startFrame + kf.frame
-                                                val isNodeSelected = isSelected && currentFrame == kfGlobalFrame
-                                                val rawX = frameWidthDp * kf.frame - 9.dp
-                                                val clampedX = rawX.coerceIn(0.dp, (clipWidth - 20.dp).coerceAtLeast(0.dp))
-
-                                                Box(
-                                                    contentAlignment = Alignment.Center,
+                                            Box(
+                                                modifier = Modifier
+                                                    .offset(x = clipOffsetX, y = 3.dp)
+                                                    .width(clipWidth)
+                                                    .height(clipHeight)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(
+                                                        if (isSelected) layerColor.copy(alpha = 0.38f * visAlpha)
+                                                        else layerColor.copy(alpha = 0.20f * visAlpha)
+                                                    )
+                                                    .border(
+                                                        width = if (isSelected) 1.5.dp else 1.dp,
+                                                        color = if (isSelected) ElectricCyan else layerColor.copy(alpha = 0.62f * visAlpha),
+                                                        shape = RoundedCornerShape(6.dp)
+                                                    )
+                                                    .clickable { onSelectClip(clip.id) }
+                                                    .testTag("timeline_clip_${clip.id}")
+                                            ) {
+                                                Text(
+                                                    text = clip.name,
+                                                    fontSize = 10.sp,
+                                                    color = StudioTextPrimary.copy(alpha = visAlpha),
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
                                                     modifier = Modifier
-                                                        .offset(x = clampedX, y = 10.dp)
-                                                        .size(20.dp)
-                                                        .clip(CircleShape)
-                                                        .clickable {
-                                                            onSelectKeyframeNode(clip.id, kfGlobalFrame)
-                                                        }
-                                                        .testTag("keyframe_node_${clip.id}_${kf.frame}")
-                                                ) {
-                                                    Canvas(modifier = Modifier.size(11.dp)) {
-                                                        val side = size.minDimension * 0.66f
-                                                        val topLeft = Offset((size.width - side) / 2f, (size.height - side) / 2f)
-                                                        rotate(45f) {
-                                                            drawRect(
-                                                                color = if (isNodeSelected) ElectricCyan else AmberKeyframe.copy(alpha = visAlpha),
-                                                                topLeft = topLeft,
-                                                                size = Size(side, side)
-                                                            )
-                                                            if (isNodeSelected) {
+                                                        .align(Alignment.TopStart)
+                                                        .padding(horizontal = 6.dp, vertical = 1.dp)
+                                                )
+
+                                                // Individually Selectable Keyframe Diamond Nodes
+                                                clip.keyframes.forEach { kf ->
+                                                    val kfGlobalFrame = clip.startFrame + kf.frame
+                                                    val isNodeSelected = isSelected && currentFrame == kfGlobalFrame
+                                                    val rawX = frameWidthDp * kf.frame - 9.dp
+                                                    val clampedX = rawX.coerceIn(0.dp, (clipWidth - 20.dp).coerceAtLeast(0.dp))
+
+                                                    Box(
+                                                        contentAlignment = Alignment.Center,
+                                                        modifier = Modifier
+                                                            .offset(x = clampedX, y = 10.dp)
+                                                            .size(20.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable {
+                                                                onSelectKeyframeNode(clip.id, kfGlobalFrame)
+                                                            }
+                                                            .testTag("keyframe_node_${clip.id}_${kf.frame}")
+                                                    ) {
+                                                        Canvas(modifier = Modifier.size(11.dp)) {
+                                                            val side = size.minDimension * 0.66f
+                                                            val topLeft = Offset((size.width - side) / 2f, (size.height - side) / 2f)
+                                                            rotate(45f) {
                                                                 drawRect(
-                                                                    color = Color.White,
+                                                                    color = if (isNodeSelected) ElectricCyan else AmberKeyframe.copy(alpha = visAlpha),
                                                                     topLeft = topLeft,
-                                                                    size = Size(side, side),
-                                                                    style = Stroke(width = 2f)
+                                                                    size = Size(side, side)
                                                                 )
+                                                                if (isNodeSelected) {
+                                                                    drawRect(
+                                                                        color = Color.White,
+                                                                        topLeft = topLeft,
+                                                                        size = Size(side, side),
+                                                                        style = Stroke(width = 2f)
+                                                                    )
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -719,6 +766,9 @@ fun TimelinePanel(
         }
     }
 }
+
+private fun layerRowHeight(type: LayerType): Dp =
+    if (type == LayerType.AUDIO) 52.dp else 36.dp
 
 private fun shortEasingLabel(easing: EasingType): String = when (easing) {
     EasingType.LINEAR -> "Linear"

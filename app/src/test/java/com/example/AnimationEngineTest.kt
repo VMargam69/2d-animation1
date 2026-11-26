@@ -630,4 +630,218 @@ class AnimationEngineTest {
             tempRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun `audio waveform extractor parses PCM WAV and aligns sound peaks to timeline frames`() {
+        // 1. Direct PCM-16 extraction: silence in first half, loud burst in third quarter
+        val samples = ShortArray(400) { i ->
+            when {
+                i in 200 until 300 -> if (i % 2 == 0) 28000 else -28000
+                else -> 0
+            }
+        }
+        val peaks = com.example.engine.AudioWaveformExtractor.extractPeaksFromPcm16(
+            samples = samples,
+            channels = 1,
+            bucketCount = 4
+        )
+        assertEquals(4, peaks.size)
+        assertEquals(0f, peaks[0], 0.001f)
+        assertEquals(0f, peaks[1], 0.001f)
+        assertTrue("Expected loud peak in bucket 2, got ${peaks[2]}", peaks[2] > 0.9f)
+        assertEquals(0f, peaks[3], 0.001f)
+
+        // 2. Real 2-second 16-bit mono WAV file on disk: 1s silence + 1s loud speech burst
+        val tempWav = java.nio.file.Files.createTempFile("fc_wave_test", ".wav").toFile()
+        try {
+            val sampleRate = 8000
+            val totalSamples = sampleRate * 2 // 2000ms
+            val dataBytes = totalSamples * 2
+            val bb = java.nio.ByteBuffer.allocate(44 + dataBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            bb.put("RIFF".toByteArray(Charsets.US_ASCII))
+            bb.putInt(36 + dataBytes)
+            bb.put("WAVE".toByteArray(Charsets.US_ASCII))
+            bb.put("fmt ".toByteArray(Charsets.US_ASCII))
+            bb.putInt(16) // PCM chunk size
+            bb.putShort(1) // PCM format
+            bb.putShort(1) // mono
+            bb.putInt(sampleRate)
+            bb.putInt(sampleRate * 2) // byteRate
+            bb.putShort(2) // blockAlign
+            bb.putShort(16) // bitsPerSample
+            bb.put("data".toByteArray(Charsets.US_ASCII))
+            bb.putInt(dataBytes)
+            for (i in 0 until totalSamples) {
+                val s: Short = if (i >= sampleRate) {
+                    if (i % 4 < 2) 26000 else -26000
+                } else {
+                    0
+                }
+                bb.putShort(s)
+            }
+            tempWav.writeBytes(bb.array())
+
+            val parsed = com.example.engine.AudioWaveformExtractor.parseWavWaveform(tempWav, targetBuckets = 40)
+            assertNotNull(parsed)
+            assertEquals(2000L, parsed!!.durationMs)
+            assertEquals(40, parsed.amplitudes.size)
+
+            // At 24fps: frame 6 (250ms) is in the silent first second
+            val silentAmp = com.example.engine.AudioWaveformExtractor.samplePeakInFrameRange(
+                waveform = parsed,
+                startLocalFrame = 6f,
+                endLocalFrame = 7f,
+                clipDurationFrames = 96,
+                fps = 24,
+                speedMultiplier = 1f
+            )
+            assertEquals(0f, silentAmp, 0.01f)
+
+            // At 24fps: frame 36 (1500ms) is inside the loud second half
+            val loudAmp = com.example.engine.AudioWaveformExtractor.samplePeakInFrameRange(
+                waveform = parsed,
+                startLocalFrame = 35f,
+                endLocalFrame = 37f,
+                clipDurationFrames = 96,
+                fps = 24,
+                speedMultiplier = 1f
+            )
+            assertTrue("Expected loud peak at 1500ms, got $loudAmp", loudAmp > 0.85f)
+
+            // At 24fps: frame 60 (2500ms) is past the 2000ms audio duration -> returns -1f sentinel
+            val pastEndAmp = com.example.engine.AudioWaveformExtractor.samplePeakInFrameRange(
+                waveform = parsed,
+                startLocalFrame = 60f,
+                endLocalFrame = 61f,
+                clipDurationFrames = 96,
+                fps = 24,
+                speedMultiplier = 1f
+            )
+            assertEquals(-1f, pastEndAmp, 0.001f)
+        } finally {
+            tempWav.delete()
+        }
+    }
+
+    @Test
+    fun `audio trimming updates waveform sampling and exports lightweight lip-sync JSON cleanly`() {
+        // 2-second waveform: 0..1000ms silent (0f), 1000..1500ms loud speech (0.9f), 1500..2000ms quiet (0.05f)
+        val amps = FloatArray(40) { idx ->
+            when {
+                idx < 20 -> 0f
+                idx < 30 -> 0.9f
+                else -> 0.05f
+            }
+        }
+        val wf = com.example.engine.AudioWaveformData(amplitudes = amps, durationMs = 2000L)
+
+        // Trim clip to 1000ms..1500ms (12 frames @ 24fps): local frame 0 now reads 1000ms loud peak!
+        val trimmedStartPeak = com.example.engine.AudioWaveformExtractor.samplePeakInFrameRange(
+            waveform = wf,
+            startLocalFrame = 0f,
+            endLocalFrame = 1f,
+            clipDurationFrames = 12,
+            fps = 24,
+            speedMultiplier = 1f,
+            trimStartMs = 1000L,
+            trimEndMs = 1500L
+        )
+        assertTrue("Expected loud peak at trimmed start, got $trimmedStartPeak", trimmedStartPeak > 0.85f)
+
+        // Past trimmed end (frame 13 -> 1541ms > 1500ms) returns -1f sentinel
+        val pastTrimEnd = com.example.engine.AudioWaveformExtractor.samplePeakInFrameRange(
+            waveform = wf,
+            startLocalFrame = 13f,
+            endLocalFrame = 14f,
+            clipDurationFrames = 24,
+            fps = 24,
+            speedMultiplier = 1f,
+            trimStartMs = 1000L,
+            trimEndMs = 1500L
+        )
+        assertEquals(-1f, pastTrimEnd, 0.001f)
+
+        // ProjectMutator.trimAudioClip + resetAudioTrim + WaveformLipSyncExport JSON round-trip
+        val baseProject = ProjectDocument(
+            name = "LipSync Test",
+            fps = 24,
+            scenes = listOf(
+                AnimationScene(
+                    name = "Scene 1",
+                    durationFrames = 96,
+                    layers = listOf(
+                        AnimationLayer(id = "char_layer", name = "Hero", type = LayerType.CHARACTER, orderIndex = 1)
+                    ),
+                    clips = listOf(
+                        TimelineClip(
+                            id = "char_1",
+                            layerId = "char_layer",
+                            name = "Arjun",
+                            characterId = "hd_arjun_hero",
+                            startFrame = 0,
+                            durationFrames = 96,
+                            facialExpression = FacialExpression.TALKING,
+                            keyframes = listOf(
+                                TransformKeyframe(frame = 12, expressionOverride = FacialExpression.SHOCKED, blinkOverride = true)
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        val (withAudio, audioClipId) = com.example.viewmodel.ProjectMutator.addAudioClip(
+            project = baseProject,
+            name = "Voiceover",
+            audioPath = "/tmp/voice.wav",
+            startFrame = 0
+        )
+        val trimmedProject = com.example.viewmodel.ProjectMutator.trimAudioClip(
+            project = withAudio,
+            clipId = audioClipId,
+            newStartFrame = 12,
+            newDurationFrames = 24,
+            newTrimStartMs = 1000L,
+            newTrimEndMs = 1500L
+        )
+        val trimmedClip = trimmedProject.activeScene.clips.first { it.id == audioClipId }
+        assertEquals(12, trimmedClip.startFrame)
+        assertEquals(24, trimmedClip.durationFrames)
+        assertEquals(1000L, trimmedClip.audioTrimStartMs)
+        assertEquals(1500L, trimmedClip.audioTrimEndMs)
+
+        // Export lightweight waveform + lip-sync JSON
+        val exportModel = com.example.engine.AudioWaveformJsonCodec.buildExport(
+            project = trimmedProject,
+            scene = trimmedProject.activeScene,
+            audioClip = trimmedClip,
+            waveform = wf,
+            maxExportPeaks = 32
+        )
+        assertEquals(32, exportModel.peakCount)
+        assertEquals(1000L, exportModel.trimStartMs)
+        assertEquals(1500L, exportModel.trimEndMs)
+        assertTrue("Expected MTH4 mouth cue on 0.9 peak", exportModel.lipSyncCues.any { it.mouthShape == "MTH4" })
+        assertEquals(1, exportModel.syncedCharacters.size)
+        assertEquals("SHOCKED", exportModel.syncedCharacters.first().expressionKeyframes.first().expression)
+
+        val compactJson = com.example.engine.AudioWaveformJsonCodec.toJson(exportModel, pretty = false)
+        val restored = com.example.engine.AudioWaveformJsonCodec.fromJson(compactJson)
+        assertNotNull(restored)
+        assertEquals(exportModel.clipName, restored?.clipName)
+        assertEquals(exportModel.trimStartMs, restored?.trimStartMs)
+        assertEquals(exportModel.trimEndMs, restored?.trimEndMs)
+        assertEquals(exportModel.peaks.size, restored?.peaks?.size)
+        assertNull(com.example.engine.AudioWaveformJsonCodec.fromJson("""{"schemaVersion":99,"format":"bad"}"""))
+
+        // Reset audio trim restores untrimmed bounds
+        val resetProject = com.example.viewmodel.ProjectMutator.resetAudioTrim(
+            project = trimmedProject,
+            clipId = audioClipId,
+            fullAudioDurationMs = 2000L
+        )
+        val resetClip = resetProject.activeScene.clips.first { it.id == audioClipId }
+        assertEquals(0L, resetClip.audioTrimStartMs)
+        assertEquals(0L, resetClip.audioTrimEndMs)
+        assertEquals(48, resetClip.durationFrames)
+    }
 }

@@ -91,6 +91,8 @@ fun BottomEditingToolbar(
     onQuickAddAudio: () -> Unit,
     onToggleAudioMute: () -> Unit,
     onOpenAudioSpeed: () -> Unit,
+    onExportWaveformJson: () -> Unit = {},
+    onResetAudioTrim: () -> Unit = {},
     onOpenShapes: () -> Unit,
     onOpenText: () -> Unit,
     onToggleDrawing: () -> Unit,
@@ -111,13 +113,14 @@ fun BottomEditingToolbar(
     var activeSubMenu by remember { mutableStateOf(DockSubMenu.NONE) }
     val selectedClipId = selectedClip?.id
     val isCharSelected = selectedClip?.characterId != null
+    val isAudioSelected = !selectedClip?.audioPath.isNullOrBlank()
 
     // Reset sub-menu whenever selection context changes
     LaunchedEffect(selectedClipId) {
         activeSubMenu = DockSubMenu.NONE
     }
 
-    val dockModeKey = Triple(selectedClipId != null, isCharSelected, activeSubMenu)
+    val dockModeKey = Triple(selectedClipId != null, if (isCharSelected) 1 else if (isAudioSelected) 2 else 0, activeSubMenu)
     val showBackButton = selectedClip != null || activeSubMenu != DockSubMenu.NONE
 
     val actions: List<DockToolAction> = when {
@@ -150,6 +153,20 @@ fun BottomEditingToolbar(
                 DockToolAction("edit", "Edit", Icons.Rounded.Tune, onClick = { activeSubMenu = DockSubMenu.CHAR_EDIT })
             )
         }
+
+        selectedClip != null && isAudioSelected -> listOf(
+            DockToolAction("waveform_json", "Wave JSON", Icons.Rounded.DataObject, accentTint = EmeraldLayer, onClick = onExportWaveformJson),
+            DockToolAction(
+                "volume",
+                if (isAudioMuted) "Muted" else "Volume",
+                if (isAudioMuted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
+                isActive = isAudioMuted,
+                onClick = onToggleAudioMute
+            ),
+            DockToolAction("speed", "Speed", Icons.Rounded.Speed, onClick = onOpenSpeed),
+            DockToolAction("reset_trim", "Reset Trim", Icons.Rounded.RestartAlt, onClick = onResetAudioTrim),
+            DockToolAction("delete", "Delete", Icons.Rounded.DeleteOutline, accentTint = CoralPlayhead, onClick = onDeleteClip)
+        )
 
         selectedClip != null -> when (activeSubMenu) {
             DockSubMenu.CLIP_EDIT -> listOf(
@@ -199,7 +216,8 @@ fun BottomEditingToolbar(
                     isActive = isAudioMuted,
                     onClick = onToggleAudioMute
                 ),
-                DockToolAction("audio_speed", "Speed", Icons.Rounded.Speed, onClick = onOpenAudioSpeed)
+                DockToolAction("audio_speed", "Speed", Icons.Rounded.Speed, onClick = onOpenAudioSpeed),
+                DockToolAction("waveform_json", "Wave JSON", Icons.Rounded.DataObject, accentTint = EmeraldLayer, onClick = onExportWaveformJson)
             )
             DockSubMenu.SCENES -> listOf(
                 DockToolAction("add_scene", "Add Scene", Icons.Rounded.AddToPhotos, onClick = onAddScene),

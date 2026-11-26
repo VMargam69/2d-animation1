@@ -132,6 +132,7 @@ class LocalAssetStorage(private val context: Context) {
             }
         }
         atlasSlicesCache.remove(path)
+        com.example.engine.AudioWaveformExtractor.evict(path)
         if (path.startsWith(com.example.engine.CharacterPackImporter.ASSET_URI_PREFIX)) return
         runCatching {
             val file = File(path)
@@ -359,6 +360,22 @@ class LocalAssetStorage(private val context: Context) {
             } ?: return@withContext false
             true
         }.getOrDefault(false)
+    }
+
+    /** Saves a lightweight waveform + lip-sync JSON sidecar inside the app's project files folder. */
+    suspend fun saveProjectWaveformSidecar(
+        projectId: String,
+        clipName: String,
+        jsonContent: String
+    ): File? = withContext(Dispatchers.IO) {
+        runCatching {
+            val dir = File(context.filesDir, "waveform_exports").apply { mkdirs() }
+            val safeProj = projectId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(16).ifBlank { "project" }
+            val safeClip = clipName.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(28).ifBlank { "audio" }
+            val outFile = File(dir, "${safeProj}_${safeClip}.waveform.json")
+            outFile.writeText(jsonContent, Charsets.UTF_8)
+            outFile
+        }.getOrNull()
     }
 
     suspend fun readTextFromSafUri(uri: Uri): String? = withContext(Dispatchers.IO) {
