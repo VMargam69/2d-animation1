@@ -229,11 +229,15 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onResetPoseAtCurrentFrame = { viewModel.resetSelectedClipPoseAtCurrentFrame() },
                 onSetChromaKeyMode = { mode -> viewModel.setSceneChromaKeyMode(mode) },
                 onSetCameraFocusClip = { clipId -> viewModel.setCameraFocusClip(clipId) },
+                onToggleCameraLayerEnabled = { viewModel.toggleCameraLayerEnabled() },
+                onToggleCameraLayerLocked = { viewModel.toggleCameraLayerLocked() },
+                onSelectCameraKeyframe = { frame -> viewModel.selectCameraKeyframe(frame) },
+                onUpdateCameraEasing = { easing -> viewModel.updateCameraKeyframeEasing(easing) },
                 onUpdateCamera = { mutator -> viewModel.updateCameraAtCurrentFrame(mutator) },
                 onDeleteCameraKeyframeAtFrame = { viewModel.deleteCameraKeyframeAtCurrentFrame() },
                 onResetAllCameraKeyframes = { viewModel.resetAllCameraKeyframes() },
-                onApplyCinematicCameraPreset = { presetId, label ->
-                    viewModel.applyCinematicCameraPreset(presetId, label)
+                onApplyCinematicCameraPreset = { presetId, label, intensity ->
+                    viewModel.applyCinematicCameraPreset(presetId, label, intensity)
                 },
                 onUpdateSceneVfx = { updater -> viewModel.updateSceneVfxConfig(updater) },
                 onImportCustomPropUri = { uri, onPath -> viewModel.importCharacterSpriteUri(uri, onPath) },
@@ -250,7 +254,11 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 },
                 onDropFacialExpression = { layerId, clipId, globalFrame, presetId ->
                     viewModel.dropFacialExpressionOnTimeline(layerId, clipId, globalFrame, presetId)
-                }
+                },
+                onSetFacialShapeOverride = { mouth, eye, eyebrow ->
+                    viewModel.setFacialShapeOverride(mouth, eye, eyebrow)
+                },
+                onClearFacialShapeOverrides = { viewModel.clearFacialShapeOverrides() }
             )
         }
     }

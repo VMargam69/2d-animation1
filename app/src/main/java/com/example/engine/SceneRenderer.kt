@@ -537,6 +537,9 @@ class SceneRenderer(
                             val effectiveExpression = transform.expressionOverride ?: clip.facialExpression
                             val effectiveHandPose = transform.handPoseOverride ?: clip.handPose
                             val effectiveBlink = transform.blinkOverride ?: if (clip.forceBlink) true else null
+                            val effectiveMouthOverride = transform.mouthShapeOverride ?: clip.mouthShapeOverride
+                            val effectiveEyeOverride = transform.eyeShapeOverride ?: clip.eyeShapeOverride
+                            val effectiveEyebrowOverride = transform.eyebrowShapeOverride ?: clip.eyebrowShapeOverride
                             val organicFace = FacialExpressionEngine.evaluateOrganicFace(
                                 activePresetId = transform.facialPresetId,
                                 previousPresetId = transform.previousFacialPresetId,
@@ -545,7 +548,10 @@ class SceneRenderer(
                                 globalFrame = frame,
                                 fps = fps,
                                 blinkOverride = effectiveBlink,
-                                characterSeed = clip.id.hashCode()
+                                characterSeed = clip.id.hashCode(),
+                                mouthOverride = effectiveMouthOverride,
+                                eyeOverride = effectiveEyeOverride,
+                                eyebrowOverride = effectiveEyebrowOverride
                             )
                             val effectiveTint = tintOverlay ?: if (clip.blackShade > 0.01f) {
                                 Color.argb((clip.blackShade.coerceIn(0f, 1f) * 215f).toInt(), 0, 0, 0)

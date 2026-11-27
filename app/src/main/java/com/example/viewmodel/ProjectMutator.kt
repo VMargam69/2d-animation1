@@ -1,5 +1,6 @@
 package com.example.viewmodel
 
+import com.example.engine.CameraPresetEngine
 import com.example.engine.FacialExpressionEngine
 import com.example.engine.KeyframeEvaluator
 import com.example.model.*
@@ -396,6 +397,9 @@ object ProjectMutator {
                 poseOffsets = eval.poseOffsets,
                 expressionOverride = eval.expressionOverride,
                 facialPresetId = eval.facialPresetId,
+                mouthShapeOverride = eval.mouthShapeOverride,
+                eyeShapeOverride = eval.eyeShapeOverride,
+                eyebrowShapeOverride = eval.eyebrowShapeOverride,
                 handPoseOverride = eval.handPoseOverride,
                 blinkOverride = eval.blinkOverride
             )
@@ -452,6 +456,9 @@ object ProjectMutator {
                 opacity = eval.opacity,
                 easing = EasingType.EASE_IN_OUT,
                 poseOffsets = eval.poseOffsets,
+                mouthShapeOverride = eval.mouthShapeOverride,
+                eyeShapeOverride = eval.eyeShapeOverride,
+                eyebrowShapeOverride = eval.eyebrowShapeOverride,
                 handPoseOverride = eval.handPoseOverride
             )
             val updatedKf = baseKf.copy(
@@ -471,6 +478,75 @@ object ProjectMutator {
         }
         return updated to affectedClipId
     }
+
+    /**
+     * Stamps independent Mouth, Eye, and/or Eyebrow preset shape overrides at [globalFrame]
+     * on top of the character clip's running animation (persisted on both keyframe and clip fallback).
+     */
+    fun setFacialShapeOverrides(
+        project: ProjectDocument,
+        clipId: String,
+        globalFrame: Int,
+        mouthOverride: MouthShapeOverride? = null,
+        eyeOverride: EyeShapeOverride? = null,
+        eyebrowOverride: EyebrowShapeOverride? = null
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val clip = scene.clips.firstOrNull { it.id == clipId } ?: return@updateActiveScene scene
+        val layer = scene.layers.firstOrNull { it.id == clip.layerId }
+        if (layer?.isLocked == true) return@updateActiveScene scene
+
+        val localFrame = (globalFrame - clip.startFrame).coerceIn(0, (clip.durationFrames - 1).coerceAtLeast(0))
+        val existing = clip.keyframes.firstOrNull { it.frame == localFrame }
+        val eval = KeyframeEvaluator.evaluate(clip, globalFrame)
+        val base = existing ?: TransformKeyframe(
+            frame = localFrame,
+            x = eval.x,
+            y = eval.y,
+            rotation = eval.rotation,
+            scaleX = eval.scaleX,
+            scaleY = eval.scaleY,
+            opacity = eval.opacity,
+            poseOffsets = eval.poseOffsets,
+            expressionOverride = eval.expressionOverride,
+            facialPresetId = eval.facialPresetId,
+            mouthShapeOverride = eval.mouthShapeOverride,
+            eyeShapeOverride = eval.eyeShapeOverride,
+            eyebrowShapeOverride = eval.eyebrowShapeOverride,
+            handPoseOverride = eval.handPoseOverride,
+            blinkOverride = eval.blinkOverride
+        )
+        val nextKf = base.copy(
+            mouthShapeOverride = mouthOverride ?: base.mouthShapeOverride,
+            eyeShapeOverride = eyeOverride ?: base.eyeShapeOverride,
+            eyebrowShapeOverride = eyebrowOverride ?: base.eyebrowShapeOverride
+        )
+        val merged = (clip.keyframes.filterNot { it.frame == localFrame } + nextKf).sortedBy { it.frame }
+        scene.copy(
+            clips = scene.clips.map { c ->
+                if (c.id == clipId) {
+                    c.copy(
+                        mouthShapeOverride = mouthOverride ?: c.mouthShapeOverride,
+                        eyeShapeOverride = eyeOverride ?: c.eyeShapeOverride,
+                        eyebrowShapeOverride = eyebrowOverride ?: c.eyebrowShapeOverride,
+                        keyframes = merged
+                    )
+                } else c
+            }
+        )
+    }
+
+    fun clearFacialShapeOverrides(
+        project: ProjectDocument,
+        clipId: String,
+        globalFrame: Int
+    ): ProjectDocument = setFacialShapeOverrides(
+        project = project,
+        clipId = clipId,
+        globalFrame = globalFrame,
+        mouthOverride = MouthShapeOverride.AUTO,
+        eyeOverride = EyeShapeOverride.AUTO,
+        eyebrowOverride = EyebrowShapeOverride.AUTO
+    )
 
     fun toggleKeyframeAtFrame(
         project: ProjectDocument,
@@ -498,6 +574,9 @@ object ProjectMutator {
                 poseOffsets = eval.poseOffsets,
                 expressionOverride = eval.expressionOverride,
                 facialPresetId = eval.facialPresetId,
+                mouthShapeOverride = eval.mouthShapeOverride,
+                eyeShapeOverride = eval.eyeShapeOverride,
+                eyebrowShapeOverride = eval.eyebrowShapeOverride,
                 handPoseOverride = eval.handPoseOverride,
                 blinkOverride = eval.blinkOverride
             )).sortedBy { it.frame }
@@ -507,11 +586,20 @@ object ProjectMutator {
         scene.copy(clips = scene.clips.map { if (it.id == clipId) it.copy(keyframes = newKfs) else it })
     }
 
+    fun toggleCameraLayerEnabled(project: ProjectDocument): ProjectDocument = updateActiveScene(project) { scene ->
+        scene.copy(cameraLayerEnabled = !scene.cameraLayerEnabled)
+    }
+
+    fun toggleCameraLayerLocked(project: ProjectDocument): ProjectDocument = updateActiveScene(project) { scene ->
+        scene.copy(cameraLayerLocked = !scene.cameraLayerLocked)
+    }
+
     fun upsertCameraKeyframeAtFrame(
         project: ProjectDocument,
         globalFrame: Int,
         updater: (CameraKeyframe) -> CameraKeyframe
     ): ProjectDocument = updateActiveScene(project) { scene ->
+        if (scene.cameraLayerLocked) return@updateActiveScene scene
         val clampedFrame = globalFrame.coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0))
         val existing = scene.cameraKeyframes.firstOrNull { it.frame == clampedFrame }
         val base = existing ?: run {
@@ -524,19 +612,43 @@ object ProjectMutator {
                 rotation = evalCam.rotation
             )
         }
-        val nextCamKf = updater(base)
+        val nextCamKf = updater(base).let { kf ->
+            kf.copy(
+                x = kf.x.coerceIn(0.05f, 0.95f),
+                y = kf.y.coerceIn(0.05f, 0.95f),
+                zoom = kf.zoom.coerceIn(0.35f, 3.5f),
+                rotation = kf.rotation.coerceIn(-180f, 180f)
+            )
+        }
         val merged = (scene.cameraKeyframes.filterNot { it.frame == clampedFrame } + nextCamKf).sortedBy { it.frame }
-        scene.copy(cameraKeyframes = merged)
+        scene.copy(cameraLayerEnabled = true, cameraKeyframes = merged)
+    }
+
+    fun updateCameraKeyframeEasing(
+        project: ProjectDocument,
+        globalFrame: Int,
+        easing: EasingType
+    ): ProjectDocument = upsertCameraKeyframeAtFrame(project, globalFrame) { kf ->
+        val handles = KeyframeEvaluator.defaultBezierHandles(easing)
+        kf.copy(
+            easing = easing,
+            easingP1X = handles[0],
+            easingP1Y = handles[1],
+            easingP2X = handles[2],
+            easingP2Y = handles[3]
+        )
     }
 
     fun deleteCameraKeyframeAtFrame(
         project: ProjectDocument,
         globalFrame: Int
     ): ProjectDocument = updateActiveScene(project) { scene ->
+        if (scene.cameraLayerLocked) return@updateActiveScene scene
         scene.copy(cameraKeyframes = scene.cameraKeyframes.filterNot { it.frame == globalFrame })
     }
 
     fun resetCameraKeyframes(project: ProjectDocument): ProjectDocument = updateActiveScene(project) { scene ->
+        if (scene.cameraLayerLocked) return@updateActiveScene scene
         scene.copy(cameraKeyframes = emptyList())
     }
 
@@ -567,6 +679,9 @@ object ProjectMutator {
                     poseOffsets = evalAtSplit.poseOffsets,
                     expressionOverride = evalAtSplit.expressionOverride,
                     facialPresetId = evalAtSplit.facialPresetId,
+                    mouthShapeOverride = evalAtSplit.mouthShapeOverride,
+                    eyeShapeOverride = evalAtSplit.eyeShapeOverride,
+                    eyebrowShapeOverride = evalAtSplit.eyebrowShapeOverride,
                     handPoseOverride = evalAtSplit.handPoseOverride,
                     blinkOverride = evalAtSplit.blinkOverride
                 )
@@ -584,6 +699,9 @@ object ProjectMutator {
                 poseOffsets = evalAtSplit.poseOffsets,
                 expressionOverride = evalAtSplit.expressionOverride,
                 facialPresetId = evalAtSplit.facialPresetId,
+                mouthShapeOverride = evalAtSplit.mouthShapeOverride,
+                eyeShapeOverride = evalAtSplit.eyeShapeOverride,
+                eyebrowShapeOverride = evalAtSplit.eyebrowShapeOverride,
                 handPoseOverride = evalAtSplit.handPoseOverride,
                 blinkOverride = evalAtSplit.blinkOverride
             )
@@ -740,46 +858,28 @@ object ProjectMutator {
     }
 
     /**
-     * Stamps a 1-tap cinematic camera choreography sequence onto the active scene.
+     * Stamps an advanced multi-keyframe camera choreography preset from [CameraPresetEngine]
+     * onto the active scene's Camera Control Layer.
      */
     fun applyCinematicCameraPreset(
         project: ProjectDocument,
         startFrame: Int,
-        presetId: String
+        presetId: String,
+        intensity: Float = 1.0f,
+        spanFrames: Int? = null
     ): ProjectDocument = updateActiveScene(project) { scene ->
-        val maxFrame = (scene.durationFrames - 1).coerceAtLeast(12)
-        val f0 = startFrame.coerceIn(0, (maxFrame - 12).coerceAtLeast(0))
-        val span = (maxFrame - f0).coerceIn(16, 72)
-        val fMid = (f0 + span / 2).coerceAtMost(maxFrame)
-        val fEnd = (f0 + span).coerceAtMost(maxFrame)
-
-        val keys: List<CameraKeyframe> = when (presetId) {
-            "push_in" -> listOf(
-                CameraKeyframe(frame = f0, x = 0.50f, y = 0.50f, zoom = 1.0f, rotation = 0f, easing = EasingType.EASE_IN_OUT),
-                CameraKeyframe(frame = fEnd, x = 0.50f, y = 0.46f, zoom = 1.36f, rotation = 0f, easing = EasingType.EASE_OUT)
-            )
-            "pull_out" -> listOf(
-                CameraKeyframe(frame = f0, x = 0.50f, y = 0.46f, zoom = 1.50f, rotation = 0f, easing = EasingType.EASE_OUT),
-                CameraKeyframe(frame = fEnd, x = 0.50f, y = 0.50f, zoom = 1.0f, rotation = 0f, easing = EasingType.EASE_IN_OUT)
-            )
-            "pan_lr" -> listOf(
-                CameraKeyframe(frame = f0, x = 0.36f, y = 0.50f, zoom = 1.28f, rotation = 0f, easing = EasingType.EASE_IN_OUT),
-                CameraKeyframe(frame = fEnd, x = 0.64f, y = 0.50f, zoom = 1.28f, rotation = 0f, easing = EasingType.EASE_IN_OUT)
-            )
-            "crash_zoom" -> listOf(
-                CameraKeyframe(frame = f0, x = 0.50f, y = 0.50f, zoom = 1.0f, rotation = 0f, easing = EasingType.ELASTIC),
-                CameraKeyframe(frame = (f0 + 18).coerceAtMost(maxFrame), x = 0.50f, y = 0.45f, zoom = 1.62f, rotation = -2.5f, easing = EasingType.EASE_OUT)
-            )
-            "dutch_sweep" -> listOf(
-                CameraKeyframe(frame = f0, x = 0.44f, y = 0.50f, zoom = 1.18f, rotation = -6.5f, easing = EasingType.EASE_IN_OUT),
-                CameraKeyframe(frame = fMid, x = 0.56f, y = 0.48f, zoom = 1.24f, rotation = 5.0f, easing = EasingType.EASE_IN_OUT),
-                CameraKeyframe(frame = fEnd, x = 0.50f, y = 0.50f, zoom = 1.06f, rotation = 0f, easing = EasingType.EASE_OUT)
-            )
-            else -> return@updateActiveScene scene
-        }
+        if (scene.cameraLayerLocked) return@updateActiveScene scene
+        val keys = CameraPresetEngine.generateKeyframes(
+            presetId = presetId,
+            startFrame = startFrame,
+            sceneDurationFrames = scene.durationFrames,
+            intensity = intensity,
+            customSpanFrames = spanFrames
+        )
+        if (keys.isEmpty()) return@updateActiveScene scene
 
         val replacedFrames = keys.map { it.frame }.toSet()
         val merged = (scene.cameraKeyframes.filterNot { it.frame in replacedFrames } + keys).sortedBy { it.frame }
-        scene.copy(cameraKeyframes = merged)
+        scene.copy(cameraLayerEnabled = true, cameraKeyframes = merged)
     }
 }

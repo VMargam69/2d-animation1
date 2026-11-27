@@ -3,6 +3,7 @@ package com.example.ui.screens.editor
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -12,9 +13,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DragIndicator
+import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,23 +43,35 @@ import androidx.compose.ui.unit.sp
 import com.example.engine.FacialExpressionEngine
 import com.example.engine.FacialExpressionPreset
 import com.example.engine.ProceduralRigRenderer
+import com.example.model.EyeShapeOverride
+import com.example.model.EyebrowShapeOverride
+import com.example.model.MouthShapeOverride
 import com.example.ui.theme.*
 import kotlin.math.PI
 import kotlin.math.sin
 
+private enum class FacialTrayMode { PRESETS, OVERRIDES }
+private enum class OverrideChannel(val label: String) { MOUTH("Mouth"), EYES("Eyes"), BROWS("Brows") }
+
 /**
- * Compact, horizontally scrollable library of pre-defined algorithmic facial expression keyframes.
- *
- * Interaction model:
- *  - Hold & Drag any expression chip onto a Character layer in [TimelinePanel] to place
- *    an organic facial keyframe at the exact target frame.
- *  - Tap any expression chip to apply it immediately to the active Character clip at the playhead.
+ * Compact, horizontally scrollable Facial Expression Studio strip directly above the timeline:
+ *  - **Presets** tab: Hold & Drag full algorithmic facial expression presets onto Character layers,
+ *    or tap to stamp at playhead.
+ *  - **Overrides** tab: Instant 1-tap independent **Mouth**, **Eye**, and **Eyebrow** shape
+ *    overrides layered directly on top of any running character animation.
  */
 @Composable
 fun FacialExpressionTray(
     activePresetId: String?,
     hasCharacterLayer: Boolean,
+    activeMouthOverride: MouthShapeOverride = MouthShapeOverride.AUTO,
+    activeEyeOverride: EyeShapeOverride = EyeShapeOverride.AUTO,
+    activeEyebrowOverride: EyebrowShapeOverride = EyebrowShapeOverride.AUTO,
     onTapPreset: (FacialExpressionPreset) -> Unit,
+    onSetMouthOverride: (MouthShapeOverride) -> Unit = {},
+    onSetEyeOverride: (EyeShapeOverride) -> Unit = {},
+    onSetEyebrowOverride: (EyebrowShapeOverride) -> Unit = {},
+    onClearOverrides: () -> Unit = {},
     onDragStart: (preset: FacialExpressionPreset, rootPos: Offset) -> Unit,
     onDragMove: (rootPos: Offset) -> Unit,
     onDragEnd: () -> Unit,
@@ -69,6 +85,14 @@ fun FacialExpressionTray(
     val latestOnDragEnd by rememberUpdatedState(onDragEnd)
     val latestOnDragCancel by rememberUpdatedState(onDragCancel)
 
+    var trayMode by remember { mutableStateOf(FacialTrayMode.PRESETS) }
+    var activeChannel by remember { mutableStateOf(OverrideChannel.MOUTH) }
+    val activeOverrideCount = remember(activeMouthOverride, activeEyeOverride, activeEyebrowOverride) {
+        (if (activeMouthOverride != MouthShapeOverride.AUTO) 1 else 0) +
+            (if (activeEyeOverride != EyeShapeOverride.AUTO) 1 else 0) +
+            (if (activeEyebrowOverride != EyebrowShapeOverride.AUTO) 1 else 0)
+    }
+
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -80,98 +104,313 @@ fun FacialExpressionTray(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Subtle studio affordance pill explaining drag-and-drop
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-            modifier = Modifier
-                .background(StudioObsidian.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
-                .padding(horizontal = 7.dp, vertical = 5.dp)
+        // Compact Mode Toggle: Presets | Overrides (Mouth • Eyes • Brows)
+        Surface(
+            color = StudioObsidian,
+            shape = RoundedCornerShape(9.dp),
+            border = BorderStroke(1.dp, StudioBorderSubtle)
         ) {
-            Icon(
-                imageVector = Icons.Rounded.DragIndicator,
-                contentDescription = null,
-                tint = if (hasCharacterLayer) ElectricCyan else StudioTextMuted,
-                modifier = Modifier.size(13.dp)
-            )
-            Text(
-                text = if (hasCharacterLayer) "Hold & Drag" else "Add Character",
-                fontSize = 9.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = if (hasCharacterLayer) StudioTextSecondary else StudioTextMuted,
-                maxLines = 1
-            )
-        }
-
-        FacialExpressionEngine.presets.forEach { preset ->
-            val accent = remember(preset.accentHex) {
-                Color(ProceduralRigRenderer.parseColorSafe(preset.accentHex, 0xFF38BDF8.toInt()))
-            }
-            val isActive = preset.id == activePresetId
-            var chipRootPos by remember(preset.id) { mutableStateOf(Offset.Zero) }
-
-            Surface(
-                color = if (isActive) accent.copy(alpha = 0.22f) else StudioCard,
-                shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(
-                    width = if (isActive) 1.4.dp else 1.dp,
-                    color = if (isActive) accent else StudioBorderSubtle
-                ),
-                modifier = Modifier
-                    .height(32.dp)
-                    .onGloballyPositioned { coords ->
-                        chipRootPos = coords.positionInRoot()
-                    }
-                    .pointerInput(preset.id) {
-                        detectTapGestures(
-                            onTap = {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                latestOnTap(preset)
-                            }
-                        )
-                    }
-                    .pointerInput(preset.id) {
-                        var currentRootPos = Offset.Zero
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = { localOffset ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                currentRootPos = chipRootPos + localOffset
-                                latestOnDragStart(preset, currentRootPos)
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                currentRootPos += dragAmount
-                                latestOnDragMove(currentRootPos)
-                            },
-                            onDragEnd = {
-                                latestOnDragEnd()
-                            },
-                            onDragCancel = {
-                                latestOnDragCancel()
-                            }
-                        )
-                    }
-                    .testTag("facial_preset_chip_${preset.id}")
+            Row(
+                modifier = Modifier.padding(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                val presetsSelected = trayMode == FacialTrayMode.PRESETS
+                Surface(
+                    color = if (presetsSelected) ElectricCyan.copy(alpha = 0.22f) else Color.Transparent,
+                    shape = RoundedCornerShape(7.dp),
+                    modifier = Modifier
+                        .height(26.dp)
+                        .clickable { trayMode = FacialTrayMode.PRESETS }
+                        .testTag("facial_tray_mode_presets")
                 ) {
-                    FacialExpressionMiniGlyph(
-                        preset = preset,
-                        accent = accent,
-                        size = 20.dp
-                    )
-                    Text(
-                        text = preset.shortLabel,
-                        fontSize = 10.5.sp,
-                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.SemiBold,
-                        color = if (isActive) accent else StudioTextPrimary,
-                        maxLines = 1
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.DragIndicator,
+                            contentDescription = "Full expression presets",
+                            tint = if (presetsSelected) ElectricCyan else StudioTextMuted,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = "Presets",
+                            fontSize = 10.sp,
+                            fontWeight = if (presetsSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (presetsSelected) ElectricCyan else StudioTextSecondary
+                        )
+                    }
+                }
+                val overridesSelected = trayMode == FacialTrayMode.OVERRIDES
+                Surface(
+                    color = if (overridesSelected) AmberKeyframe.copy(alpha = 0.22f) else Color.Transparent,
+                    shape = RoundedCornerShape(7.dp),
+                    modifier = Modifier
+                        .height(26.dp)
+                        .clickable { trayMode = FacialTrayMode.OVERRIDES }
+                        .testTag("facial_tray_mode_overrides")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Tune,
+                            contentDescription = "Facial shape overrides",
+                            tint = if (overridesSelected || activeOverrideCount > 0) AmberKeyframe else StudioTextMuted,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = if (activeOverrideCount > 0) "Parts ($activeOverrideCount)" else "Overrides",
+                            fontSize = 10.sp,
+                            fontWeight = if (overridesSelected || activeOverrideCount > 0) FontWeight.Bold else FontWeight.Medium,
+                            color = if (overridesSelected || activeOverrideCount > 0) AmberKeyframe else StudioTextSecondary
+                        )
+                    }
                 }
             }
+        }
+
+        if (trayMode == FacialTrayMode.PRESETS) {
+            FacialExpressionEngine.presets.forEach { preset ->
+                val accent = remember(preset.accentHex) {
+                    Color(ProceduralRigRenderer.parseColorSafe(preset.accentHex, 0xFF38BDF8.toInt()))
+                }
+                val isActive = preset.id == activePresetId
+                var chipRootPos by remember(preset.id) { mutableStateOf(Offset.Zero) }
+
+                Surface(
+                    color = if (isActive) accent.copy(alpha = 0.22f) else StudioCard,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(
+                        width = if (isActive) 1.4.dp else 1.dp,
+                        color = if (isActive) accent else StudioBorderSubtle
+                    ),
+                    modifier = Modifier
+                        .height(32.dp)
+                        .onGloballyPositioned { coords ->
+                            chipRootPos = coords.positionInRoot()
+                        }
+                        .pointerInput(preset.id) {
+                            detectTapGestures(
+                                onTap = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    latestOnTap(preset)
+                                }
+                            )
+                        }
+                        .pointerInput(preset.id) {
+                            var currentRootPos = Offset.Zero
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { localOffset ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    currentRootPos = chipRootPos + localOffset
+                                    latestOnDragStart(preset, currentRootPos)
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    currentRootPos += dragAmount
+                                    latestOnDragMove(currentRootPos)
+                                },
+                                onDragEnd = {
+                                    latestOnDragEnd()
+                                },
+                                onDragCancel = {
+                                    latestOnDragCancel()
+                                }
+                            )
+                        }
+                        .testTag("facial_preset_chip_${preset.id}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        FacialExpressionMiniGlyph(
+                            preset = preset,
+                            accent = accent,
+                            size = 20.dp
+                        )
+                        Text(
+                            text = preset.shortLabel,
+                            fontSize = 10.5.sp,
+                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.SemiBold,
+                            color = if (isActive) accent else StudioTextPrimary,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        } else {
+            // Instant 1-tap Facial Shape Overrides: Mouth | Eyes | Brows
+            OverrideChannel.entries.forEach { channel ->
+                val isSelected = activeChannel == channel
+                val hasActive = when (channel) {
+                    OverrideChannel.MOUTH -> activeMouthOverride != MouthShapeOverride.AUTO
+                    OverrideChannel.EYES -> activeEyeOverride != EyeShapeOverride.AUTO
+                    OverrideChannel.BROWS -> activeEyebrowOverride != EyebrowShapeOverride.AUTO
+                }
+                val channelAccent = when (channel) {
+                    OverrideChannel.MOUTH -> PinkLayer
+                    OverrideChannel.EYES -> ElectricCyan
+                    OverrideChannel.BROWS -> AmberKeyframe
+                }
+                Surface(
+                    color = if (isSelected) channelAccent.copy(alpha = 0.22f) else StudioCard,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(
+                        width = if (isSelected) 1.3.dp else 1.dp,
+                        color = if (isSelected) channelAccent else if (hasActive) channelAccent.copy(alpha = 0.5f) else StudioBorderSubtle
+                    ),
+                    modifier = Modifier
+                        .height(28.dp)
+                        .clickable { activeChannel = channel }
+                        .testTag("facial_override_tab_${channel.name.lowercase()}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (hasActive) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(channelAccent, CircleShape)
+                            )
+                        }
+                        Text(
+                            text = channel.label,
+                            fontSize = 10.sp,
+                            fontWeight = if (isSelected || hasActive) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) channelAccent else StudioTextPrimary
+                        )
+                    }
+                }
+            }
+
+            VerticalDivider(color = StudioBorderSubtle, modifier = Modifier.height(22.dp))
+
+            when (activeChannel) {
+                OverrideChannel.MOUTH -> {
+                    MouthShapeOverride.entries.forEach { shape ->
+                        val isActive = activeMouthOverride == shape
+                        FacialOverrideChip(
+                            label = shape.shortLabel,
+                            isActive = isActive,
+                            accent = PinkLayer,
+                            tag = "mouth_override_chip_${shape.name.lowercase()}",
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onSetMouthOverride(shape)
+                            }
+                        )
+                    }
+                }
+                OverrideChannel.EYES -> {
+                    EyeShapeOverride.entries.forEach { shape ->
+                        val isActive = activeEyeOverride == shape
+                        FacialOverrideChip(
+                            label = shape.shortLabel,
+                            isActive = isActive,
+                            accent = ElectricCyan,
+                            tag = "eye_override_chip_${shape.name.lowercase()}",
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onSetEyeOverride(shape)
+                            }
+                        )
+                    }
+                }
+                OverrideChannel.BROWS -> {
+                    EyebrowShapeOverride.entries.forEach { shape ->
+                        val isActive = activeEyebrowOverride == shape
+                        FacialOverrideChip(
+                            label = shape.shortLabel,
+                            isActive = isActive,
+                            accent = AmberKeyframe,
+                            tag = "brow_override_chip_${shape.name.lowercase()}",
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onSetEyebrowOverride(shape)
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (activeOverrideCount > 0) {
+                Surface(
+                    color = CoralPlayhead.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, CoralPlayhead.copy(alpha = 0.65f)),
+                    modifier = Modifier
+                        .height(28.dp)
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onClearOverrides()
+                        }
+                        .testTag("facial_overrides_reset_btn")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.RestartAlt,
+                            contentDescription = "Reset facial overrides",
+                            tint = CoralPlayhead,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = "Reset",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = CoralPlayhead
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FacialOverrideChip(
+    label: String,
+    isActive: Boolean,
+    accent: Color,
+    tag: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        color = if (isActive) accent.copy(alpha = 0.24f) else StudioCard,
+        shape = RoundedCornerShape(9.dp),
+        border = BorderStroke(
+            width = if (isActive) 1.4.dp else 1.dp,
+            color = if (isActive) accent else StudioBorderSubtle
+        ),
+        modifier = Modifier
+            .height(29.dp)
+            .clickable(onClick = onClick)
+            .testTag(tag)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.padding(horizontal = 9.dp)
+        ) {
+            Text(
+                text = label,
+                fontSize = 10.5.sp,
+                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                color = if (isActive) accent else StudioTextPrimary,
+                maxLines = 1
+            )
         }
     }
 }

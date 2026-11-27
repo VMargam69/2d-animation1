@@ -1436,4 +1436,156 @@ class AnimationEngineTest {
         assertEquals(true, secondKf0.blinkOverride)
         assertEquals(com.example.engine.FacialExpressionEngine.PRESET_HAPPY, secondKf0.facialPresetId)
     }
+
+    @Test
+    fun `advanced camera control layer supports pan zoom rotation keyframes enable lock easing and json persistence`() {
+        var project = BuiltInCatalog.sceneTemplates.first().buildProject("Camera Layer Test")
+        project = ProjectMutator.upsertCameraKeyframeAtFrame(project, globalFrame = 0) {
+            it.copy(x = 0.40f, y = 0.50f, zoom = 1.0f, rotation = 0f, easing = EasingType.LINEAR)
+        }
+        project = ProjectMutator.upsertCameraKeyframeAtFrame(project, globalFrame = 20) {
+            it.copy(x = 0.60f, y = 0.40f, zoom = 2.0f, rotation = 20f, easing = EasingType.EASE_OUT)
+        }
+
+        // Midpoint evaluation at frame 10 (LINEAR between frame 0 and 20)
+        val midCam = KeyframeEvaluator.evaluateCamera(project.activeScene, globalFrame = 10)
+        assertEquals(0.50f, midCam.x, 0.005f)
+        assertEquals(0.45f, midCam.y, 0.005f)
+        assertEquals(1.50f, midCam.zoom, 0.005f)
+        assertEquals(10f, midCam.rotation, 0.2f)
+
+        // Update easing on keyframe 0 to HOLD -> midpoint stays at keyframe 0 values until frame 20
+        val holdProject = ProjectMutator.updateCameraKeyframeEasing(project, globalFrame = 0, easing = EasingType.HOLD)
+        val holdMid = KeyframeEvaluator.evaluateCamera(holdProject.activeScene, globalFrame = 10)
+        assertEquals(0.40f, holdMid.x, 0.001f)
+        assertEquals(1.0f, holdMid.zoom, 0.001f)
+        assertEquals(0f, holdMid.rotation, 0.001f)
+
+        // Disabling camera layer bypasses camera transform without deleting keyframes
+        val bypassed = ProjectMutator.toggleCameraLayerEnabled(project)
+        assertFalse(bypassed.activeScene.cameraLayerEnabled)
+        assertEquals(2, bypassed.activeScene.cameraKeyframes.size)
+        val bypassedEval = KeyframeEvaluator.evaluateCamera(bypassed.activeScene, globalFrame = 10)
+        assertTrue(bypassedEval.isIdentity)
+
+        // Locking camera layer blocks upsert, delete, preset, and reset mutations
+        val locked = ProjectMutator.toggleCameraLayerLocked(project)
+        assertTrue(locked.activeScene.cameraLayerLocked)
+        val attemptedEdit = ProjectMutator.upsertCameraKeyframeAtFrame(locked, globalFrame = 10) { it.copy(zoom = 3.0f) }
+        assertEquals(2, attemptedEdit.activeScene.cameraKeyframes.size)
+        val attemptedReset = ProjectMutator.resetCameraKeyframes(locked)
+        assertEquals(2, attemptedReset.activeScene.cameraKeyframes.size)
+
+        // Full ProjectDocument Moshi JSON round-trip (ensures saved project & exports keep exact camera values)
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(locked))
+        assertNotNull(restored)
+        val restoredScene = restored!!.activeScene
+        assertTrue(restoredScene.cameraLayerEnabled)
+        assertTrue(restoredScene.cameraLayerLocked)
+        assertEquals(2, restoredScene.cameraKeyframes.size)
+        assertEquals(0.60f, restoredScene.cameraKeyframes[1].x, 0.001f)
+        assertEquals(2.0f, restoredScene.cameraKeyframes[1].zoom, 0.001f)
+        assertEquals(20f, restoredScene.cameraKeyframes[1].rotation, 0.001f)
+    }
+
+    @Test
+    fun `advanced camera control presets generate valid multi-keyframe sequences across all 12 presets and intensity scaling`() {
+        val presets = com.example.engine.CameraPresetEngine.presets
+        assertTrue("Expected at least 12 advanced camera presets", presets.size >= 12)
+
+        val base = BuiltInCatalog.sceneTemplates.first().buildProject("Camera Presets Test")
+        for (preset in presets) {
+            val applied = ProjectMutator.applyCinematicCameraPreset(
+                project = base,
+                startFrame = 8,
+                presetId = preset.id,
+                intensity = 1.0f
+            )
+            val kfs = applied.activeScene.cameraKeyframes
+            assertTrue("Preset ${preset.id} should produce >= 2 keyframes", kfs.size >= 2)
+            assertTrue("Preset ${preset.id} keyframes must be sorted ascending", kfs.zipWithNext().all { (a, b) -> a.frame < b.frame })
+            kfs.forEach { kf ->
+                assertTrue(kf.x in 0.05f..0.95f)
+                assertTrue(kf.y in 0.05f..0.95f)
+                assertTrue(kf.zoom in 0.35f..3.5f)
+                assertTrue(kf.rotation in -180f..180f)
+            }
+        }
+
+        // Intensity scaling increases motion amplitude monotonically for push_in
+        val subtle = ProjectMutator.applyCinematicCameraPreset(base, startFrame = 0, presetId = "push_in", intensity = 0.5f)
+        val dramatic = ProjectMutator.applyCinematicCameraPreset(base, startFrame = 0, presetId = "push_in", intensity = 1.6f)
+        val subtleEndZoom = subtle.activeScene.cameraKeyframes.last().zoom
+        val dramaticEndZoom = dramatic.activeScene.cameraKeyframes.last().zoom
+        assertTrue("Expected dramatic push_in zoom ($dramaticEndZoom) > subtle ($subtleEndZoom)", dramaticEndZoom > subtleEndZoom + 0.25f)
+    }
+
+    @Test
+    fun `facial expression overrides toggle mouth eye and eyebrow shapes independently over animations and persist in project json`() {
+        val base = BuiltInCatalog.sceneTemplates.first().buildProject("Facial Overrides Test")
+        val charClip = base.activeScene.clips.first { it.characterId != null }
+
+        // Stamp independent Mouth + Eye + Eyebrow overrides at frame 6
+        val overridden = ProjectMutator.setFacialShapeOverrides(
+            project = base,
+            clipId = charClip.id,
+            globalFrame = 6,
+            mouthOverride = MouthShapeOverride.SHOCK_O,
+            eyeOverride = EyeShapeOverride.WINK_RIGHT,
+            eyebrowOverride = EyebrowShapeOverride.FURROWED_ANGRY
+        )
+
+        // Add a transform-only keyframe at frame 18 -> overrides should still hold via independent track scan!
+        val movedLater = ProjectMutator.upsertKeyframeAtFrame(overridden, charClip.id, globalFrame = 18) {
+            it.copy(x = 0.72f)
+        }
+        val movedClip = movedLater.activeScene.clips.first { it.id == charClip.id }
+        val evalAt24 = KeyframeEvaluator.evaluate(movedClip, globalFrame = 24)
+        assertEquals(MouthShapeOverride.SHOCK_O, evalAt24.mouthShapeOverride)
+        assertEquals(EyeShapeOverride.WINK_RIGHT, evalAt24.eyeShapeOverride)
+        assertEquals(EyebrowShapeOverride.FURROWED_ANGRY, evalAt24.eyebrowShapeOverride)
+
+        // Evaluate FacialExpressionEngine with independent overrides on top of a HAPPY preset
+        val organic = com.example.engine.FacialExpressionEngine.evaluateOrganicFace(
+            activePresetId = com.example.engine.FacialExpressionEngine.PRESET_HAPPY,
+            previousPresetId = null,
+            fallbackExpression = FacialExpression.HAPPY,
+            framesSinceKey = 20,
+            globalFrame = 24,
+            fps = 24,
+            mouthOverride = evalAt24.mouthShapeOverride!!,
+            eyeOverride = evalAt24.eyeShapeOverride!!,
+            eyebrowOverride = evalAt24.eyebrowShapeOverride!!
+        )
+        // Mouth is SHOCK_O (wide open, LIP_SHOCKED)
+        assertTrue("SHOCK_O mouth should be widely open, got ${organic.mouthOpen}", organic.mouthOpen >= 0.85f)
+        assertEquals(AtlasPartSlot.LIP_SHOCKED, organic.resolvedMouthSlot)
+        // Eyes are WINK_RIGHT (left open, right closed/winking)
+        assertFalse(organic.isBlinkingLeft)
+        assertTrue(organic.isBlinkingRight)
+        // Eyebrows are FURROWED_ANGRY (negative lift, positive inward tilt, BROW_ANGRY)
+        assertTrue("Furrowed angry brow lift should be negative, got ${organic.leftBrowLift}", organic.leftBrowLift < -0.4f)
+        assertTrue("Furrowed angry brow tilt should be > 15deg, got ${organic.leftBrowTiltDeg}", organic.leftBrowTiltDeg > 15f)
+        assertEquals(AtlasPartSlot.BROW_ANGRY, organic.resolvedBrowSlot)
+
+        // Clearing overrides restores AUTO cleanly
+        val cleared = ProjectMutator.clearFacialShapeOverrides(movedLater, charClip.id, globalFrame = 24)
+        val clearedClip = cleared.activeScene.clips.first { it.id == charClip.id }
+        val evalCleared = KeyframeEvaluator.evaluate(clearedClip, globalFrame = 24)
+        assertEquals(MouthShapeOverride.AUTO, evalCleared.mouthShapeOverride)
+        assertEquals(EyeShapeOverride.AUTO, evalCleared.eyeShapeOverride)
+        assertEquals(EyebrowShapeOverride.AUTO, evalCleared.eyebrowShapeOverride)
+
+        // Moshi JSON round-trip persistence check
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(overridden))
+        assertNotNull(restored)
+        val restoredClip = restored!!.activeScene.clips.first { it.id == charClip.id }
+        assertEquals(MouthShapeOverride.SHOCK_O, restoredClip.mouthShapeOverride)
+        assertEquals(EyeShapeOverride.WINK_RIGHT, restoredClip.eyeShapeOverride)
+        assertEquals(EyebrowShapeOverride.FURROWED_ANGRY, restoredClip.eyebrowShapeOverride)
+    }
 }

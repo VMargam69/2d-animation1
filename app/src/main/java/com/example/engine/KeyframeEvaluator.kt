@@ -3,8 +3,11 @@ package com.example.engine
 import com.example.model.AnimationScene
 import com.example.model.CameraKeyframe
 import com.example.model.EasingType
+import com.example.model.EyeShapeOverride
+import com.example.model.EyebrowShapeOverride
 import com.example.model.FacialExpression
 import com.example.model.HandPoseType
+import com.example.model.MouthShapeOverride
 import com.example.model.NormalizedPoint
 import com.example.model.PoseKeyframeOffsets
 import com.example.model.TimelineClip
@@ -28,6 +31,9 @@ data class EvaluatedTransform(
     val facialPresetId: String? = null,
     val previousFacialPresetId: String? = null,
     val framesSinceFacialKey: Int = 999,
+    val mouthShapeOverride: MouthShapeOverride? = null,
+    val eyeShapeOverride: EyeShapeOverride? = null,
+    val eyebrowShapeOverride: EyebrowShapeOverride? = null,
     val handPoseOverride: HandPoseType? = null,
     val blinkOverride: Boolean? = null
 )
@@ -66,7 +72,10 @@ object KeyframeEvaluator {
                 expressionOverride = exprState.expressionOverride ?: first.expressionOverride,
                 facialPresetId = exprState.activePresetId,
                 previousFacialPresetId = exprState.previousPresetId,
-                framesSinceFacialKey = exprState.framesSinceKey
+                framesSinceFacialKey = exprState.framesSinceKey,
+                mouthShapeOverride = exprState.mouthShapeOverride ?: first.mouthShapeOverride,
+                eyeShapeOverride = exprState.eyeShapeOverride ?: first.eyeShapeOverride,
+                eyebrowShapeOverride = exprState.eyebrowShapeOverride ?: first.eyebrowShapeOverride
             )
         }
         val last = sortedKeyframes.last()
@@ -75,7 +84,10 @@ object KeyframeEvaluator {
                 expressionOverride = exprState.expressionOverride ?: last.expressionOverride,
                 facialPresetId = exprState.activePresetId,
                 previousFacialPresetId = exprState.previousPresetId,
-                framesSinceFacialKey = exprState.framesSinceKey
+                framesSinceFacialKey = exprState.framesSinceKey,
+                mouthShapeOverride = exprState.mouthShapeOverride ?: last.mouthShapeOverride,
+                eyeShapeOverride = exprState.eyeShapeOverride ?: last.eyeShapeOverride,
+                eyebrowShapeOverride = exprState.eyebrowShapeOverride ?: last.eyebrowShapeOverride
             )
         }
 
@@ -135,6 +147,12 @@ object KeyframeEvaluator {
             facialPresetId = exprState.activePresetId,
             previousFacialPresetId = exprState.previousPresetId,
             framesSinceFacialKey = exprState.framesSinceKey,
+            mouthShapeOverride = exprState.mouthShapeOverride
+                ?: if (t >= 1f) (next.mouthShapeOverride ?: prev.mouthShapeOverride) else prev.mouthShapeOverride,
+            eyeShapeOverride = exprState.eyeShapeOverride
+                ?: if (t >= 1f) (next.eyeShapeOverride ?: prev.eyeShapeOverride) else prev.eyeShapeOverride,
+            eyebrowShapeOverride = exprState.eyebrowShapeOverride
+                ?: if (t >= 1f) (next.eyebrowShapeOverride ?: prev.eyebrowShapeOverride) else prev.eyebrowShapeOverride,
             handPoseOverride = if (t >= 1f) (next.handPoseOverride ?: prev.handPoseOverride) else prev.handPoseOverride,
             blinkOverride = if (t >= 1f) (next.blinkOverride ?: prev.blinkOverride) else prev.blinkOverride
         )
@@ -144,13 +162,16 @@ object KeyframeEvaluator {
         val activePresetId: String? = null,
         val previousPresetId: String? = null,
         val expressionOverride: FacialExpression? = null,
-        val framesSinceKey: Int = 999
+        val framesSinceKey: Int = 999,
+        val mouthShapeOverride: MouthShapeOverride? = null,
+        val eyeShapeOverride: EyeShapeOverride? = null,
+        val eyebrowShapeOverride: EyebrowShapeOverride? = null
     )
 
     /**
-     * Scans expression-bearing keyframes independently of pure transform keyframes so
-     * dropped facial expression presets hold smoothly across movement keyframes and
-     * transition organically from the previous expression.
+     * Scans expression-bearing keyframes and independent Mouth / Eye / Eyebrow shape
+     * override keyframes separately from pure transform keyframes so overrides hold
+     * cleanly across movement keyframes and transition organically.
      */
     private fun resolveExpressionTrackState(
         sortedKeyframes: List<TransformKeyframe>,
@@ -158,6 +179,9 @@ object KeyframeEvaluator {
     ): ExpressionTrackState {
         var activeKf: TransformKeyframe? = null
         var previousKf: TransformKeyframe? = null
+        var activeMouth: MouthShapeOverride? = null
+        var activeEye: EyeShapeOverride? = null
+        var activeEyebrow: EyebrowShapeOverride? = null
         for (i in sortedKeyframes.indices) {
             val kf = sortedKeyframes[i]
             if (kf.frame > localFrame) break
@@ -165,28 +189,37 @@ object KeyframeEvaluator {
                 previousKf = activeKf
                 activeKf = kf
             }
+            if (kf.mouthShapeOverride != null) activeMouth = kf.mouthShapeOverride
+            if (kf.eyeShapeOverride != null) activeEye = kf.eyeShapeOverride
+            if (kf.eyebrowShapeOverride != null) activeEyebrow = kf.eyebrowShapeOverride
         }
-        val cur = activeKf ?: return ExpressionTrackState()
-        val activePreset = cur.facialPresetId ?: cur.expressionOverride?.let {
-            FacialExpressionEngine.presetForExpression(it).id
+        val cur = activeKf
+        val activePreset = cur?.let {
+            it.facialPresetId ?: it.expressionOverride?.let { expr ->
+                FacialExpressionEngine.presetForExpression(expr).id
+            }
         }
         val prevPreset = previousKf?.let { prev ->
-            prev.facialPresetId ?: prev.expressionOverride?.let {
-                FacialExpressionEngine.presetForExpression(it).id
+            prev.facialPresetId ?: prev.expressionOverride?.let { expr ->
+                FacialExpressionEngine.presetForExpression(expr).id
             }
         }
         return ExpressionTrackState(
             activePresetId = activePreset,
             previousPresetId = prevPreset,
-            expressionOverride = cur.expressionOverride,
-            framesSinceKey = (localFrame - cur.frame).coerceAtLeast(0)
+            expressionOverride = cur?.expressionOverride,
+            framesSinceKey = cur?.let { (localFrame - it.frame).coerceAtLeast(0) } ?: 999,
+            mouthShapeOverride = activeMouth,
+            eyeShapeOverride = activeEye,
+            eyebrowShapeOverride = activeEyebrow
         )
     }
 
     /**
-     * Evaluates scene camera including optional Focus Tracking on [AnimationScene.cameraFocusClipId].
-     * When tracking a character clip, the camera follows the character's animated (x, y) while
-     * preserving keyframed zoom, roll, and framing offset (baseCam.x - 0.5f, baseCam.y - 0.5f).
+     * Evaluates scene camera including optional Camera Control Layer visibility toggle
+     * and Focus Tracking on [AnimationScene.cameraFocusClipId].
+     * When [AnimationScene.cameraLayerEnabled] is false, returns identity framing without
+     * discarding saved camera keyframes.
      */
     fun evaluateCamera(
         scene: AnimationScene,
@@ -195,6 +228,7 @@ object KeyframeEvaluator {
         clipDeltaX: Float = 0f,
         clipDeltaY: Float = 0f
     ): EvaluatedCamera {
+        if (!scene.cameraLayerEnabled) return EvaluatedCamera()
         val base = evaluateCamera(scene.cameraKeyframes, globalFrame)
         val focusId = scene.cameraFocusClipId ?: return base
         val targetClip = scene.clips.firstOrNull { it.id == focusId } ?: return base
@@ -344,6 +378,9 @@ object KeyframeEvaluator {
         poseOffsets = poseOffsets,
         expressionOverride = expressionOverride,
         facialPresetId = facialPresetId,
+        mouthShapeOverride = mouthShapeOverride,
+        eyeShapeOverride = eyeShapeOverride,
+        eyebrowShapeOverride = eyebrowShapeOverride,
         handPoseOverride = handPoseOverride,
         blinkOverride = blinkOverride
     )

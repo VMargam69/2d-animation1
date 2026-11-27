@@ -106,6 +106,41 @@ enum class FacialExpression(val displayName: String, val badgeText: String) {
     SLEEPING("Sleeping", "Sleep")
 }
 
+enum class MouthShapeOverride(val displayName: String, val shortLabel: String) {
+    AUTO("Auto", "Auto"),
+    NEUTRAL("Neutral", "Idle"),
+    SMILE("Warm Smile", "Smile"),
+    OPEN_LAUGH("Open Laugh", "Laugh"),
+    FROWN("Sad Frown", "Frown"),
+    SHOCK_O("Shock O", "Shock"),
+    GRIT_ANGRY("Gritted Teeth", "Grit"),
+    TALK_AA("Open AA", "AA"),
+    TALK_EE("Wide EE", "EE"),
+    SMIRK("Smirk", "Smirk")
+}
+
+enum class EyeShapeOverride(val displayName: String, val shortLabel: String) {
+    AUTO("Auto", "Auto"),
+    NORMAL("Open Normal", "Open"),
+    HAPPY_ARC("Happy Arc", "Happy"),
+    WIDE_SHOCK("Wide Shock", "Wide"),
+    SQUINT_ANGRY("Fierce Squint", "Squint"),
+    SAD_DROOP("Sad Teary", "Sad"),
+    WINK_RIGHT("Wink Right", "Wink R"),
+    WINK_LEFT("Wink Left", "Wink L"),
+    CLOSED_SLEEP("Closed", "Closed")
+}
+
+enum class EyebrowShapeOverride(val displayName: String, val shortLabel: String) {
+    AUTO("Auto", "Auto"),
+    NEUTRAL("Flat Neutral", "Flat"),
+    RAISED_SURPRISE("Raised High", "Raised"),
+    FURROWED_ANGRY("Furrowed V", "Angry"),
+    WORRIED_SAD("Worried Up", "Sad"),
+    ARCHED_HAPPY("Arched Happy", "Arched"),
+    SKEPTICAL_ONE_UP("Skeptical", "Skeptic")
+}
+
 enum class CharacterPropType(val displayName: String) {
     NONE("No Prop"),
     MICROPHONE("Microphone"),
@@ -384,6 +419,9 @@ data class TransformKeyframe(
     val poseOffsets: PoseKeyframeOffsets = PoseKeyframeOffsets(),
     val expressionOverride: FacialExpression? = null,
     val facialPresetId: String? = null,
+    val mouthShapeOverride: MouthShapeOverride? = null,
+    val eyeShapeOverride: EyeShapeOverride? = null,
+    val eyebrowShapeOverride: EyebrowShapeOverride? = null,
     val handPoseOverride: HandPoseType? = null,
     val blinkOverride: Boolean? = null
 )
@@ -398,6 +436,9 @@ data class TimelineClip(
     val orientation: CharacterOrientation = CharacterOrientation.FRONT,
     val animationPresetType: AnimationPresetType = AnimationPresetType.IDLE,
     val facialExpression: FacialExpression = FacialExpression.AUTO,
+    val mouthShapeOverride: MouthShapeOverride = MouthShapeOverride.AUTO,
+    val eyeShapeOverride: EyeShapeOverride = EyeShapeOverride.AUTO,
+    val eyebrowShapeOverride: EyebrowShapeOverride = EyebrowShapeOverride.AUTO,
     val handPose: HandPoseType = HandPoseType.OPEN,
     val forceBlink: Boolean = false,
     val propType: CharacterPropType = CharacterPropType.NONE,
@@ -454,6 +495,9 @@ data class AnimationScene(
     val chromaKeyMode: ChromaKeyMode = ChromaKeyMode.NONE,
     val cameraKeyframes: List<CameraKeyframe> = emptyList(),
     val cameraFocusClipId: String? = null,
+    val cameraLayerEnabled: Boolean = true,
+    val cameraLayerLocked: Boolean = false,
+    val cameraLayerName: String = "Camera Control",
     val vfxConfig: SceneVfxConfig = SceneVfxConfig(),
     val durationFrames: Int = 144,
     val layers: List<AnimationLayer> = emptyList(),

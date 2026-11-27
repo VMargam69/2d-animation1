@@ -685,6 +685,92 @@ fun CharacterActingAndPropsDialog(
                     }
                 }
 
+                // 1A. Independent Facial Shape Overrides (Mouth • Eyes • Eyebrows layered over animation)
+                val activeMouth = eval.mouthShapeOverride ?: clip.mouthShapeOverride
+                val activeEye = eval.eyeShapeOverride ?: clip.eyeShapeOverride
+                val activeBrow = eval.eyebrowShapeOverride ?: clip.eyebrowShapeOverride
+                val hasAnyPartOverride = activeMouth != MouthShapeOverride.AUTO ||
+                    activeEye != EyeShapeOverride.AUTO ||
+                    activeBrow != EyebrowShapeOverride.AUTO
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Facial Shape Overrides (Mouth • Eyes • Brows)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = AmberKeyframe
+                    )
+                    if (hasAnyPartOverride) {
+                        TextButton(
+                            onClick = {
+                                onUpdateClip {
+                                    it.copy(
+                                        mouthShapeOverride = MouthShapeOverride.AUTO,
+                                        eyeShapeOverride = EyeShapeOverride.AUTO,
+                                        eyebrowShapeOverride = EyebrowShapeOverride.AUTO
+                                    )
+                                }
+                                onUpdateTransform {
+                                    it.copy(
+                                        mouthShapeOverride = MouthShapeOverride.AUTO,
+                                        eyeShapeOverride = EyeShapeOverride.AUTO,
+                                        eyebrowShapeOverride = EyebrowShapeOverride.AUTO
+                                    )
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            modifier = Modifier.testTag("dialog_reset_facial_overrides_btn")
+                        ) {
+                            Text("Reset", color = CoralPlayhead, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+                Text("Mouth Shape", style = MaterialTheme.typography.labelSmall, color = PinkLayer)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(MouthShapeOverride.entries) { shape ->
+                        FilterChip(
+                            selected = activeMouth == shape,
+                            onClick = {
+                                onUpdateClip { it.copy(mouthShapeOverride = shape) }
+                                onUpdateTransform { it.copy(mouthShapeOverride = shape) }
+                            },
+                            label = { Text(shape.shortLabel) },
+                            modifier = Modifier.testTag("dialog_mouth_shape_${shape.name.lowercase()}")
+                        )
+                    }
+                }
+                Text("Eye Shape", style = MaterialTheme.typography.labelSmall, color = ElectricCyan)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(EyeShapeOverride.entries) { shape ->
+                        FilterChip(
+                            selected = activeEye == shape,
+                            onClick = {
+                                onUpdateClip { it.copy(eyeShapeOverride = shape) }
+                                onUpdateTransform { it.copy(eyeShapeOverride = shape) }
+                            },
+                            label = { Text(shape.shortLabel) },
+                            modifier = Modifier.testTag("dialog_eye_shape_${shape.name.lowercase()}")
+                        )
+                    }
+                }
+                Text("Eyebrow Shape", style = MaterialTheme.typography.labelSmall, color = AmberKeyframe)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(EyebrowShapeOverride.entries) { shape ->
+                        FilterChip(
+                            selected = activeBrow == shape,
+                            onClick = {
+                                onUpdateClip { it.copy(eyebrowShapeOverride = shape) }
+                                onUpdateTransform { it.copy(eyebrowShapeOverride = shape) }
+                            },
+                            label = { Text(shape.shortLabel) },
+                            modifier = Modifier.testTag("dialog_brow_shape_${shape.name.lowercase()}")
+                        )
+                    }
+                }
+
                 // 1B. Eye Blink Control (keyframeable)
                 Text("Eye Blink Control (Keyframeable)", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -908,19 +994,38 @@ fun CameraAndChromaKeyDialog(
     isCameraKeyMode: Boolean,
     onSetChromaKeyMode: (ChromaKeyMode) -> Unit,
     onSetCameraFocusClip: (String?) -> Unit = {},
+    onToggleCameraLayerEnabled: () -> Unit = {},
+    onToggleCameraLayerLocked: () -> Unit = {},
+    onSelectCameraKeyframe: (Int) -> Unit = {},
+    onUpdateCameraEasing: (EasingType) -> Unit = {},
     onUpdateCamera: ((CameraKeyframe) -> CameraKeyframe) -> Unit,
     onDeleteCameraKeyframeAtFrame: () -> Unit,
     onResetAllCameraKeyframes: () -> Unit,
     onToggleCameraKeyMode: () -> Unit,
-    onApplyCinematicPreset: (presetId: String, label: String) -> Unit = { _, _ -> },
+    onApplyCinematicPreset: (presetId: String, label: String, intensity: Float) -> Unit = { _, _, _ -> },
     onDismiss: () -> Unit
 ) {
     val evalCam = remember(scene, currentFrame) {
         KeyframeEvaluator.evaluateCamera(scene, currentFrame)
     }
-    val hasKfAtFrame = scene.cameraKeyframes.any { it.frame == currentFrame }
+    val activeCamKf = remember(scene.cameraKeyframes, currentFrame) {
+        scene.cameraKeyframes.firstOrNull { it.frame == currentFrame }
+    }
+    val hasKfAtFrame = activeCamKf != null
+    val activeCamEasing = activeCamKf?.easing
+        ?: scene.cameraKeyframes.filter { it.frame <= currentFrame }.maxByOrNull { it.frame }?.easing
+        ?: EasingType.EASE_IN_OUT
     val trackableClips = remember(scene.clips) {
         scene.clips.filter { it.characterId != null || it.imagePath != null || it.shapeKind != null }
+    }
+    var selectedCategory by remember { mutableStateOf(com.example.engine.CameraPresetCategory.ALL) }
+    var presetIntensity by remember { mutableFloatStateOf(1.0f) }
+    val filteredPresets = remember(selectedCategory) {
+        if (selectedCategory == com.example.engine.CameraPresetCategory.ALL) {
+            com.example.engine.CameraPresetEngine.presets
+        } else {
+            com.example.engine.CameraPresetEngine.presets.filter { it.category == selectedCategory }
+        }
     }
 
     AlertDialog(
@@ -928,9 +1033,11 @@ fun CameraAndChromaKeyDialog(
         containerColor = StudioPanel,
         title = {
             Column {
-                Text("Camera Keyframing & Chroma Key", color = StudioTextPrimary)
+                Text("Advanced Camera Layer & Chroma", color = StudioTextPrimary)
                 Text(
-                    "Frame ${currentFrame + 1} • ${scene.cameraKeyframes.size} Camera Keyframe(s)" +
+                    "Frame ${currentFrame + 1} • ${scene.cameraKeyframes.size} Keyframe(s) • " +
+                        (if (scene.cameraLayerEnabled) "Layer ON" else "Bypassed") +
+                        (if (scene.cameraLayerLocked) " • Locked" else "") +
                         if (evalCam.trackedClipName != null) " • Tracking ${evalCam.trackedClipName}" else "",
                     style = MaterialTheme.typography.labelSmall,
                     color = AmberKeyframe
@@ -941,26 +1048,242 @@ fun CameraAndChromaKeyDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 460.dp)
+                    .heightIn(max = 490.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // 1. Chroma Key Green / Blue Screen Background Mode
-                Text("Chroma Key Compositing Background", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(ChromaKeyMode.entries) { mode ->
-                        FilterChip(
-                            selected = scene.chromaKeyMode == mode,
-                            onClick = { onSetChromaKeyMode(mode) },
-                            label = { Text(mode.displayName) },
-                            modifier = Modifier.testTag("chroma_mode_${mode.name.lowercase()}")
-                        )
+                // 0. Camera Control Layer Enable / Lock Controls + Saved Keyframe Jumps
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = scene.cameraLayerEnabled,
+                        onClick = onToggleCameraLayerEnabled,
+                        label = { Text(if (scene.cameraLayerEnabled) "Camera ON" else "Camera OFF") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (scene.cameraLayerEnabled) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                                contentDescription = "Toggle camera control layer",
+                                modifier = Modifier.size(15.dp)
+                            )
+                        },
+                        modifier = Modifier.testTag("dialog_camera_layer_enable_chip")
+                    )
+                    FilterChip(
+                        selected = scene.cameraLayerLocked,
+                        onClick = onToggleCameraLayerLocked,
+                        label = { Text(if (scene.cameraLayerLocked) "Locked" else "Unlocked") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (scene.cameraLayerLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                                contentDescription = "Toggle camera control layer lock",
+                                modifier = Modifier.size(15.dp)
+                            )
+                        },
+                        modifier = Modifier.testTag("dialog_camera_layer_lock_chip")
+                    )
+                }
+
+                if (scene.cameraKeyframes.isNotEmpty()) {
+                    Text("Camera Keyframes (Tap to Jump)", style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(scene.cameraKeyframes.sortedBy { it.frame }, key = { it.frame }) { kf ->
+                            FilterChip(
+                                selected = kf.frame == currentFrame,
+                                onClick = { onSelectCameraKeyframe(kf.frame) },
+                                label = {
+                                    Text(
+                                        "F${kf.frame + 1} • ${(kf.zoom * 100).toInt()}% • ${kf.rotation.toInt()}°",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                },
+                                modifier = Modifier.testTag("dialog_camera_kf_jump_${kf.frame}")
+                            )
+                        }
                     }
                 }
 
                 HorizontalDivider(color = StudioBorderSubtle)
 
-                // 2. Camera Focus Tracking (Auto-Follow Character/Subject)
+                // 1. Advanced Camera Control Presets (Categorized + Adjustable Intensity)
+                Text("Advanced Camera Control Presets", style = MaterialTheme.typography.labelLarge, color = AmberKeyframe)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(com.example.engine.CameraPresetCategory.entries) { cat ->
+                        FilterChip(
+                            selected = selectedCategory == cat,
+                            onClick = { selectedCategory = cat },
+                            label = { Text(cat.displayName, style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.testTag("camera_preset_cat_${cat.name.lowercase()}")
+                        )
+                    }
+                }
+                LabeledSlider(
+                    "Preset Motion Intensity",
+                    presetIntensity,
+                    0.4f..1.8f,
+                    String.format(Locale.US, "%.1fx", presetIntensity)
+                ) { v ->
+                    presetIntensity = v
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(filteredPresets, key = { it.id }) { preset ->
+                        Surface(
+                            color = StudioCard,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.55f)),
+                            modifier = Modifier
+                                .width(142.dp)
+                                .clickable(enabled = !scene.cameraLayerLocked) {
+                                    onApplyCinematicPreset(preset.id, preset.name, presetIntensity)
+                                }
+                                .testTag("camera_preset_${preset.id}")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.MovieFilter,
+                                        contentDescription = preset.name,
+                                        tint = AmberKeyframe,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = preset.shortLabel,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = StudioTextPrimary,
+                                        maxLines = 1
+                                    )
+                                }
+                                Text(
+                                    text = preset.description,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioTextMuted,
+                                    maxLines = 2
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 2. Stage Camera Keyframe Transform (Pan, Zoom, Rotation & Easing)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Keyframed Pan / Zoom / Rotation", style = MaterialTheme.typography.labelLarge, color = ElectricCyan)
+                    OutlinedButton(
+                        onClick = {
+                            onToggleCameraKeyMode()
+                            onDismiss()
+                        },
+                        border = BorderStroke(1.dp, AmberKeyframe),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Rounded.OpenWith, null, tint = AmberKeyframe, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (isCameraKeyMode) "Stage Pan ON" else "Stage Camera HUD",
+                            color = AmberKeyframe,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+
+                LabeledSlider(
+                    "Camera Zoom",
+                    evalCam.zoom,
+                    0.35f..3.5f,
+                    "${(evalCam.zoom * 100).toInt()}%"
+                ) { v ->
+                    onUpdateCamera { it.copy(zoom = v) }
+                }
+                LabeledSlider(
+                    "Camera Pan X",
+                    evalCam.x,
+                    0.05f..0.95f,
+                    "${(evalCam.x * 100).toInt()}%"
+                ) { v ->
+                    onUpdateCamera { it.copy(x = v) }
+                }
+                LabeledSlider(
+                    "Camera Pan Y",
+                    evalCam.y,
+                    0.05f..0.95f,
+                    "${(evalCam.y * 100).toInt()}%"
+                ) { v ->
+                    onUpdateCamera { it.copy(y = v) }
+                }
+                LabeledSlider(
+                    "Camera Rotation / Roll",
+                    evalCam.rotation,
+                    -180f..180f,
+                    "${evalCam.rotation.toInt()}°"
+                ) { v ->
+                    onUpdateCamera { it.copy(rotation = v) }
+                }
+
+                // Per-Keyframe Camera Easing Curve Selector
+                Text("Keyframe Transition Easing", style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
+                val camEasings = remember {
+                    listOf(
+                        EasingType.EASE_IN_OUT,
+                        EasingType.LINEAR,
+                        EasingType.EASE_IN,
+                        EasingType.EASE_OUT,
+                        EasingType.BOUNCE,
+                        EasingType.ELASTIC,
+                        EasingType.HOLD
+                    )
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(camEasings) { easing ->
+                        FilterChip(
+                            selected = activeCamEasing == easing,
+                            onClick = { onUpdateCameraEasing(easing) },
+                            label = { Text(easing.shortLabel, style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.testTag("camera_easing_${easing.name.lowercase()}")
+                        )
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onUpdateCamera { it } },
+                        enabled = !scene.cameraLayerLocked,
+                        colors = ButtonDefaults.buttonColors(containerColor = AmberKeyframe, contentColor = StudioObsidian),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("record_camera_kf_btn")
+                    ) {
+                        Icon(Icons.Rounded.Add, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (hasKfAtFrame) "Update Cam KF" else "Stamp Cam KF", fontWeight = FontWeight.Bold)
+                    }
+                    if (hasKfAtFrame) {
+                        OutlinedButton(
+                            onClick = onDeleteCameraKeyframeAtFrame,
+                            enabled = !scene.cameraLayerLocked,
+                            border = BorderStroke(1.dp, CoralPlayhead)
+                        ) {
+                            Text("Del KF", color = CoralPlayhead)
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 3. Camera Focus Tracking (Auto-Follow Character/Subject)
                 Text("Camera Focus Tracking (Auto-Follow)", style = MaterialTheme.typography.labelLarge, color = ElectricCyan)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     item {
@@ -983,122 +1306,23 @@ fun CameraAndChromaKeyDialog(
 
                 HorizontalDivider(color = StudioBorderSubtle)
 
-                // 2.5. 1-Tap Cinematic Camera Presets
-                Text("1-Tap Cinematic Camera Presets", style = MaterialTheme.typography.labelLarge, color = AmberKeyframe)
-                val camPresets = remember {
-                    listOf(
-                        "push_in" to "Push-In",
-                        "pull_out" to "Pull-Out",
-                        "pan_lr" to "Pan L→R",
-                        "crash_zoom" to "Crash Zoom",
-                        "dutch_sweep" to "Dutch Sweep"
-                    )
-                }
+                // 4. Chroma Key Green / Blue Screen Background Mode
+                Text("Chroma Key Compositing Background", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(camPresets) { (id, label) ->
-                        AssistChip(
-                            onClick = { onApplyCinematicPreset(id, label) },
-                            label = { Text(label, color = StudioTextPrimary, style = MaterialTheme.typography.labelMedium) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Rounded.MovieFilter,
-                                    contentDescription = label,
-                                    tint = AmberKeyframe,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                            },
-                            colors = AssistChipDefaults.assistChipColors(containerColor = StudioCard),
-                            border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.45f)),
-                            modifier = Modifier.testTag("camera_preset_$id")
+                    items(ChromaKeyMode.entries) { mode ->
+                        FilterChip(
+                            selected = scene.chromaKeyMode == mode,
+                            onClick = { onSetChromaKeyMode(mode) },
+                            label = { Text(mode.displayName) },
+                            modifier = Modifier.testTag("chroma_mode_${mode.name.lowercase()}")
                         )
-                    }
-                }
-
-                HorizontalDivider(color = StudioBorderSubtle)
-
-                // 3. Stage Camera Keyframe Controls
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Stage Camera Transform", style = MaterialTheme.typography.labelLarge, color = ElectricCyan)
-                    OutlinedButton(
-                        onClick = {
-                            onToggleCameraKeyMode()
-                            onDismiss()
-                        },
-                        border = BorderStroke(1.dp, AmberKeyframe),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Icon(Icons.Rounded.OpenWith, null, tint = AmberKeyframe, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            if (isCameraKeyMode) "Stage Pan ON" else "Pan Camera on Stage",
-                            color = AmberKeyframe,
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                }
-
-                LabeledSlider(
-                    "Camera Zoom",
-                    evalCam.zoom,
-                    0.5f..2.5f,
-                    "${(evalCam.zoom * 100).toInt()}%"
-                ) { v ->
-                    onUpdateCamera { it.copy(zoom = v) }
-                }
-                LabeledSlider(
-                    "Camera Focus X",
-                    evalCam.x,
-                    0.15f..0.85f,
-                    "${(evalCam.x * 100).toInt()}%"
-                ) { v ->
-                    onUpdateCamera { it.copy(x = v) }
-                }
-                LabeledSlider(
-                    "Camera Focus Y",
-                    evalCam.y,
-                    0.15f..0.85f,
-                    "${(evalCam.y * 100).toInt()}%"
-                ) { v ->
-                    onUpdateCamera { it.copy(y = v) }
-                }
-                LabeledSlider(
-                    "Camera Roll / Dutch Tilt",
-                    evalCam.rotation,
-                    -45f..45f,
-                    "${evalCam.rotation.toInt()}°"
-                ) { v ->
-                    onUpdateCamera { it.copy(rotation = v) }
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { onUpdateCamera { it } },
-                        colors = ButtonDefaults.buttonColors(containerColor = AmberKeyframe, contentColor = StudioObsidian),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("record_camera_kf_btn")
-                    ) {
-                        Icon(Icons.Rounded.Add, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(if (hasKfAtFrame) "Update Cam KF" else "Stamp Cam KF", fontWeight = FontWeight.Bold)
-                    }
-                    if (hasKfAtFrame) {
-                        OutlinedButton(
-                            onClick = onDeleteCameraKeyframeAtFrame,
-                            border = BorderStroke(1.dp, CoralPlayhead)
-                        ) {
-                            Text("Del KF", color = CoralPlayhead)
-                        }
                     }
                 }
 
                 if (scene.cameraKeyframes.isNotEmpty()) {
                     TextButton(
                         onClick = onResetAllCameraKeyframes,
+                        enabled = !scene.cameraLayerLocked,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Reset All Camera Keyframes (100% Center View)", color = CoralPlayhead)

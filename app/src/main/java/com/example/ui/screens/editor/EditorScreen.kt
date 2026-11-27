@@ -102,10 +102,14 @@ fun EditorScreen(
     onResetPoseAtCurrentFrame: () -> Unit = {},
     onSetChromaKeyMode: (ChromaKeyMode) -> Unit = {},
     onSetCameraFocusClip: (String?) -> Unit = {},
+    onToggleCameraLayerEnabled: () -> Unit = {},
+    onToggleCameraLayerLocked: () -> Unit = {},
+    onSelectCameraKeyframe: (Int) -> Unit = {},
+    onUpdateCameraEasing: (EasingType) -> Unit = {},
     onUpdateCamera: ((CameraKeyframe) -> CameraKeyframe) -> Unit = {},
     onDeleteCameraKeyframeAtFrame: () -> Unit = {},
     onResetAllCameraKeyframes: () -> Unit = {},
-    onApplyCinematicCameraPreset: (presetId: String, label: String) -> Unit = { _, _ -> },
+    onApplyCinematicCameraPreset: (presetId: String, label: String, intensity: Float) -> Unit = { _, _, _ -> },
     onUpdateSceneVfx: ((SceneVfxConfig) -> SceneVfxConfig) -> Unit = {},
     onImportCustomPropUri: (Uri, (String) -> Unit) -> Unit = { _, _ -> },
     onTrimAudioClip: (
@@ -119,7 +123,9 @@ fun EditorScreen(
     onWaveformSensitivityChange: (Float) -> Unit = {},
     onSaveWaveformJsonToProject: (clipName: String, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> },
     onWriteWaveformJsonToSafUri: (uri: Uri, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> },
-    onDropFacialExpression: (layerId: String, clipId: String?, globalFrame: Int, presetId: String) -> Unit = { _, _, _, _ -> }
+    onDropFacialExpression: (layerId: String, clipId: String?, globalFrame: Int, presetId: String) -> Unit = { _, _, _, _ -> },
+    onSetFacialShapeOverride: (mouth: MouthShapeOverride?, eye: EyeShapeOverride?, eyebrow: EyebrowShapeOverride?) -> Unit = { _, _, _ -> },
+    onClearFacialShapeOverrides: () -> Unit = {}
 ) {
     // Non-exported stage composition grid toggle & resizable canvas/timeline split
     var showGridOverlay by remember { mutableStateOf(false) }
@@ -232,6 +238,10 @@ fun EditorScreen(
                             onCommitClipTranslation = onCommitClipTranslation,
                             onCommitIkPose = onCommitIkPose,
                             onCommitCameraPan = onCommitCameraPan,
+                            onUpdateCamera = onUpdateCamera,
+                            onOpenCameraStudio = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
+                            onResetCamera = onResetAllCameraKeyframes,
+                            onExitCameraKeyMode = onToggleCameraKeyMode,
                             onToggleIkFlipBend = onToggleIkFlipBend,
                             onMirrorIkPose = onMirrorIkPose,
                             onStampPoseKey = onStampPoseKey,
@@ -280,6 +290,14 @@ fun EditorScreen(
                             waveformSensitivity = state.waveformSensitivity,
                             onWaveformSensitivityChange = onWaveformSensitivityChange,
                             onDropFacialExpression = onDropFacialExpression,
+                            onSetFacialShapeOverride = onSetFacialShapeOverride,
+                            onClearFacialShapeOverrides = onClearFacialShapeOverrides,
+                            onToggleCameraLayerEnabled = onToggleCameraLayerEnabled,
+                            onToggleCameraLayerLocked = onToggleCameraLayerLocked,
+                            onSelectCameraKeyframe = onSelectCameraKeyframe,
+                            onStampCameraKeyframe = { onUpdateCamera { it } },
+                            onOpenCameraStudio = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
+                            isCameraKeyMode = state.isCameraKeyMode,
                             modifier = Modifier
                                 .weight(0.42f)
                                 .fillMaxHeight()
@@ -312,6 +330,10 @@ fun EditorScreen(
                             onCommitClipTranslation = onCommitClipTranslation,
                             onCommitIkPose = onCommitIkPose,
                             onCommitCameraPan = onCommitCameraPan,
+                            onUpdateCamera = onUpdateCamera,
+                            onOpenCameraStudio = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
+                            onResetCamera = onResetAllCameraKeyframes,
+                            onExitCameraKeyMode = onToggleCameraKeyMode,
                             onToggleIkFlipBend = onToggleIkFlipBend,
                             onMirrorIkPose = onMirrorIkPose,
                             onStampPoseKey = onStampPoseKey,
@@ -394,6 +416,14 @@ fun EditorScreen(
                             waveformSensitivity = state.waveformSensitivity,
                             onWaveformSensitivityChange = onWaveformSensitivityChange,
                             onDropFacialExpression = onDropFacialExpression,
+                            onSetFacialShapeOverride = onSetFacialShapeOverride,
+                            onClearFacialShapeOverrides = onClearFacialShapeOverrides,
+                            onToggleCameraLayerEnabled = onToggleCameraLayerEnabled,
+                            onToggleCameraLayerLocked = onToggleCameraLayerLocked,
+                            onSelectCameraKeyframe = onSelectCameraKeyframe,
+                            onStampCameraKeyframe = { onUpdateCamera { it } },
+                            onOpenCameraStudio = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
+                            isCameraKeyMode = state.isCameraKeyMode,
                             modifier = Modifier
                                 .weight(1f - canvasSplitFraction)
                                 .fillMaxWidth()
@@ -576,6 +606,10 @@ fun EditorScreen(
                 onToggleCameraKeyMode = onToggleCameraKeyMode,
                 onSetChromaKeyMode = onSetChromaKeyMode,
                 onSetCameraFocusClip = onSetCameraFocusClip,
+                onToggleCameraLayerEnabled = onToggleCameraLayerEnabled,
+                onToggleCameraLayerLocked = onToggleCameraLayerLocked,
+                onSelectCameraKeyframe = onSelectCameraKeyframe,
+                onUpdateCameraEasing = onUpdateCameraEasing,
                 onUpdateCamera = onUpdateCamera,
                 onDeleteCameraKeyframeAtFrame = onDeleteCameraKeyframeAtFrame,
                 onResetAllCameraKeyframes = onResetAllCameraKeyframes,

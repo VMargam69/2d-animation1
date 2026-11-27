@@ -1,7 +1,10 @@
 package com.example.engine
 
 import com.example.model.AtlasPartSlot
+import com.example.model.EyeShapeOverride
+import com.example.model.EyebrowShapeOverride
 import com.example.model.FacialExpression
+import com.example.model.MouthShapeOverride
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -481,7 +484,10 @@ object FacialExpressionEngine {
         fps: Int,
         baseMouthOpen: Float = 0f,
         blinkOverride: Boolean? = null,
-        characterSeed: Int = 17
+        characterSeed: Int = 17,
+        mouthOverride: MouthShapeOverride = MouthShapeOverride.AUTO,
+        eyeOverride: EyeShapeOverride = EyeShapeOverride.AUTO,
+        eyebrowOverride: EyebrowShapeOverride = EyebrowShapeOverride.AUTO
     ): OrganicFacialState {
         val safeFps = fps.coerceAtLeast(12).toFloat()
         val targetPreset = presetById(activePresetId) ?: presetForExpression(fallbackExpression)
@@ -608,7 +614,7 @@ object FacialExpressionEngine {
 
         val resolvedExpression = if (eyeRaw >= 0.45f) targetPreset.baseExpression else fromPreset.baseExpression
 
-        return OrganicFacialState(
+        val baseState = OrganicFacialState(
             presetId = targetPreset.id,
             resolvedExpression = resolvedExpression,
             leftEyeOpenness = leftEyeOpen,
@@ -637,6 +643,274 @@ object FacialExpressionEngine {
             resolvedBrowSlot = resolvedBrowSlot,
             resolvedMouthSlot = resolvedMouthSlot
         )
+
+        if (mouthOverride == MouthShapeOverride.AUTO &&
+            eyeOverride == EyeShapeOverride.AUTO &&
+            eyebrowOverride == EyebrowShapeOverride.AUTO
+        ) {
+            return baseState
+        }
+
+        return applyPartShapeOverrides(
+            state = baseState,
+            mouthOverride = mouthOverride,
+            eyeOverride = eyeOverride,
+            eyebrowOverride = eyebrowOverride,
+            breathWave = breathWave,
+            blinkOverride = blinkOverride
+        )
+    }
+
+    /**
+     * Layers independent Mouth, Eye, and Eyebrow preset shape overrides cleanly on top of
+     * any running character animation or base expression while retaining subtle breathing life.
+     */
+    private fun applyPartShapeOverrides(
+        state: OrganicFacialState,
+        mouthOverride: MouthShapeOverride,
+        eyeOverride: EyeShapeOverride,
+        eyebrowOverride: EyebrowShapeOverride,
+        breathWave: Float,
+        blinkOverride: Boolean?
+    ): OrganicFacialState {
+        var out = state
+
+        // 1. Independent Mouth Shape Override
+        if (mouthOverride != MouthShapeOverride.AUTO) {
+            out = when (mouthOverride) {
+                MouthShapeOverride.AUTO -> out
+                MouthShapeOverride.NEUTRAL -> out.copy(
+                    mouthOpen = 0.0f,
+                    smileCurve = 0.08f + breathWave * 0.02f,
+                    mouthScaleX = 0.96f,
+                    mouthScaleY = 0.90f,
+                    showTeeth = false,
+                    showGrittedTeeth = false,
+                    resolvedMouthSlot = AtlasPartSlot.LIP_IDLE
+                )
+                MouthShapeOverride.SMILE -> out.copy(
+                    mouthOpen = 0.22f,
+                    smileCurve = 0.90f,
+                    mouthScaleX = 1.14f,
+                    mouthScaleY = 0.98f,
+                    cheekSquint = maxOf(out.cheekSquint, 0.58f),
+                    showTeeth = true,
+                    showGrittedTeeth = false,
+                    resolvedMouthSlot = AtlasPartSlot.LIP_HAPPY
+                )
+                MouthShapeOverride.OPEN_LAUGH -> out.copy(
+                    mouthOpen = (0.76f + breathWave * 0.08f).coerceIn(0.62f, 0.92f),
+                    smileCurve = 1.0f,
+                    mouthScaleX = 1.22f,
+                    mouthScaleY = 1.24f,
+                    cheekSquint = maxOf(out.cheekSquint, 0.85f),
+                    showTeeth = true,
+                    showGrittedTeeth = false,
+                    resolvedMouthSlot = AtlasPartSlot.LIP_HAPPY
+                )
+                MouthShapeOverride.FROWN -> out.copy(
+                    mouthOpen = 0.05f,
+                    smileCurve = -0.84f,
+                    mouthScaleX = 0.86f,
+                    mouthScaleY = 0.92f,
+                    showTeeth = false,
+                    showGrittedTeeth = false,
+                    resolvedMouthSlot = AtlasPartSlot.LIP_SCARED
+                )
+                MouthShapeOverride.SHOCK_O -> out.copy(
+                    mouthOpen = 0.92f,
+                    smileCurve = -0.14f,
+                    mouthScaleX = 0.74f,
+                    mouthScaleY = 1.32f,
+                    showTeeth = false,
+                    showGrittedTeeth = false,
+                    resolvedMouthSlot = AtlasPartSlot.LIP_SHOCKED
+                )
+                MouthShapeOverride.GRIT_ANGRY -> out.copy(
+                    mouthOpen = 0.28f,
+                    smileCurve = -0.64f,
+                    mouthScaleX = 1.08f,
+                    mouthScaleY = 1.02f,
+                    showTeeth = false,
+                    showGrittedTeeth = true,
+                    resolvedMouthSlot = AtlasPartSlot.LIP_ANGRY
+                )
+                MouthShapeOverride.TALK_AA -> out.copy(
+                    mouthOpen = 0.68f,
+                    smileCurve = 0.22f,
+                    mouthScaleX = 0.94f,
+                    mouthScaleY = 1.22f,
+                    showTeeth = true,
+                    showGrittedTeeth = false,
+                    resolvedMouthSlot = AtlasPartSlot.LIP_SHOCKED
+                )
+                MouthShapeOverride.TALK_EE -> out.copy(
+                    mouthOpen = 0.34f,
+                    smileCurve = 0.52f,
+                    mouthScaleX = 1.24f,
+                    mouthScaleY = 0.96f,
+                    showTeeth = true,
+                    showGrittedTeeth = false,
+                    resolvedMouthSlot = AtlasPartSlot.LIP_HAPPY
+                )
+                MouthShapeOverride.SMIRK -> out.copy(
+                    mouthOpen = 0.04f,
+                    smileCurve = 0.56f,
+                    mouthScaleX = 0.90f,
+                    mouthScaleY = 0.88f,
+                    cheekSquint = maxOf(out.cheekSquint, 0.35f),
+                    showTeeth = false,
+                    showGrittedTeeth = false,
+                    resolvedMouthSlot = AtlasPartSlot.LIP_HAPPY
+                )
+            }
+        }
+
+        // 2. Independent Eye Shape Override
+        if (eyeOverride != EyeShapeOverride.AUTO) {
+            val forcedBlink = blinkOverride == true
+            out = when (eyeOverride) {
+                EyeShapeOverride.AUTO -> out
+                EyeShapeOverride.NORMAL -> out.copy(
+                    leftEyeOpenness = if (forcedBlink) 0.10f else 1.0f,
+                    rightEyeOpenness = if (forcedBlink) 0.10f else 1.0f,
+                    leftEyelidClose = if (forcedBlink) 1f else 0.06f,
+                    rightEyelidClose = if (forcedBlink) 1f else 0.06f,
+                    happyEyeArc = 0f,
+                    pupilScale = 1.0f,
+                    showTear = false,
+                    isBlinkingLeft = forcedBlink,
+                    isBlinkingRight = forcedBlink
+                )
+                EyeShapeOverride.HAPPY_ARC -> out.copy(
+                    leftEyeOpenness = 0.22f,
+                    rightEyeOpenness = 0.22f,
+                    leftEyelidClose = 0.88f,
+                    rightEyelidClose = 0.88f,
+                    happyEyeArc = 1.0f,
+                    cheekSquint = maxOf(out.cheekSquint, 0.82f),
+                    showTear = false,
+                    isBlinkingLeft = true,
+                    isBlinkingRight = true
+                )
+                EyeShapeOverride.WIDE_SHOCK -> out.copy(
+                    leftEyeOpenness = 1.34f,
+                    rightEyeOpenness = 1.34f,
+                    leftEyelidClose = 0f,
+                    rightEyelidClose = 0f,
+                    happyEyeArc = 0f,
+                    pupilScale = 0.72f,
+                    showTear = false,
+                    isBlinkingLeft = false,
+                    isBlinkingRight = false
+                )
+                EyeShapeOverride.SQUINT_ANGRY -> out.copy(
+                    leftEyeOpenness = 0.72f,
+                    rightEyeOpenness = 0.72f,
+                    leftEyelidClose = 0.44f,
+                    rightEyelidClose = 0.44f,
+                    happyEyeArc = 0f,
+                    pupilScale = 0.82f,
+                    showTear = false,
+                    isBlinkingLeft = false,
+                    isBlinkingRight = false
+                )
+                EyeShapeOverride.SAD_DROOP -> out.copy(
+                    leftEyeOpenness = 0.82f,
+                    rightEyeOpenness = 0.82f,
+                    leftEyelidClose = 0.34f,
+                    rightEyelidClose = 0.34f,
+                    happyEyeArc = 0f,
+                    eyeLookY = 0.34f,
+                    pupilScale = 1.10f,
+                    showTear = true,
+                    isBlinkingLeft = false,
+                    isBlinkingRight = false
+                )
+                EyeShapeOverride.WINK_RIGHT -> out.copy(
+                    leftEyeOpenness = 1.06f,
+                    rightEyeOpenness = 0.12f,
+                    leftEyelidClose = 0.04f,
+                    rightEyelidClose = 0.96f,
+                    happyEyeArc = 0.65f,
+                    showTear = false,
+                    isBlinkingLeft = false,
+                    isBlinkingRight = true
+                )
+                EyeShapeOverride.WINK_LEFT -> out.copy(
+                    leftEyeOpenness = 0.12f,
+                    rightEyeOpenness = 1.06f,
+                    leftEyelidClose = 0.96f,
+                    rightEyelidClose = 0.04f,
+                    happyEyeArc = 0.65f,
+                    showTear = false,
+                    isBlinkingLeft = true,
+                    isBlinkingRight = false
+                )
+                EyeShapeOverride.CLOSED_SLEEP -> out.copy(
+                    leftEyeOpenness = 0.12f,
+                    rightEyeOpenness = 0.12f,
+                    leftEyelidClose = 0.98f,
+                    rightEyelidClose = 0.98f,
+                    happyEyeArc = 0f,
+                    showTear = false,
+                    isBlinkingLeft = true,
+                    isBlinkingRight = true
+                )
+            }
+        }
+
+        // 3. Independent Eyebrow Shape Override
+        if (eyebrowOverride != EyebrowShapeOverride.AUTO) {
+            val micro = breathWave * 0.03f
+            out = when (eyebrowOverride) {
+                EyebrowShapeOverride.AUTO -> out
+                EyebrowShapeOverride.NEUTRAL -> out.copy(
+                    leftBrowLift = 0.0f + micro,
+                    rightBrowLift = 0.02f + micro,
+                    leftBrowTiltDeg = 0f,
+                    rightBrowTiltDeg = 0f,
+                    resolvedBrowSlot = AtlasPartSlot.BROW_IDLE
+                )
+                EyebrowShapeOverride.RAISED_SURPRISE -> out.copy(
+                    leftBrowLift = 1.05f + micro,
+                    rightBrowLift = 1.08f + micro,
+                    leftBrowTiltDeg = -8f,
+                    rightBrowTiltDeg = -8f,
+                    resolvedBrowSlot = AtlasPartSlot.BROW_SCARED
+                )
+                EyebrowShapeOverride.FURROWED_ANGRY -> out.copy(
+                    leftBrowLift = -0.68f + micro,
+                    rightBrowLift = -0.64f + micro,
+                    leftBrowTiltDeg = 22f,
+                    rightBrowTiltDeg = 22f,
+                    resolvedBrowSlot = AtlasPartSlot.BROW_ANGRY
+                )
+                EyebrowShapeOverride.WORRIED_SAD -> out.copy(
+                    leftBrowLift = 0.28f + micro,
+                    rightBrowLift = 0.24f + micro,
+                    leftBrowTiltDeg = -18f,
+                    rightBrowTiltDeg = -18f,
+                    resolvedBrowSlot = AtlasPartSlot.BROW_SCARED
+                )
+                EyebrowShapeOverride.ARCHED_HAPPY -> out.copy(
+                    leftBrowLift = 0.54f + micro,
+                    rightBrowLift = 0.58f + micro,
+                    leftBrowTiltDeg = -5f,
+                    rightBrowTiltDeg = -5f,
+                    resolvedBrowSlot = AtlasPartSlot.BROW_HAPPY
+                )
+                EyebrowShapeOverride.SKEPTICAL_ONE_UP -> out.copy(
+                    leftBrowLift = -0.42f + micro,
+                    rightBrowLift = 0.72f + micro,
+                    leftBrowTiltDeg = 14f,
+                    rightBrowTiltDeg = -12f,
+                    resolvedBrowSlot = AtlasPartSlot.BROW_ANGRY
+                )
+            }
+        }
+
+        return out
     }
 
     /**

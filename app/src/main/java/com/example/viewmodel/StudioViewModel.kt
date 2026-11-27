@@ -693,6 +693,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun commitCameraPan(totalDx: Float, totalDy: Float) {
         if (kotlin.math.abs(totalDx) < 0.0001f && kotlin.math.abs(totalDy) < 0.0001f) return
         val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
         val frame = _playbackFrame.value
         val updated = ProjectMutator.upsertCameraKeyframeAtFrame(state.project, frame) { cam ->
             cam.copy(
@@ -1061,6 +1065,57 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         showStatus("Applied ${preset.name} at F${safeFrame + 1}")
     }
 
+    fun setFacialShapeOverride(
+        mouthOverride: MouthShapeOverride? = null,
+        eyeOverride: EyeShapeOverride? = null,
+        eyebrowOverride: EyebrowShapeOverride? = null
+    ) {
+        stopPlayback()
+        val state = _uiState.value
+        val scene = state.project.activeScene
+        val targetClip = state.selectedClip?.takeIf { it.characterId != null }
+            ?: scene.clips.firstOrNull { clip ->
+                clip.characterId != null &&
+                    scene.layers.any { l -> l.id == clip.layerId && l.type == LayerType.CHARACTER && !l.isLocked }
+            }
+        if (targetClip == null) {
+            showStatus("Add or select an unlocked Character first")
+            return
+        }
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.setFacialShapeOverrides(
+            project = state.project,
+            clipId = targetClip.id,
+            globalFrame = frame,
+            mouthOverride = mouthOverride,
+            eyeOverride = eyeOverride,
+            eyebrowOverride = eyebrowOverride
+        )
+        commitProjectChange(updated, coalesceUndoTag = "face_override_${targetClip.id}_$frame")
+        _uiState.update { it.copy(selectedClipId = targetClip.id, selectedLayerId = targetClip.layerId) }
+        val summary = buildList {
+            if (mouthOverride != null) add("Mouth: ${mouthOverride.shortLabel}")
+            if (eyeOverride != null) add("Eyes: ${eyeOverride.shortLabel}")
+            if (eyebrowOverride != null) add("Brows: ${eyebrowOverride.shortLabel}")
+        }.joinToString(" • ")
+        if (summary.isNotBlank()) {
+            showStatus("$summary (F${frame + 1})")
+        }
+    }
+
+    fun clearFacialShapeOverrides() {
+        stopPlayback()
+        val state = _uiState.value
+        val scene = state.project.activeScene
+        val targetClip = state.selectedClip?.takeIf { it.characterId != null }
+            ?: scene.clips.firstOrNull { it.characterId != null }
+            ?: return
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.clearFacialShapeOverrides(state.project, targetClip.id, frame)
+        commitProjectChange(updated)
+        showStatus("Facial shape overrides reset to Auto")
+    }
+
     fun stepToAdjacentKeyframe(forward: Boolean) {
         stopPlayback()
         val state = _uiState.value
@@ -1085,8 +1140,44 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         seekToFrame(target)
     }
 
+    fun toggleCameraLayerEnabled() {
+        val updated = ProjectMutator.toggleCameraLayerEnabled(_uiState.value.project)
+        commitProjectChange(updated)
+        val enabled = updated.activeScene.cameraLayerEnabled
+        showStatus(if (enabled) "Camera Control Layer ON" else "Camera Control Layer Bypassed")
+    }
+
+    fun toggleCameraLayerLocked() {
+        val updated = ProjectMutator.toggleCameraLayerLocked(_uiState.value.project)
+        commitProjectChange(updated)
+        val locked = updated.activeScene.cameraLayerLocked
+        showStatus(if (locked) "Camera Control Layer Locked" else "Camera Control Layer Unlocked")
+    }
+
+    fun selectCameraKeyframe(frame: Int) {
+        stopPlayback()
+        seekToFrame(frame)
+        showStatus("Camera Keyframe at F${frame + 1}")
+    }
+
+    fun updateCameraKeyframeEasing(easing: EasingType) {
+        val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.updateCameraKeyframeEasing(state.project, frame, easing)
+        commitProjectChange(updated)
+        showStatus("Camera easing: ${easing.displayName}")
+    }
+
     fun updateCameraAtCurrentFrame(updater: (CameraKeyframe) -> CameraKeyframe) {
         val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
         val frame = _playbackFrame.value
         val updated = ProjectMutator.upsertCameraKeyframeAtFrame(state.project, frame, updater)
         commitProjectChange(updated, coalesceUndoTag = "camera_$frame")
@@ -1107,6 +1198,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteCameraKeyframeAtCurrentFrame() {
         val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
         val frame = _playbackFrame.value
         val updated = ProjectMutator.deleteCameraKeyframeAtFrame(state.project, frame)
         commitProjectChange(updated)
@@ -1114,6 +1209,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun resetAllCameraKeyframes() {
+        if (_uiState.value.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
         val updated = ProjectMutator.updateActiveScene(ProjectMutator.resetCameraKeyframes(_uiState.value.project)) { scene ->
             scene.copy(cameraFocusClipId = null)
         }
@@ -1129,11 +1228,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         showStatus("Stage Background: ${mode.displayName}")
     }
 
-    fun applyCinematicCameraPreset(presetId: String, label: String) {
+    fun applyCinematicCameraPreset(presetId: String, label: String, intensity: Float = 1.0f) {
+        if (_uiState.value.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
         val updated = ProjectMutator.applyCinematicCameraPreset(
             project = _uiState.value.project,
             startFrame = _playbackFrame.value,
-            presetId = presetId
+            presetId = presetId,
+            intensity = intensity
         )
         commitProjectChange(updated)
         showStatus("Camera preset: $label")

@@ -67,6 +67,10 @@ fun EditorCanvasPane(
     onCommitClipTranslation: (clipId: String, totalDxNorm: Float, totalDyNorm: Float) -> Unit,
     onCommitIkPose: (clipId: String, finalOffsets: PoseKeyframeOffsets) -> Unit = { _, _ -> },
     onCommitCameraPan: (totalDxNorm: Float, totalDyNorm: Float) -> Unit = { _, _ -> },
+    onUpdateCamera: ((CameraKeyframe) -> CameraKeyframe) -> Unit = {},
+    onOpenCameraStudio: () -> Unit = {},
+    onResetCamera: () -> Unit = {},
+    onExitCameraKeyMode: () -> Unit = {},
     onToggleIkFlipBend: () -> Unit = {},
     onMirrorIkPose: () -> Unit = {},
     onStampPoseKey: () -> Unit = {},
@@ -492,6 +496,160 @@ fun EditorCanvasPane(
                             .testTag("ik_hud_done_btn")
                     ) {
                         Text("Done", color = ElectricCyan, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Sleek Floating On-Stage Camera Control HUD Pill (ONLY when Camera Key Mode is active & not playing)
+        if (isCameraKeyMode && !isDrawingMode && !isPlaying) {
+            val evalCam = remember(scene, currentFrame) {
+                KeyframeEvaluator.evaluateCamera(scene, currentFrame)
+            }
+            Surface(
+                color = StudioCharcoal.copy(alpha = 0.94f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.85f)),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 6.dp, start = 8.dp, end = 8.dp)
+                    .testTag("floating_camera_hud")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Videocam,
+                        contentDescription = "Camera Control HUD",
+                        tint = AmberKeyframe,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    // Zoom - / readout / +
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(StudioPanel)
+                            .clickable { onUpdateCamera { it.copy(zoom = (it.zoom - 0.15f).coerceIn(0.35f, 3.5f)) } }
+                            .testTag("cam_hud_zoom_out_btn")
+                    ) {
+                        Icon(Icons.Rounded.ZoomOut, "Camera zoom out", tint = StudioTextPrimary, modifier = Modifier.size(14.dp))
+                    }
+                    Text(
+                        text = "${(evalCam.zoom * 100).toInt()}%",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AmberKeyframe
+                    )
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(StudioPanel)
+                            .clickable { onUpdateCamera { it.copy(zoom = (it.zoom + 0.15f).coerceIn(0.35f, 3.5f)) } }
+                            .testTag("cam_hud_zoom_in_btn")
+                    ) {
+                        Icon(Icons.Rounded.ZoomIn, "Camera zoom in", tint = StudioTextPrimary, modifier = Modifier.size(14.dp))
+                    }
+
+                    VerticalDivider(color = StudioBorderSubtle, modifier = Modifier.height(16.dp))
+
+                    // Roll -5° / readout / +5°
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(StudioPanel)
+                            .clickable { onUpdateCamera { it.copy(rotation = (it.rotation - 5f).coerceIn(-180f, 180f)) } }
+                            .testTag("cam_hud_roll_ccw_btn")
+                    ) {
+                        Icon(Icons.Rounded.RotateLeft, "Rotate camera left", tint = StudioTextPrimary, modifier = Modifier.size(14.dp))
+                    }
+                    Text(
+                        text = "${evalCam.rotation.toInt()}°",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = StudioTextPrimary
+                    )
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(StudioPanel)
+                            .clickable { onUpdateCamera { it.copy(rotation = (it.rotation + 5f).coerceIn(-180f, 180f)) } }
+                            .testTag("cam_hud_roll_cw_btn")
+                    ) {
+                        Icon(Icons.Rounded.RotateRight, "Rotate camera right", tint = StudioTextPrimary, modifier = Modifier.size(14.dp))
+                    }
+
+                    // Presets shortcut
+                    Surface(
+                        color = StudioPanel,
+                        shape = RoundedCornerShape(7.dp),
+                        border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(onClick = onOpenCameraStudio)
+                            .testTag("cam_hud_presets_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        ) {
+                            Icon(Icons.Rounded.MovieFilter, "Camera presets", tint = AmberKeyframe, modifier = Modifier.size(13.dp))
+                            Text("Presets", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = AmberKeyframe)
+                        }
+                    }
+
+                    // Stamp Camera Keyframe
+                    Surface(
+                        color = AmberKeyframeDim,
+                        shape = RoundedCornerShape(7.dp),
+                        border = BorderStroke(1.dp, AmberKeyframe),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(onClick = onStampPoseKey)
+                            .testTag("cam_hud_stamp_key_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        ) {
+                            Icon(Icons.Rounded.Add, "Stamp camera keyframe", tint = AmberKeyframe, modifier = Modifier.size(13.dp))
+                            Text("Key", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = AmberKeyframe)
+                        }
+                    }
+
+                    // Reset camera
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .background(StudioPanel)
+                            .clickable(onClick = onResetCamera)
+                            .testTag("cam_hud_reset_btn")
+                    ) {
+                        Icon(Icons.Rounded.RestartAlt, "Reset camera", tint = CoralPlayhead, modifier = Modifier.size(14.dp))
+                    }
+
+                    // Done
+                    TextButton(
+                        onClick = onExitCameraKeyMode,
+                        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .testTag("cam_hud_done_btn")
+                    ) {
+                        Text("Done", color = AmberKeyframe, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }

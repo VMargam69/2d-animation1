@@ -149,6 +149,7 @@ fun EditorCanvas(
                         }
 
                         if (latestCameraKeyMode) {
+                            if (latestScene.cameraLayerLocked) return@detectDragGestures
                             draggingCamera = true
                             gesturePreviewState.value = StageGesturePreview()
                             onDragStateChanged(true)

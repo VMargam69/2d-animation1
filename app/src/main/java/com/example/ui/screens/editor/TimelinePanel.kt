@@ -88,6 +88,18 @@ fun TimelinePanel(
         globalFrame: Int,
         presetId: String
     ) -> Unit = { _, _, _, _ -> },
+    onSetFacialShapeOverride: (
+        mouth: MouthShapeOverride?,
+        eye: EyeShapeOverride?,
+        eyebrow: EyebrowShapeOverride?
+    ) -> Unit = { _, _, _ -> },
+    onClearFacialShapeOverrides: () -> Unit = {},
+    onToggleCameraLayerEnabled: () -> Unit = {},
+    onToggleCameraLayerLocked: () -> Unit = {},
+    onSelectCameraKeyframe: (frame: Int) -> Unit = {},
+    onStampCameraKeyframe: () -> Unit = {},
+    onOpenCameraStudio: () -> Unit = {},
+    isCameraKeyMode: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val scene = project.activeScene
@@ -126,11 +138,21 @@ fun TimelinePanel(
         scene.layers.any { it.type == LayerType.CHARACTER && !it.isLocked } &&
             scene.clips.any { it.characterId != null }
     }
-    val activeFacialPresetId = remember(selectedClip, currentFrame) {
-        if (selectedClip?.characterId == null) null
+    val activeCharClip = remember(selectedClip, scene.clips, scene.layers) {
+        selectedClip?.takeIf { it.characterId != null }
+            ?: scene.clips.firstOrNull { clip ->
+                clip.characterId != null &&
+                    scene.layers.any { l -> l.id == clip.layerId && l.type == LayerType.CHARACTER && !l.isLocked }
+            }
+    }
+    val activeCharEval = remember(activeCharClip, currentFrame) {
+        activeCharClip?.let { com.example.engine.KeyframeEvaluator.evaluate(it, currentFrame) }
+    }
+    val activeFacialPresetId = remember(activeCharClip, currentFrame) {
+        if (activeCharClip?.characterId == null) null
         else {
-            val localFrame = (currentFrame - selectedClip.startFrame).coerceAtLeast(0)
-            selectedClip.keyframes
+            val localFrame = (currentFrame - activeCharClip.startFrame).coerceAtLeast(0)
+            activeCharClip.keyframes
                 .filter { it.frame <= localFrame && (it.facialPresetId != null || it.expressionOverride != null) }
                 .maxByOrNull { it.frame }
                 ?.let { kf ->
@@ -139,6 +161,18 @@ fun TimelinePanel(
                     }
                 }
         }
+    }
+    val activeMouthOverride = activeCharEval?.mouthShapeOverride
+        ?: activeCharClip?.mouthShapeOverride
+        ?: MouthShapeOverride.AUTO
+    val activeEyeOverride = activeCharEval?.eyeShapeOverride
+        ?: activeCharClip?.eyeShapeOverride
+        ?: EyeShapeOverride.AUTO
+    val activeEyebrowOverride = activeCharEval?.eyebrowShapeOverride
+        ?: activeCharClip?.eyebrowShapeOverride
+        ?: EyebrowShapeOverride.AUTO
+    val evaluatedCamHere = remember(scene, currentFrame) {
+        com.example.engine.KeyframeEvaluator.evaluateCamera(scene, currentFrame)
     }
 
     // Drag-and-drop state for dropping algorithmic facial expressions onto Character layers
@@ -662,6 +696,9 @@ fun TimelinePanel(
                 FacialExpressionTray(
                     activePresetId = activeFacialPresetId,
                     hasCharacterLayer = hasCharacterLayer,
+                    activeMouthOverride = activeMouthOverride,
+                    activeEyeOverride = activeEyeOverride,
+                    activeEyebrowOverride = activeEyebrowOverride,
                     onTapPreset = { preset ->
                         val fallbackCharClip = selectedClip?.takeIf { it.characterId != null }
                             ?: scene.clips.firstOrNull { clip ->
@@ -677,6 +714,10 @@ fun TimelinePanel(
                             )
                         }
                     },
+                    onSetMouthOverride = { shape -> onSetFacialShapeOverride(shape, null, null) },
+                    onSetEyeOverride = { shape -> onSetFacialShapeOverride(null, shape, null) },
+                    onSetEyebrowOverride = { shape -> onSetFacialShapeOverride(null, null, shape) },
+                    onClearOverrides = onClearFacialShapeOverrides,
                     onDragStart = { preset, rootPos ->
                         draggingPreset = preset
                         dragPointerRoot = rootPos
@@ -766,6 +807,82 @@ fun TimelinePanel(
                             .fillMaxSize()
                             .verticalScroll(verticalScroll)
                     ) {
+                        // Dedicated Camera Control Layer Row (pinned at top of Layer Rail)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(34.dp)
+                                .background(
+                                    if (isCameraKeyMode) AmberKeyframe.copy(alpha = 0.16f)
+                                    else StudioObsidian.copy(alpha = 0.45f)
+                                )
+                                .clickable(onClick = onOpenCameraStudio)
+                                .padding(horizontal = if (isLayerRailCollapsed) 4.dp else 5.dp)
+                                .testTag("camera_control_layer_header"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = if (isLayerRailCollapsed) Arrangement.Center else Arrangement.spacedBy(3.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .height(20.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(if (scene.cameraLayerEnabled) AmberKeyframe else StudioTextMuted.copy(alpha = 0.4f))
+                            )
+                            if (!isLayerRailCollapsed) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Videocam,
+                                    contentDescription = "Camera control layer",
+                                    tint = if (scene.cameraLayerEnabled) AmberKeyframe else StudioTextMuted,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Text(
+                                    text = "Camera",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (scene.cameraLayerEnabled) AmberKeyframe else StudioTextMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            } else {
+                                Spacer(Modifier.width(2.dp))
+                            }
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .clickable(onClick = onToggleCameraLayerEnabled)
+                                    .testTag("camera_layer_vis_btn")
+                            ) {
+                                Icon(
+                                    imageVector = if (scene.cameraLayerEnabled) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                                    contentDescription = "Toggle camera layer active",
+                                    tint = if (scene.cameraLayerEnabled) AmberKeyframe else StudioTextMuted,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                            if (!isLayerRailCollapsed) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clip(CircleShape)
+                                        .clickable(onClick = onToggleCameraLayerLocked)
+                                        .testTag("camera_layer_lock_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = if (scene.cameraLayerLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                                        contentDescription = "Toggle camera layer lock",
+                                        tint = if (scene.cameraLayerLocked) AmberKeyframe else StudioTextMuted,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            }
+                        }
+                        HorizontalDivider(color = AmberKeyframe.copy(alpha = 0.30f), thickness = 1.dp)
+
                         sortedLayers.forEach { layer ->
                             val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))
                             val isSelLayer = layer.id == selectedLayerId
@@ -947,12 +1064,141 @@ fun TimelinePanel(
                         }
                         HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
 
-                        // Layer Tracks with Individually Selectable Keyframe Diamond Nodes
+                        // Layer Tracks with Dedicated Camera Control Layer + Selectable Keyframe Diamond Nodes
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .verticalScroll(verticalScroll)
                         ) {
+                            // Dedicated Camera Control Layer Track (Keyframed Pan, Zoom & Rotation)
+                            val camKeysSorted = remember(scene.cameraKeyframes) {
+                                scene.cameraKeyframes.sortedBy { it.frame }
+                            }
+                            val camVisAlpha = if (scene.cameraLayerEnabled) 1f else 0.35f
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(34.dp)
+                                    .background(
+                                        if (isCameraKeyMode) AmberKeyframe.copy(alpha = 0.10f)
+                                        else StudioObsidian.copy(alpha = 0.55f)
+                                    )
+                                    .pointerInput(scene.durationFrames, frameWidthPx) {
+                                        detectTapGestures(
+                                            onTap = { pos ->
+                                                val target = (pos.x / frameWidthPx).toInt()
+                                                    .coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0))
+                                                latestOnSeekFrame(target)
+                                            },
+                                            onDoubleTap = {
+                                                onOpenCameraStudio()
+                                            }
+                                        )
+                                    }
+                                    .testTag("camera_control_track_row")
+                            ) {
+                                if (camKeysSorted.isNotEmpty()) {
+                                    val firstFrame = camKeysSorted.first().frame
+                                    val lastFrame = camKeysSorted.last().frame
+                                    val barStartDp = frameWidthDp * firstFrame
+                                    val barWidthDp = (frameWidthDp * (lastFrame - firstFrame).coerceAtLeast(1) + 22.dp)
+                                        .coerceAtLeast(48.dp)
+                                    Box(
+                                        modifier = Modifier
+                                            .offset(x = barStartDp, y = 4.dp)
+                                            .width(barWidthDp)
+                                            .height(26.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(AmberKeyframe.copy(alpha = 0.16f * camVisAlpha))
+                                            .border(
+                                                width = if (isCameraKeyMode) 1.3.dp else 1.dp,
+                                                color = AmberKeyframe.copy(alpha = 0.58f * camVisAlpha),
+                                                shape = RoundedCornerShape(6.dp)
+                                            )
+                                    ) {
+                                        Text(
+                                            text = "Cam ${(evaluatedCamHere.zoom * 100).toInt()}% • ${evaluatedCamHere.rotation.toInt()}°",
+                                            fontSize = 9.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = AmberKeyframe.copy(alpha = camVisAlpha),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier
+                                                .align(Alignment.TopStart)
+                                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                                        )
+                                    }
+
+                                    camKeysSorted.forEach { camKf ->
+                                        val isCamKfHere = currentFrame == camKf.frame
+                                        val rawX = frameWidthDp * camKf.frame - 9.dp
+                                        val clampedX = rawX.coerceAtLeast(0.dp)
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .offset(x = clampedX, y = 7.dp)
+                                                .size(20.dp)
+                                                .clickable { onSelectCameraKeyframe(camKf.frame) }
+                                                .testTag("camera_kf_node_${camKf.frame}")
+                                        ) {
+                                            Canvas(modifier = Modifier.size(12.dp)) {
+                                                rotate(45f) {
+                                                    drawRect(
+                                                        color = if (isCamKfHere) ElectricCyan else AmberKeyframe.copy(alpha = camVisAlpha),
+                                                        topLeft = Offset(2.2f, 2.2f),
+                                                        size = Size(size.width - 4.4f, size.height - 4.4f)
+                                                    )
+                                                    drawRect(
+                                                        color = StudioObsidian,
+                                                        topLeft = Offset(2.2f, 2.2f),
+                                                        size = Size(size.width - 4.4f, size.height - 4.4f),
+                                                        style = Stroke(width = 1.6f)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier
+                                            .align(Alignment.CenterStart)
+                                            .padding(horizontal = 8.dp)
+                                            .clickable(onClick = onOpenCameraStudio)
+                                    ) {
+                                        Text(
+                                            text = "Camera Control • Tap to keyframe Pan, Zoom & Roll or pick a Preset",
+                                            fontSize = 9.5.sp,
+                                            color = StudioTextMuted,
+                                            maxLines = 1
+                                        )
+                                        Surface(
+                                            color = AmberKeyframe.copy(alpha = 0.16f),
+                                            shape = RoundedCornerShape(6.dp),
+                                            border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.55f)),
+                                            modifier = Modifier
+                                                .height(20.dp)
+                                                .clickable(onClick = onStampCameraKeyframe)
+                                                .testTag("camera_track_add_kf_btn")
+                                        ) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier.padding(horizontal = 6.dp)
+                                            ) {
+                                                Text(
+                                                    text = "+ Key",
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = AmberKeyframe
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalDivider(color = AmberKeyframe.copy(alpha = 0.30f), thickness = 1.dp)
+
                             sortedLayers.forEach { layer ->
                                 val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))
                                 val layerClips = clipsByLayer[layer.id].orEmpty()
