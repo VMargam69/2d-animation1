@@ -56,17 +56,26 @@ fun EditorCanvasPane(
     canvasPanY: Float,
     isDrawingMode: Boolean,
     isIkPosingMode: Boolean = false,
+    ikFlipBend: Boolean = false,
     isCameraKeyMode: Boolean = false,
     showGridOverlay: Boolean = false,
     brushColorHex: String,
     brushWidthRatio: Float,
+    brushStyle: BrushStyle = BrushStyle.SOLID,
     sceneRenderer: SceneRenderer,
     onSelectClip: (String?) -> Unit,
     onCommitClipTranslation: (clipId: String, totalDxNorm: Float, totalDyNorm: Float) -> Unit,
     onCommitIkPose: (clipId: String, finalOffsets: PoseKeyframeOffsets) -> Unit = { _, _ -> },
     onCommitCameraPan: (totalDxNorm: Float, totalDyNorm: Float) -> Unit = { _, _ -> },
+    onToggleIkFlipBend: () -> Unit = {},
+    onMirrorIkPose: () -> Unit = {},
+    onStampPoseKey: () -> Unit = {},
+    onResetPoseAtFrame: () -> Unit = {},
+    onExitIkPosingMode: () -> Unit = {},
     onFinishStroke: (List<NormalizedPoint>) -> Unit,
-    onBrushStyleChange: (String, Float) -> Unit,
+    onBrushStyleChange: (String, Float, BrushStyle) -> Unit,
+    onUndoStroke: () -> Unit = {},
+    onClearStrokes: () -> Unit = {},
     onExitDrawingMode: () -> Unit,
     onZoomBy: (Float) -> Unit,
     onResetViewport: () -> Unit,
@@ -76,6 +85,7 @@ fun EditorCanvasPane(
     val scene = project.activeScene
     val aspectRatio = (project.width.toFloat() / project.height.coerceAtLeast(1).toFloat()).coerceIn(0.4f, 2.5f)
     var isDraggingObject by remember { mutableStateOf(false) }
+    var activeIkHandle by remember { mutableStateOf<IkHandleId?>(null) }
 
     // Local GPU-only pinch zoom & pan preview (zero Compose recompositions during pinch!)
     var localPinchZoom by remember { mutableFloatStateOf(1f) }
@@ -177,15 +187,18 @@ fun EditorCanvasPane(
                 canvasZoom = effectiveZoom,
                 isDrawingMode = isDrawingMode,
                 isIkPosingMode = isIkPosingMode,
+                ikFlipBend = ikFlipBend,
                 isCameraKeyMode = isCameraKeyMode,
                 brushColorHex = brushColorHex,
                 brushWidthRatio = brushWidthRatio,
+                brushStyle = brushStyle,
                 sceneRenderer = sceneRenderer,
                 onSelectClip = onSelectClip,
                 onCommitClipTranslation = onCommitClipTranslation,
                 onCommitIkPose = onCommitIkPose,
                 onCommitCameraPan = onCommitCameraPan,
                 onDragStateChanged = { dragging -> isDraggingObject = dragging },
+                onActiveIkHandleChanged = { handle -> activeIkHandle = handle },
                 onFinishStroke = onFinishStroke,
                 modifier = Modifier.fillMaxSize()
             )
@@ -296,7 +309,7 @@ fun EditorCanvasPane(
         }
 
         // Minimal Bottom-Left Active Mode Badge (shown ONLY when dragging or when a special overlay mode is active)
-        if (isDraggingObject || isIkPosingMode || isCameraKeyMode || project.onionSkinEnabled || project.showMotionPaths) {
+        if (isDraggingObject || isIkPosingMode || isCameraKeyMode || project.onionSkinEnabled || project.showMotionPaths || scene.vfxConfig.hasActiveVfx) {
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -305,8 +318,11 @@ fun EditorCanvasPane(
             ) {
                 if (isDraggingObject && selectedEval != null) {
                     CanvasStatusPill(
-                        text = if (isIkPosingMode) "IK Pose"
-                        else "${(selectedEval.x * project.width).toInt()}, ${(selectedEval.y * project.height).toInt()}",
+                        text = if (isIkPosingMode) {
+                            activeIkHandle?.let { "IK: ${it.label}" } ?: "IK Pose"
+                        } else {
+                            "${(selectedEval.x * project.width).toInt()}, ${(selectedEval.y * project.height).toInt()}"
+                        },
                         accent = ElectricCyan
                     )
                 }
@@ -317,10 +333,166 @@ fun EditorCanvasPane(
                     CanvasStatusPill(text = "CAM KEY", accent = AmberKeyframe)
                 }
                 if (project.onionSkinEnabled) {
-                    CanvasStatusPill(text = "ONION", accent = ElectricCyan)
+                    CanvasStatusPill(text = "ONION ±2", accent = ElectricCyan)
                 }
                 if (project.showMotionPaths) {
                     CanvasStatusPill(text = "PATH", accent = ElectricCyan)
+                }
+                if (scene.vfxConfig.hasActiveVfx) {
+                    CanvasStatusPill(text = "VFX", accent = VioletLayer)
+                }
+            }
+        }
+
+        // Sleek Floating On-Stage IK Posing HUD Pill (ONLY when IK Mode is active & not playing)
+        if (isIkPosingMode && !isDrawingMode && !isPlaying) {
+            Surface(
+                color = StudioCharcoal.copy(alpha = 0.94f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.85f)),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 6.dp, start = 8.dp, end = 8.dp)
+                    .testTag("floating_ik_hud")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AccessibilityNew,
+                        contentDescription = "IK Posing",
+                        tint = ElectricCyan,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = activeIkHandle?.label ?: "IK",
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (activeIkHandle != null) AmberKeyframe else ElectricCyan
+                    )
+
+                    VerticalDivider(color = StudioBorderSubtle, modifier = Modifier.height(16.dp))
+
+                    // Flip Bend Pole toggle (switches elbow/knee bend direction)
+                    Surface(
+                        color = if (ikFlipBend) AmberKeyframe.copy(alpha = 0.22f) else StudioPanel,
+                        shape = RoundedCornerShape(7.dp),
+                        border = BorderStroke(1.dp, if (ikFlipBend) AmberKeyframe else StudioBorderSubtle),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(onClick = onToggleIkFlipBend)
+                            .testTag("ik_hud_flip_bend_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SwapHoriz,
+                                contentDescription = "Flip limb bend direction",
+                                tint = if (ikFlipBend) AmberKeyframe else StudioTextSecondary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "Bend",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (ikFlipBend) AmberKeyframe else StudioTextSecondary
+                            )
+                        }
+                    }
+
+                    // Mirror L <-> R Pose button
+                    Surface(
+                        color = StudioPanel,
+                        shape = RoundedCornerShape(7.dp),
+                        border = BorderStroke(1.dp, StudioBorderSubtle),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(onClick = onMirrorIkPose)
+                            .testTag("ik_hud_mirror_pose_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Flip,
+                                contentDescription = "Mirror left and right limb pose",
+                                tint = StudioTextPrimary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "Mirror",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = StudioTextPrimary
+                            )
+                        }
+                    }
+
+                    // Stamp Pose Keyframe button
+                    Surface(
+                        color = ElectricCyanDim,
+                        shape = RoundedCornerShape(7.dp),
+                        border = BorderStroke(1.dp, ElectricCyan),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(onClick = onStampPoseKey)
+                            .testTag("ik_hud_stamp_key_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Add,
+                                contentDescription = "Stamp pose keyframe",
+                                tint = ElectricCyan,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "Key",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ElectricCyan
+                            )
+                        }
+                    }
+
+                    // Reset Pose at Frame
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .background(StudioPanel)
+                            .clickable(onClick = onResetPoseAtFrame)
+                            .testTag("ik_hud_reset_pose_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.RestartAlt,
+                            contentDescription = "Reset pose at current frame",
+                            tint = CoralPlayhead,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+
+                    // Done (exit IK mode)
+                    TextButton(
+                        onClick = onExitIkPosingMode,
+                        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .testTag("ik_hud_done_btn")
+                    ) {
+                        Text("Done", color = ElectricCyan, fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -328,43 +500,145 @@ fun EditorCanvasPane(
         // Compact Floating Brush Palette Bar ONLY when Freehand Drawing Mode is Active
         if (isDrawingMode) {
             val brushColors = listOf("#38BDF8", "#F59E0B", "#F43F5E", "#10B981", "#F8FAFC", "#A78BFA")
+            val widthStops = listOf(0.005f to "S", 0.009f to "M", 0.016f to "L")
             Surface(
-                color = StudioCharcoal.copy(alpha = 0.94f),
+                color = StudioCharcoal.copy(alpha = 0.95f),
                 shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, PinkLayer),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 6.dp)
+                    .padding(top = 6.dp, start = 8.dp, end = 8.dp)
+                    .testTag("floating_draw_toolbar")
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Column(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
-                    Text("Draw", style = MaterialTheme.typography.labelMedium, color = PinkLayer, fontWeight = FontWeight.Bold)
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(brushColors) { hex ->
-                            val c = Color(ProceduralRigRenderer.parseColorSafe(hex, 0xFF38BDF8.toInt()))
-                            Box(
+                    // Row 1: Brush Style Pills (Solid / Neon / Sketch) + Stroke Undo / Clear + Done
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        BrushStyle.entries.forEach { style ->
+                            val selected = brushStyle == style
+                            Surface(
+                                color = if (selected) PinkLayer.copy(alpha = 0.25f) else StudioPanel,
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, if (selected) PinkLayer else StudioBorderSubtle),
                                 modifier = Modifier
-                                    .size(22.dp)
-                                    .clip(CircleShape)
-                                    .background(c)
-                                    .border(
-                                        width = if (hex.equals(brushColorHex, true)) 2.dp else 1.dp,
-                                        color = if (hex.equals(brushColorHex, true)) Color.White else StudioBorder,
-                                        shape = CircleShape
+                                    .height(26.dp)
+                                    .clickable { onBrushStyleChange(brushColorHex, brushWidthRatio, style) }
+                                    .testTag("brush_style_${style.name.lowercase()}")
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                ) {
+                                    Text(
+                                        text = style.displayName,
+                                        fontSize = 10.5.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (selected) PinkLayer else StudioTextSecondary
                                     )
-                                    .clickable { onBrushStyleChange(hex, brushWidthRatio) }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.width(2.dp))
+
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(StudioPanel)
+                                .clickable(onClick = onUndoStroke)
+                                .testTag("draw_undo_stroke_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Undo,
+                                contentDescription = "Undo last stroke",
+                                tint = StudioTextPrimary,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
+
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(StudioPanel)
+                                .clickable(onClick = onClearStrokes)
+                                .testTag("draw_clear_strokes_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.DeleteSweep,
+                                contentDescription = "Clear sketch strokes",
+                                tint = CoralPlayhead,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+
+                        TextButton(
+                            onClick = onExitDrawingMode,
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            modifier = Modifier.height(26.dp)
+                        ) {
+                            Text("Done", color = ElectricCyan, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
-                    TextButton(
-                        onClick = onExitDrawingMode,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                        modifier = Modifier.height(28.dp)
+
+                    // Row 2: Color Swatches + S/M/L Width Chips
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Done", color = ElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(brushColors) { hex ->
+                                val c = Color(ProceduralRigRenderer.parseColorSafe(hex, 0xFF38BDF8.toInt()))
+                                Box(
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clip(CircleShape)
+                                        .background(c)
+                                        .border(
+                                            width = if (hex.equals(brushColorHex, true)) 2.dp else 1.dp,
+                                            color = if (hex.equals(brushColorHex, true)) Color.White else StudioBorder,
+                                            shape = CircleShape
+                                        )
+                                        .clickable { onBrushStyleChange(hex, brushWidthRatio, brushStyle) }
+                                )
+                            }
+                        }
+
+                        VerticalDivider(
+                            color = StudioBorderSubtle,
+                            modifier = Modifier.height(16.dp)
+                        )
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            widthStops.forEach { (ratio, label) ->
+                                val active = kotlin.math.abs(brushWidthRatio - ratio) < 0.002f
+                                Surface(
+                                    color = if (active) ElectricCyanDim else StudioPanel,
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(1.dp, if (active) ElectricCyan else StudioBorderSubtle),
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clickable { onBrushStyleChange(brushColorHex, ratio, brushStyle) }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = label,
+                                            fontSize = 9.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (active) ElectricCyan else StudioTextSecondary
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

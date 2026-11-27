@@ -92,20 +92,26 @@ fun AddShapeDialog(
 
 @Composable
 fun AddTextDialog(
-    onAddText: (String, String, Float) -> Unit,
+    onAddText: (String, String, Float, TextBubbleStyle, String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var content by remember { mutableStateOf("Scene Title") }
     var colorHex by remember { mutableStateOf("#FFFFFF") }
-    var sizeSp by remember { mutableFloatStateOf(36f) }
-    val swatches = listOf("#FFFFFF", "#FEF08A", "#38BDF8", "#F43F5E", "#34D399", "#F59E0B")
+    var sizeSp by remember { mutableFloatStateOf(32f) }
+    var bubbleStyle by remember { mutableStateOf(TextBubbleStyle.NONE) }
+    var bubbleFillHex by remember { mutableStateOf("#FFFFFF") }
+    val textSwatches = listOf("#FFFFFF", "#0F172A", "#FEF08A", "#38BDF8", "#F43F5E", "#34D399", "#F59E0B")
+    val bubbleSwatches = listOf("#FFFFFF", "#FDE047", "#E0F2FE", "#FCE7F3", "#DCFCE7", "#1E293B")
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = StudioPanel,
-        title = { Text("Add Text Layer", color = StudioTextPrimary) },
+        title = { Text("Add Text & Comic Bubble", color = StudioTextPrimary) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 OutlinedTextField(
                     value = content,
                     onValueChange = { content = it },
@@ -115,11 +121,35 @@ fun AddTextDialog(
                         .fillMaxWidth()
                         .testTag("add_text_input")
                 )
+
+                Text("Comic Bubble Style", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(TextBubbleStyle.entries) { style ->
+                        val selected = bubbleStyle == style
+                        FilterChip(
+                            selected = selected,
+                            onClick = {
+                                bubbleStyle = style
+                                // Smart contrast default when switching to light comic bubbles
+                                if (style == TextBubbleStyle.SPEECH || style == TextBubbleStyle.THOUGHT || style == TextBubbleStyle.SHOUT) {
+                                    if (colorHex == "#FFFFFF") colorHex = "#0F172A"
+                                    if (style == TextBubbleStyle.SHOUT && bubbleFillHex == "#FFFFFF") bubbleFillHex = "#FDE047"
+                                } else if (colorHex == "#0F172A") {
+                                    colorHex = "#FFFFFF"
+                                }
+                            },
+                            label = { Text(style.displayName) },
+                            modifier = Modifier.testTag("text_bubble_style_${style.name.lowercase()}")
+                        )
+                    }
+                }
+
                 Text("Text Size: ${sizeSp.toInt()}sp", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
-                Slider(value = sizeSp, onValueChange = { sizeSp = it }, valueRange = 18f..72f)
-                Text("Color", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                Slider(value = sizeSp, onValueChange = { sizeSp = it }, valueRange = 18f..68f)
+
+                Text("Text Color", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(swatches) { hex ->
+                    items(textSwatches) { hex ->
                         val col = Color(ProceduralRigRenderer.parseColorSafe(hex, 0xFFFFFFFF.toInt()))
                         Box(
                             modifier = Modifier
@@ -135,15 +165,36 @@ fun AddTextDialog(
                         )
                     }
                 }
+
+                if (bubbleStyle == TextBubbleStyle.SPEECH || bubbleStyle == TextBubbleStyle.THOUGHT || bubbleStyle == TextBubbleStyle.SHOUT) {
+                    Text("Bubble Fill Color", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(bubbleSwatches) { hex ->
+                            val col = Color(ProceduralRigRenderer.parseColorSafe(hex, 0xFFFFFFFF.toInt()))
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(col)
+                                    .border(
+                                        if (hex == bubbleFillHex) 3.dp else 1.dp,
+                                        if (hex == bubbleFillHex) AmberKeyframe else StudioBorder,
+                                        CircleShape
+                                    )
+                                    .clickable { bubbleFillHex = hex }
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onAddText(content, colorHex, sizeSp) },
+                onClick = { onAddText(content, colorHex, sizeSp, bubbleStyle, bubbleFillHex) },
                 colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = StudioObsidian),
                 modifier = Modifier.testTag("confirm_add_text_btn")
             ) {
-                Text("Add Text", fontWeight = FontWeight.Bold)
+                Text(if (bubbleStyle == TextBubbleStyle.NONE) "Add Text" else "Add ${bubbleStyle.displayName}", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {

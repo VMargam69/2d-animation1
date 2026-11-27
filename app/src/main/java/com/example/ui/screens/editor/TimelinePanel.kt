@@ -23,6 +23,8 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -30,6 +32,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.engine.FacialExpressionEngine
+import com.example.engine.FacialExpressionPreset
 import com.example.engine.ProceduralRigRenderer
 import com.example.model.*
 import com.example.ui.theme.*
@@ -49,17 +53,21 @@ fun TimelinePanel(
     playbackFrameFlow: StateFlow<Int>,
     isPlaying: Boolean,
     isLooping: Boolean,
+    playbackSpeed: Float = 1.0f,
     selectedClipId: String?,
     selectedLayerId: String?,
     timelineZoom: Float,
     onSelectScene: (Int) -> Unit,
     onAddScene: () -> Unit,
+    onDuplicateScene: () -> Unit = {},
     onTogglePlayback: () -> Unit,
     onSeekFrame: (Int) -> Unit,
     onToggleLoop: () -> Unit,
+    onCyclePlaybackSpeed: () -> Unit = {},
     onToggleKeyframe: () -> Unit,
     onSelectKeyframeNode: (clipId: String, globalFrame: Int) -> Unit,
     onCycleSelectedKeyframeEasing: () -> Unit,
+    onOpenEasingEditor: () -> Unit = onCycleSelectedKeyframeEasing,
     onAdjustTimelineZoom: (Float) -> Unit,
     onSelectClip: (String) -> Unit,
     onToggleLayerVisibility: (String) -> Unit,
@@ -74,6 +82,12 @@ fun TimelinePanel(
     ) -> Unit = { _, _, _, _, _ -> },
     waveformSensitivity: Float = 1.0f,
     onWaveformSensitivityChange: (Float) -> Unit = {},
+    onDropFacialExpression: (
+        layerId: String,
+        clipId: String?,
+        globalFrame: Int,
+        presetId: String
+    ) -> Unit = { _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val scene = project.activeScene
@@ -104,14 +118,66 @@ fun TimelinePanel(
     var sceneDropdownOpen by remember { mutableStateOf(false) }
     var isLayerRailCollapsed by remember { mutableStateOf(false) }
     var showSensitivitySlider by remember { mutableStateOf(false) }
+    var showFacialTray by remember { mutableStateOf(true) }
     val hasAudioTrack = remember(scene.layers, scene.clips) {
         scene.layers.any { it.type == LayerType.AUDIO } || scene.clips.any { !it.audioPath.isNullOrBlank() }
     }
+    val hasCharacterLayer = remember(scene.layers, scene.clips) {
+        scene.layers.any { it.type == LayerType.CHARACTER && !it.isLocked } &&
+            scene.clips.any { it.characterId != null }
+    }
+    val activeFacialPresetId = remember(selectedClip, currentFrame) {
+        if (selectedClip?.characterId == null) null
+        else {
+            val localFrame = (currentFrame - selectedClip.startFrame).coerceAtLeast(0)
+            selectedClip.keyframes
+                .filter { it.frame <= localFrame && (it.facialPresetId != null || it.expressionOverride != null) }
+                .maxByOrNull { it.frame }
+                ?.let { kf ->
+                    kf.facialPresetId ?: kf.expressionOverride?.let {
+                        FacialExpressionEngine.presetForExpression(it).id
+                    }
+                }
+        }
+    }
+
+    // Drag-and-drop state for dropping algorithmic facial expressions onto Character layers
+    var timelineRootTopLeft by remember { mutableStateOf(Offset.Zero) }
+    var trackViewportRootLeftPx by remember { mutableFloatStateOf(0f) }
+    val layerRowBoundsY = remember { mutableStateMapOf<String, Pair<Float, Float>>() }
+    var draggingPreset by remember { mutableStateOf<FacialExpressionPreset?>(null) }
+    var dragPointerRoot by remember { mutableStateOf(Offset.Zero) }
+
+    val hoveredDropTarget = remember(
+        draggingPreset, dragPointerRoot, sortedLayers, clipsByLayer,
+        trackViewportRootLeftPx, horizontalScroll.value, frameWidthPx, scene.durationFrames, currentFrame
+    ) {
+        if (draggingPreset == null) return@remember null
+        val py = dragPointerRoot.y
+        val px = dragPointerRoot.x
+        val matchedLayer = sortedLayers.firstOrNull { layer ->
+            if (layer.type != LayerType.CHARACTER || layer.isLocked) return@firstOrNull false
+            val bounds = layerRowBoundsY[layer.id] ?: return@firstOrNull false
+            py in (bounds.first - 6f)..(bounds.second + 6f)
+        } ?: return@remember null
+        val targetFrame = if (px >= trackViewportRootLeftPx && frameWidthPx > 0.5f) {
+            val trackX = (px - trackViewportRootLeftPx) + horizontalScroll.value.toFloat()
+            (trackX / frameWidthPx).toInt().coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0))
+        } else {
+            currentFrame.coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0))
+        }
+        val layerClips = clipsByLayer[matchedLayer.id].orEmpty().filter { it.characterId != null }
+        val targetClip = layerClips.firstOrNull { targetFrame in it.startFrame until it.endFrame }
+            ?: layerClips.firstOrNull()
+        if (targetClip == null) null else Triple(matchedLayer, targetClip, targetFrame)
+    }
+
     val layerRailWidth by animateDpAsState(
         targetValue = if (isLayerRailCollapsed) 40.dp else 116.dp,
         label = "timeline_layer_rail_width"
     )
     val latestOnSeekFrame by rememberUpdatedState(onSeekFrame)
+    val latestOnDropFacial by rememberUpdatedState(onDropFacialExpression)
 
     Surface(
         color = StudioCharcoal,
@@ -119,6 +185,13 @@ fun TimelinePanel(
             .fillMaxWidth()
             .testTag("bottom_horizontal_timeline")
     ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { coords ->
+                    timelineRootTopLeft = coords.positionInRoot()
+                }
+        ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // 1. Unified Single Control Strip (~42dp): Scene Switcher | Transport + Timecode | Keyframe + Easing + Zoom
             BoxWithConstraints(
@@ -224,6 +297,28 @@ fun TimelinePanel(
                                 },
                                 modifier = Modifier.testTag("add_scene_btn")
                             )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Duplicate Scene",
+                                        color = AmberKeyframe,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.FileCopy,
+                                        contentDescription = "Duplicate scene",
+                                        tint = AmberKeyframe,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                onClick = {
+                                    sceneDropdownOpen = false
+                                    onDuplicateScene()
+                                },
+                                modifier = Modifier.testTag("duplicate_scene_btn")
+                            )
                         }
                     }
 
@@ -270,6 +365,39 @@ fun TimelinePanel(
                                 tint = if (isLooping) ElectricCyan else StudioTextMuted,
                                 modifier = Modifier.size(16.dp)
                             )
+                        }
+
+                        // Variable Playback Speed Pill (0.25x .. 2x)
+                        val isCustomSpeed = kotlin.math.abs(playbackSpeed - 1.0f) > 0.05f
+                        val speedLabel = if (playbackSpeed == playbackSpeed.toInt().toFloat()) {
+                            "${playbackSpeed.toInt()}x"
+                        } else {
+                            "${playbackSpeed}x"
+                        }
+                        Surface(
+                            color = if (isCustomSpeed) AmberKeyframeDim else StudioPanel,
+                            shape = RoundedCornerShape(7.dp),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (isCustomSpeed) AmberKeyframe else StudioBorderSubtle
+                            ),
+                            modifier = Modifier
+                                .height(24.dp)
+                                .clickable(onClick = onCyclePlaybackSpeed)
+                                .testTag("timeline_playback_speed_btn")
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(horizontal = 6.dp)
+                            ) {
+                                Text(
+                                    text = speedLabel,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isCustomSpeed) AmberKeyframe else StudioTextSecondary,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
 
@@ -322,17 +450,7 @@ fun TimelinePanel(
                             modifier = Modifier
                                 .height(26.dp)
                                 .clickable(enabled = selectedClip != null) {
-                                    if (hasKeyframeHere) {
-                                        onCycleSelectedKeyframeEasing()
-                                    } else if (selectedClip != null) {
-                                        val prevKf = selectedClip.keyframes
-                                            .filter { it.frame <= (currentFrame - selectedClip.startFrame) }
-                                            .maxByOrNull { it.frame }
-                                            ?: selectedClip.keyframes.firstOrNull()
-                                        if (prevKf != null) {
-                                            onSelectKeyframeNode(selectedClip.id, selectedClip.startFrame + prevKf.frame)
-                                        }
-                                    }
+                                    onOpenEasingEditor()
                                 }
                                 .testTag("selected_keyframe_easing_btn")
                         ) {
@@ -340,15 +458,49 @@ fun TimelinePanel(
                                 contentAlignment = Alignment.Center,
                                 modifier = Modifier.padding(horizontal = 6.dp)
                             ) {
-                                Text(
-                                    text = activeEasingLabel,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (selectedClip != null) StudioTextPrimary else StudioTextMuted,
-                                    maxLines = 1
-                                )
+                                    Text(
+                                        text = activeEasingLabel,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (selectedClip != null) StudioTextPrimary else StudioTextMuted,
+                                        maxLines = 1
+                                    )
+                                }
                             }
-                        }
+
+                            // Faces: Toggle Draggable Algorithmic Facial Expression Library
+                            Surface(
+                                color = if (showFacialTray) VioletLayer.copy(alpha = 0.24f) else StudioPanel,
+                                shape = RoundedCornerShape(7.dp),
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (showFacialTray) VioletLayer else StudioBorderSubtle
+                                ),
+                                modifier = Modifier
+                                    .height(26.dp)
+                                    .clickable { showFacialTray = !showFacialTray }
+                                    .testTag("timeline_faces_tray_toggle")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.FaceRetouchingNatural,
+                                        contentDescription = "Toggle facial expressions tray",
+                                        tint = if (showFacialTray) VioletLayer else StudioTextSecondary,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Text(
+                                        text = "Faces",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (showFacialTray) VioletLayer else StudioTextPrimary,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
 
                         if (hasAudioTrack) {
                             Surface(
@@ -503,6 +655,48 @@ fun TimelinePanel(
                         }
                     }
                 }
+            }
+
+            if (showFacialTray) {
+                HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
+                FacialExpressionTray(
+                    activePresetId = activeFacialPresetId,
+                    hasCharacterLayer = hasCharacterLayer,
+                    onTapPreset = { preset ->
+                        val fallbackCharClip = selectedClip?.takeIf { it.characterId != null }
+                            ?: scene.clips.firstOrNull { clip ->
+                                clip.characterId != null &&
+                                    scene.layers.any { l -> l.id == clip.layerId && l.type == LayerType.CHARACTER && !l.isLocked }
+                            }
+                        if (fallbackCharClip != null) {
+                            latestOnDropFacial(
+                                fallbackCharClip.layerId,
+                                fallbackCharClip.id,
+                                currentFrame,
+                                preset.id
+                            )
+                        }
+                    },
+                    onDragStart = { preset, rootPos ->
+                        draggingPreset = preset
+                        dragPointerRoot = rootPos
+                    },
+                    onDragMove = { rootPos ->
+                        dragPointerRoot = rootPos
+                    },
+                    onDragEnd = {
+                        val preset = draggingPreset
+                        val target = hoveredDropTarget
+                        if (preset != null && target != null) {
+                            val (layer, clip, targetFrame) = target
+                            latestOnDropFacial(layer.id, clip.id, targetFrame, preset.id)
+                        }
+                        draggingPreset = null
+                    },
+                    onDragCancel = {
+                        draggingPreset = null
+                    }
+                )
             }
 
             HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
@@ -663,6 +857,9 @@ fun TimelinePanel(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
+                        .onGloballyPositioned { coords ->
+                            trackViewportRootLeftPx = coords.positionInRoot().x
+                        }
                         .horizontalScroll(horizontalScroll)
                 ) {
                     Column(modifier = Modifier.width(totalTrackWidthDp)) {
@@ -762,11 +959,38 @@ fun TimelinePanel(
                                 val rowHeight = layerRowHeight(layer.type)
                                 val clipHeight = rowHeight - 6.dp
 
+                                val isDragActive = draggingPreset != null
+                                val isCharDropEligible = isDragActive && layer.type == LayerType.CHARACTER && !layer.isLocked
+                                val isDropHovered = hoveredDropTarget?.first?.id == layer.id
+                                val dragAccent = draggingPreset?.let {
+                                    Color(ProceduralRigRenderer.parseColorSafe(it.accentHex, 0xFF38BDF8.toInt()))
+                                } ?: ElectricCyan
+
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(rowHeight)
-                                        .background(if (layer.isVisible) StudioCharcoal else StudioObsidian.copy(alpha = 0.72f))
+                                        .onGloballyPositioned { coords ->
+                                            val topY = coords.positionInRoot().y
+                                            layerRowBoundsY[layer.id] = topY to (topY + coords.size.height)
+                                        }
+                                        .background(
+                                            when {
+                                                isDropHovered -> dragAccent.copy(alpha = 0.22f)
+                                                isCharDropEligible -> ElectricCyan.copy(alpha = 0.08f)
+                                                !layer.isVisible -> StudioObsidian.copy(alpha = 0.72f)
+                                                else -> StudioCharcoal
+                                            }
+                                        )
+                                        .then(
+                                            if (isDropHovered) {
+                                                Modifier.border(1.5.dp, dragAccent)
+                                            } else if (isCharDropEligible) {
+                                                Modifier.border(1.dp, ElectricCyan.copy(alpha = 0.35f))
+                                            } else {
+                                                Modifier
+                                            }
+                                        )
                                 ) {
                                     layerClips.forEach { clip ->
                                         val isSelected = clip.id == selectedClipId
@@ -826,12 +1050,26 @@ fun TimelinePanel(
                                                         .padding(horizontal = 6.dp, vertical = 1.dp)
                                                 )
 
-                                                // Individually Selectable Keyframe Diamond Nodes
+                                                // Individually Selectable Keyframe Diamond Nodes (with Facial Expression color coding)
                                                 clip.keyframes.forEach { kf ->
                                                     val kfGlobalFrame = clip.startFrame + kf.frame
                                                     val isNodeSelected = isSelected && currentFrame == kfGlobalFrame
                                                     val rawX = frameWidthDp * kf.frame - 9.dp
                                                     val clampedX = rawX.coerceIn(0.dp, (clipWidth - 20.dp).coerceAtLeast(0.dp))
+                                                    val kfPreset = kf.facialPresetId?.let { FacialExpressionEngine.presetById(it) }
+                                                        ?: kf.expressionOverride?.takeIf { it != FacialExpression.AUTO }?.let {
+                                                            FacialExpressionEngine.presetForExpression(it)
+                                                        }
+                                                    val nodeColor = when {
+                                                        isNodeSelected -> ElectricCyan
+                                                        kfPreset != null -> Color(
+                                                            ProceduralRigRenderer.parseColorSafe(
+                                                                kfPreset.accentHex,
+                                                                0xFFFBBF24.toInt()
+                                                            )
+                                                        ).copy(alpha = visAlpha)
+                                                        else -> AmberKeyframe.copy(alpha = visAlpha)
+                                                    }
 
                                                     Box(
                                                         contentAlignment = Alignment.Center,
@@ -849,24 +1087,64 @@ fun TimelinePanel(
                                                             val topLeft = Offset((size.width - side) / 2f, (size.height - side) / 2f)
                                                             rotate(45f) {
                                                                 drawRect(
-                                                                    color = if (isNodeSelected) ElectricCyan else AmberKeyframe.copy(alpha = visAlpha),
+                                                                    color = nodeColor,
                                                                     topLeft = topLeft,
                                                                     size = Size(side, side)
                                                                 )
-                                                                if (isNodeSelected) {
+                                                                if (isNodeSelected || kfPreset != null) {
                                                                     drawRect(
-                                                                        color = Color.White,
+                                                                        color = if (isNodeSelected) Color.White else StudioObsidian.copy(alpha = 0.85f),
                                                                         topLeft = topLeft,
                                                                         size = Size(side, side),
-                                                                        style = Stroke(width = 2f)
+                                                                        style = Stroke(width = if (isNodeSelected) 2f else 1.2f)
                                                                     )
                                                                 }
                                                             }
                                                         }
                                                     }
+
+                                                    // Compact inline expression tag pill next to expression keyframes
+                                                    if (kfPreset != null && clipWidth >= 60.dp) {
+                                                        val tagOffsetX = (frameWidthDp * kf.frame + 6.dp)
+                                                            .coerceIn(4.dp, (clipWidth - 42.dp).coerceAtLeast(4.dp))
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .offset(x = tagOffsetX, y = 14.dp)
+                                                                .background(
+                                                                    StudioObsidian.copy(alpha = 0.82f),
+                                                                    RoundedCornerShape(4.dp)
+                                                                )
+                                                                .border(
+                                                                    0.75.dp,
+                                                                    nodeColor.copy(alpha = 0.78f),
+                                                                    RoundedCornerShape(4.dp)
+                                                                )
+                                                                .padding(horizontal = 3.dp, vertical = 0.5.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = kfPreset.shortLabel,
+                                                                fontSize = 7.5.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = nodeColor,
+                                                                maxLines = 1
+                                                            )
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+                                    }
+
+                                    // Vertical snap-frame drop indicator line inside hovered Character track
+                                    if (isDropHovered) {
+                                        val snapFrame = hoveredDropTarget?.third ?: currentFrame
+                                        Box(
+                                            modifier = Modifier
+                                                .offset(x = frameWidthDp * snapFrame, y = 0.dp)
+                                                .width(2.5.dp)
+                                                .fillMaxHeight()
+                                                .background(dragAccent)
+                                        )
                                     }
                                 }
                                 HorizontalDivider(color = StudioBorderSubtle.copy(alpha = 0.6f), thickness = 1.dp)
@@ -884,17 +1162,24 @@ fun TimelinePanel(
                 }
             }
         }
+
+        // Floating expression drag ghost badge following finger over TimelinePanel
+        draggingPreset?.let { activePreset ->
+            FloatingExpressionDragBadge(
+                preset = activePreset,
+                localOffsetPx = dragPointerRoot - timelineRootTopLeft,
+                targetFrame = hoveredDropTarget?.third,
+                targetLayerName = hoveredDropTarget?.first?.name
+            )
+        }
+        }
     }
 }
 
 private fun layerRowHeight(type: LayerType): Dp =
     if (type == LayerType.AUDIO) 52.dp else 36.dp
 
-private fun shortEasingLabel(easing: EasingType): String = when (easing) {
-    EasingType.LINEAR -> "Linear"
-    EasingType.EASE_IN_OUT -> "Ease"
-    EasingType.HOLD -> "Hold"
-}
+private fun shortEasingLabel(easing: EasingType): String = easing.shortLabel
 
 @Composable
 private fun LiveCompactTimecode(

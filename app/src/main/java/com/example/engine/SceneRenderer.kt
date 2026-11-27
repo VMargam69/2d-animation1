@@ -17,6 +17,8 @@ data class StageGesturePreview(
     val draggedClipId: String? = null,
     val clipDeltaX: Float = 0f,
     val clipDeltaY: Float = 0f,
+    val dragVelocityX: Float = 0f,
+    val dragVelocityY: Float = 0f,
     val ikClipId: String? = null,
     val ikPoseOffsets: PoseKeyframeOffsets? = null,
     val cameraDeltaX: Float = 0f,
@@ -84,6 +86,7 @@ class SceneRenderer(
         }
         val rect = RectF()
         val path = Path()
+        val layerClipBuf = ArrayList<TimelineClip>(8)
     }
 
     private data class ScaledBgEntry(
@@ -97,6 +100,7 @@ class SceneRenderer(
         val strokeId: String,
         val pointCount: Int,
         val colorHex: String,
+        val brushStyle: BrushStyle,
         val width: Int,
         val height: Int
     )
@@ -198,12 +202,32 @@ class SceneRenderer(
             rawCamera
         }
 
+        val shake = if (!isChromaActive && scene.vfxConfig.cameraShakeIntensity > 0.005f) {
+            SceneVfxEngine.computeCameraShake(
+                frame = frame,
+                fps = fps,
+                intensity = scene.vfxConfig.cameraShakeIntensity,
+                seed = scene.id.hashCode()
+            )
+        } else {
+            CameraShakeOffset()
+        }
+        val effectiveCamera = if (!shake.isZero) {
+            camera.copy(
+                x = (camera.x + shake.dxNorm).coerceIn(0.02f, 0.98f),
+                y = (camera.y + shake.dyNorm).coerceIn(0.02f, 0.98f),
+                rotation = camera.rotation + shake.rollDeg
+            )
+        } else {
+            camera
+        }
+
         canvas.save()
-        if (!camera.isIdentity) {
+        if (!effectiveCamera.isIdentity) {
             canvas.translate(w * 0.5f, h * 0.5f)
-            canvas.scale(camera.zoom, camera.zoom)
-            canvas.rotate(-camera.rotation)
-            canvas.translate(-camera.x * w, -camera.y * h)
+            canvas.scale(effectiveCamera.zoom, effectiveCamera.zoom)
+            canvas.rotate(-effectiveCamera.rotation)
+            canvas.translate(-effectiveCamera.x * w, -effectiveCamera.y * h)
         }
 
         val sceneBgBitmap = if (isChromaActive) null else bitmapProvider(scene.backgroundImagePath, scene.backgroundBundledKey)
@@ -240,7 +264,8 @@ class SceneRenderer(
             tintOverlay = null,
             skipBackgroundLayers = isChromaActive,
             gesturePreview = gesturePreview,
-            scratch = scratch
+            scratch = scratch,
+            fps = fps
         )
 
         // 5. Editor Overlays (skip heavy dashed gizmo/motion-path overlays while actively playing)
@@ -279,6 +304,25 @@ class SceneRenderer(
         }
 
         canvas.restore() // restore camera transform
+
+        // 6. Scene VFX & Atmosphere (particles, cinematic lighting moods, and vignette in full-frame stage space)
+        if (!isChromaActive && scene.vfxConfig.hasActiveVfx) {
+            SceneVfxEngine.drawSceneParticles(
+                canvas = canvas,
+                width = w,
+                height = h,
+                frame = frame,
+                fps = fps,
+                config = scene.vfxConfig,
+                seed = scene.id.hashCode()
+            )
+            SceneVfxEngine.drawLightingAndVignette(
+                canvas = canvas,
+                width = w,
+                height = h,
+                config = scene.vfxConfig
+            )
+        }
 
         if (drawEditorOverlays && !isPlaying && (isCameraKeyMode || camera.trackedClipName != null)) {
             drawCameraViewfinderOverlay(canvas, w, h, camera, isCameraKeyMode, scratch)
@@ -348,18 +392,32 @@ class SceneRenderer(
                     val offCanvas = Canvas(bmp)
                     val tw = targetW.toFloat()
                     val th = targetH.toFloat()
-                    // Render 1 previous frame (coral) + 1 next frame (emerald) once per frame change
+                    // Multi-frame +/-2 onion skinning: frame-2 & frame-1 (coral/rose past), frame+1 & frame+2 (emerald/cyan future)
+                    if (frame - 2 in 0 until scene.durationFrames) {
+                        drawLayersAtFrame(
+                            offCanvas, targetW, targetH, tw, th, visibleLayers, scene.clips, frame - 2,
+                            charactersById, alphaMultiplier = 0.13f, tintOverlay = 0xFFFB7185.toInt(),
+                            skipBackgroundLayers = true, gesturePreview = null, scratch = scratch
+                        )
+                    }
                     if (frame - 1 in 0 until scene.durationFrames) {
                         drawLayersAtFrame(
                             offCanvas, targetW, targetH, tw, th, visibleLayers, scene.clips, frame - 1,
-                            charactersById, alphaMultiplier = 0.26f, tintOverlay = 0xFFF43F5E.toInt(),
+                            charactersById, alphaMultiplier = 0.27f, tintOverlay = 0xFFF43F5E.toInt(),
                             skipBackgroundLayers = true, gesturePreview = null, scratch = scratch
                         )
                     }
                     if (frame + 1 in 0 until scene.durationFrames) {
                         drawLayersAtFrame(
                             offCanvas, targetW, targetH, tw, th, visibleLayers, scene.clips, frame + 1,
-                            charactersById, alphaMultiplier = 0.20f, tintOverlay = 0xFF10B981.toInt(),
+                            charactersById, alphaMultiplier = 0.23f, tintOverlay = 0xFF10B981.toInt(),
+                            skipBackgroundLayers = true, gesturePreview = null, scratch = scratch
+                        )
+                    }
+                    if (frame + 2 in 0 until scene.durationFrames) {
+                        drawLayersAtFrame(
+                            offCanvas, targetW, targetH, tw, th, visibleLayers, scene.clips, frame + 2,
+                            charactersById, alphaMultiplier = 0.11f, tintOverlay = 0xFF38BDF8.toInt(),
                             skipBackgroundLayers = true, gesturePreview = null, scratch = scratch
                         )
                     }
@@ -405,7 +463,8 @@ class SceneRenderer(
         tintOverlay: Int?,
         skipBackgroundLayers: Boolean,
         gesturePreview: StageGesturePreview?,
-        scratch: RenderScratch
+        scratch: RenderScratch,
+        fps: Int = 24
     ) {
         val baseScale = min(w, h) / 420f
 
@@ -414,15 +473,20 @@ class SceneRenderer(
             if (skipBackgroundLayers && layer.type == LayerType.BACKGROUND) continue
             if (layer.type == LayerType.AUDIO) continue
 
-            // Sort active clips in this layer by depthOrder (ascending so higher depth renders on top)
-            val activeLayerClips = clips.filter { clip ->
-                clip.layerId == layer.id && frame >= clip.startFrame && frame < clip.endFrame
-            }.let { list ->
-                if (list.size > 1 && list.any { it.depthOrder != 0 }) {
-                    list.sortedBy { it.depthOrder }
-                } else {
-                    list
+            // Reuse scratch buffer to avoid per-layer/per-frame List allocations during 24-60fps playback
+            val activeLayerClips = scratch.layerClipBuf
+            activeLayerClips.clear()
+            var hasNonZeroDepth = false
+            for (i in clips.indices) {
+                val c = clips[i]
+                if (c.layerId == layer.id && frame >= c.startFrame && frame < c.endFrame) {
+                    activeLayerClips.add(c)
+                    if (c.depthOrder != 0) hasNonZeroDepth = true
                 }
+            }
+            if (activeLayerClips.isEmpty()) continue
+            if (activeLayerClips.size > 1 && hasNonZeroDepth) {
+                activeLayerClips.sortBy { it.depthOrder }
             }
 
             for (clipIdx in activeLayerClips.indices) {
@@ -473,9 +537,30 @@ class SceneRenderer(
                             val effectiveExpression = transform.expressionOverride ?: clip.facialExpression
                             val effectiveHandPose = transform.handPoseOverride ?: clip.handPose
                             val effectiveBlink = transform.blinkOverride ?: if (clip.forceBlink) true else null
+                            val organicFace = FacialExpressionEngine.evaluateOrganicFace(
+                                activePresetId = transform.facialPresetId,
+                                previousPresetId = transform.previousFacialPresetId,
+                                fallbackExpression = effectiveExpression,
+                                framesSinceKey = transform.framesSinceFacialKey,
+                                globalFrame = frame,
+                                fps = fps,
+                                blinkOverride = effectiveBlink,
+                                characterSeed = clip.id.hashCode()
+                            )
                             val effectiveTint = tintOverlay ?: if (clip.blackShade > 0.01f) {
                                 Color.argb((clip.blackShade.coerceIn(0f, 1f) * 215f).toInt(), 0, 0, 0)
                             } else null
+                            val propSwayState = if (tintOverlay == null && clip.propSwayEnabled) {
+                                PropSwayPhysicsEngine.evaluatePropSway(
+                                    clip = clip,
+                                    rig = rig,
+                                    frame = frame,
+                                    fps = fps,
+                                    gesturePreview = gesturePreview
+                                )
+                            } else {
+                                PropSwayState.ZERO
+                            }
                             ProceduralRigRenderer.drawCharacter(
                                 canvas = canvas,
                                 rig = rig,
@@ -495,7 +580,9 @@ class SceneRenderer(
                                 propScale = clip.propScale,
                                 handPose = effectiveHandPose,
                                 blinkOverride = effectiveBlink,
-                                atlasSlices = atlasSlices
+                                atlasSlices = atlasSlices,
+                                organicFace = organicFace,
+                                propSwayState = propSwayState
                             )
                         }
                     }
@@ -545,6 +632,7 @@ class SceneRenderer(
         val fill = scratch.fillPaint
         fill.color = Color.argb(alphaInt, Color.red(fillColor), Color.green(fillColor), Color.blue(fillColor))
         val stroke = scratch.strokePaint
+        stroke.pathEffect = null
         stroke.strokeWidth = 4f * s
         stroke.color = Color.argb(alphaInt, Color.red(strokeColor), Color.green(strokeColor), Color.blue(strokeColor))
 
@@ -612,18 +700,124 @@ class SceneRenderer(
     ) {
         val text = clip.textContent?.ifBlank { "Text" } ?: "Text"
         val baseColor = tintOverlay ?: ProceduralRigRenderer.parseColorSafe(clip.textColorHex, 0xFFFFFFFF.toInt())
-        val alphaInt = (alpha * 255).toInt()
+        val alphaInt = (alpha * 255).toInt().coerceIn(0, 255)
         val textSizePx = clip.textSizeSp * s * 1.15f
-
-        val shadowPaint = scratch.textShadowPaint
-        shadowPaint.color = Color.argb((alphaInt * 0.65f).toInt(), 0, 0, 0)
-        shadowPaint.textSize = textSizePx
 
         val paint = scratch.textPaint
         paint.color = Color.argb(alphaInt, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
         paint.textSize = textSizePx
 
-        canvas.drawText(text, 2.5f * s, 2.5f * s, shadowPaint)
+        val bubbleStyle = clip.textBubbleStyle
+        if (bubbleStyle != TextBubbleStyle.NONE) {
+            val textWidth = paint.measureText(text).coerceAtLeast(textSizePx * 2.2f)
+            val fm = paint.fontMetrics
+            val textHeight = (fm.descent - fm.ascent).coerceAtLeast(textSizePx)
+            val padX = textSizePx * 0.72f
+            val padY = textSizePx * 0.48f
+            val halfW = textWidth * 0.5f + padX
+            val halfH = textHeight * 0.5f + padY
+            val centerOffsetY = (fm.ascent + fm.descent) * 0.5f
+
+            val bubbleFillRaw = tintOverlay ?: ProceduralRigRenderer.parseColorSafe(clip.textBubbleFillHex, 0xFFFFFFFF.toInt())
+            val fill = scratch.fillPaint
+            val stroke = scratch.strokePaint
+            stroke.pathEffect = null
+
+            when (bubbleStyle) {
+                TextBubbleStyle.SPEECH -> {
+                    fill.color = Color.argb(alphaInt, Color.red(bubbleFillRaw), Color.green(bubbleFillRaw), Color.blue(bubbleFillRaw))
+                    stroke.color = Color.argb(alphaInt, 15, 23, 42)
+                    stroke.strokeWidth = (3.5f * s).coerceAtLeast(2f)
+                    val top = centerOffsetY - halfH
+                    val bottom = centerOffsetY + halfH
+                    scratch.rect.set(-halfW, top, halfW, bottom)
+                    val corner = (22f * s).coerceAtLeast(10f)
+                    canvas.drawRoundRect(scratch.rect, corner, corner, fill)
+                    canvas.drawRoundRect(scratch.rect, corner, corner, stroke)
+
+                    // Speech pointer tail
+                    val tail = scratch.path
+                    tail.reset()
+                    tail.moveTo(-halfW * 0.28f, bottom - 2f * s)
+                    tail.lineTo(-halfW * 0.44f, bottom + halfH * 0.62f)
+                    tail.lineTo(-halfW * 0.04f, bottom - 2f * s)
+                    tail.close()
+                    canvas.drawPath(tail, fill)
+                    canvas.drawLine(-halfW * 0.28f, bottom, -halfW * 0.44f, bottom + halfH * 0.62f, stroke)
+                    canvas.drawLine(-halfW * 0.44f, bottom + halfH * 0.62f, -halfW * 0.04f, bottom, stroke)
+                }
+                TextBubbleStyle.THOUGHT -> {
+                    fill.color = Color.argb(alphaInt, Color.red(bubbleFillRaw), Color.green(bubbleFillRaw), Color.blue(bubbleFillRaw))
+                    stroke.color = Color.argb(alphaInt, 30, 41, 59)
+                    stroke.strokeWidth = (3f * s).coerceAtLeast(1.8f)
+
+                    // Cloud perimeter puffs (stroke behind, clean white fill in front)
+                    val puffCount = 10
+                    val rx = halfW * 1.06f
+                    val ry = halfH * 1.12f
+                    val puffR = (halfH * 0.56f).coerceAtLeast(14f * s)
+                    for (i in 0 until puffCount) {
+                        val ang = (i.toFloat() / puffCount) * (2f * PI.toFloat())
+                        val px = cos(ang) * (rx * 0.78f)
+                        val py = centerOffsetY + sin(ang) * (ry * 0.70f)
+                        canvas.drawCircle(px, py, puffR, stroke)
+                    }
+                    for (i in 0 until puffCount) {
+                        val ang = (i.toFloat() / puffCount) * (2f * PI.toFloat())
+                        val px = cos(ang) * (rx * 0.78f)
+                        val py = centerOffsetY + sin(ang) * (ry * 0.70f)
+                        canvas.drawCircle(px, py, puffR - stroke.strokeWidth * 0.45f, fill)
+                    }
+                    scratch.rect.set(-halfW * 0.85f, centerOffsetY - halfH * 0.82f, halfW * 0.85f, centerOffsetY + halfH * 0.82f)
+                    canvas.drawOval(scratch.rect, fill)
+
+                    // Descending thought bubbles
+                    val r1 = (9f * s).coerceAtLeast(5f)
+                    val r2 = (6f * s).coerceAtLeast(3.5f)
+                    val d1x = -halfW * 0.34f
+                    val d1y = centerOffsetY + halfH + r1 * 1.5f
+                    val d2x = -halfW * 0.48f
+                    val d2y = d1y + r1 * 1.7f
+                    canvas.drawCircle(d1x, d1y, r1, fill)
+                    canvas.drawCircle(d1x, d1y, r1, stroke)
+                    canvas.drawCircle(d2x, d2y, r2, fill)
+                    canvas.drawCircle(d2x, d2y, r2, stroke)
+                }
+                TextBubbleStyle.SHOUT -> {
+                    fill.color = Color.argb(alphaInt, Color.red(bubbleFillRaw), Color.green(bubbleFillRaw), Color.blue(bubbleFillRaw))
+                    stroke.color = Color.argb(alphaInt, 15, 23, 42)
+                    stroke.strokeWidth = (4f * s).coerceAtLeast(2.2f)
+                    val spikes = 16
+                    val path = scratch.path
+                    path.reset()
+                    for (i in 0 until spikes * 2) {
+                        val isOuter = i % 2 == 0
+                        val ang = (i.toFloat() / (spikes * 2)) * (2f * PI.toFloat())
+                        val mult = if (isOuter) 1.32f else 0.94f
+                        val px = cos(ang) * halfW * mult
+                        val py = centerOffsetY + sin(ang) * halfH * (if (isOuter) 1.48f else 0.98f)
+                        if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                    }
+                    path.close()
+                    canvas.drawPath(path, fill)
+                    canvas.drawPath(path, stroke)
+                }
+                TextBubbleStyle.SUBTITLE -> {
+                    val subAlpha = (alphaInt * 0.78f).toInt().coerceIn(0, 220)
+                    fill.color = Color.argb(subAlpha, 10, 14, 22)
+                    scratch.rect.set(-halfW * 1.08f, centerOffsetY - halfH * 0.85f, halfW * 1.08f, centerOffsetY + halfH * 0.85f)
+                    canvas.drawRoundRect(scratch.rect, 10f * s, 10f * s, fill)
+                }
+                TextBubbleStyle.NONE -> Unit
+            }
+        }
+
+        if (bubbleStyle == TextBubbleStyle.NONE || bubbleStyle == TextBubbleStyle.SUBTITLE) {
+            val shadowPaint = scratch.textShadowPaint
+            shadowPaint.color = Color.argb((alphaInt * 0.65f).toInt(), 0, 0, 0)
+            shadowPaint.textSize = textSizePx
+            canvas.drawText(text, 2.5f * s, 2.5f * s, shadowPaint)
+        }
         canvas.drawText(text, 0f, 0f, paint)
     }
 
@@ -638,7 +832,7 @@ class SceneRenderer(
         tintOverlay: Int?,
         scratch: RenderScratch
     ) {
-        val alphaInt = (alpha * 255).toInt()
+        val alphaInt = (alpha * 255).toInt().coerceIn(0, 255)
         val minDim = min(w, h)
         val paint = scratch.strokePaint
         for (strokeData in clip.drawingStrokes) {
@@ -647,6 +841,7 @@ class SceneRenderer(
                 strokeId = strokeData.id,
                 pointCount = strokeData.points.size,
                 colorHex = strokeData.colorHex,
+                brushStyle = strokeData.brushStyle,
                 width = intW,
                 height = intH
             )
@@ -665,9 +860,46 @@ class SceneRenderer(
                 strokeCache.put(key, cached)
             }
             val col = tintOverlay ?: cached.colorInt
-            paint.strokeWidth = (strokeData.strokeWidthRatio * minDim).coerceAtLeast(3f)
-            paint.color = Color.argb(alphaInt, Color.red(col), Color.green(col), Color.blue(col))
-            canvas.drawPath(cached.path, paint)
+            val baseWidth = (strokeData.strokeWidthRatio * minDim).coerceAtLeast(3f)
+            val r = Color.red(col)
+            val g = Color.green(col)
+            val b = Color.blue(col)
+
+            when (strokeData.brushStyle) {
+                BrushStyle.SOLID -> {
+                    paint.pathEffect = null
+                    paint.strokeWidth = baseWidth
+                    paint.color = Color.argb(alphaInt, r, g, b)
+                    canvas.drawPath(cached.path, paint)
+                }
+                BrushStyle.NEON_GLOW -> {
+                    paint.pathEffect = null
+                    // 3-layer luminous neon bloom (outer halo -> mid glow -> hot white-tinted core)
+                    paint.strokeWidth = baseWidth * 3.2f
+                    paint.color = Color.argb((alphaInt * 0.22f).toInt(), r, g, b)
+                    canvas.drawPath(cached.path, paint)
+
+                    paint.strokeWidth = baseWidth * 1.85f
+                    paint.color = Color.argb((alphaInt * 0.52f).toInt(), r, g, b)
+                    canvas.drawPath(cached.path, paint)
+
+                    paint.strokeWidth = (baseWidth * 0.72f).coerceAtLeast(2f)
+                    val cr = (r + (255 - r) * 0.72f).toInt().coerceIn(0, 255)
+                    val cg = (g + (255 - g) * 0.72f).toInt().coerceIn(0, 255)
+                    val cb = (b + (255 - b) * 0.72f).toInt().coerceIn(0, 255)
+                    paint.color = Color.argb(alphaInt, cr, cg, cb)
+                    canvas.drawPath(cached.path, paint)
+                }
+                BrushStyle.SKETCH_DASHED -> {
+                    val dashLen = (baseWidth * 2.4f).coerceAtLeast(8f)
+                    val gapLen = (baseWidth * 1.6f).coerceAtLeast(6f)
+                    paint.pathEffect = DashPathEffect(floatArrayOf(dashLen, gapLen), 0f)
+                    paint.strokeWidth = baseWidth
+                    paint.color = Color.argb(alphaInt, r, g, b)
+                    canvas.drawPath(cached.path, paint)
+                    paint.pathEffect = null
+                }
+            }
         }
     }
 
@@ -755,7 +987,7 @@ class SceneRenderer(
         val basePose = ProceduralRigRenderer.computePose(clip.animationPresetType, phase)
         val posed = basePose.withOffsets(eval.poseOffsets, eval.expressionOverride ?: clip.facialExpression)
 
-        val handles = PropAndModularChartRenderer.computeStageIkHandles(
+        val (handles, anchors) = IkRigSolver.computeStageIkHandlesWithAnchors(
             clip = clip,
             rig = rig,
             transform = eval,
@@ -766,51 +998,177 @@ class SceneRenderer(
 
         val byId = handles.associateBy { it.id }
         val linkPaint = scratch.strokePaint
-        linkPaint.strokeWidth = 2.8f
-        linkPaint.color = 0xAA38BDF8.toInt()
+        linkPaint.pathEffect = null
+        val fill = scratch.fillPaint
+        val scaleRef = (min(w, h) / 720f).coerceIn(0.65f, 1.5f)
 
-        fun drawLink(a: IkHandleId, b: IkHandleId) {
-            val ha = byId[a] ?: return
-            val hb = byId[b] ?: return
-            canvas.drawLine(ha.nx * w, ha.ny * h, hb.nx * w, hb.ny * h, linkPaint)
+        fun drawTaperedBone(x1: Float, y1: Float, x2: Float, y2: Float, color: Int, isHighlighted: Boolean) {
+            val dx = x2 - x1
+            val dy = y2 - y1
+            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+            if (len < 2f) return
+            val nx = -dy / len
+            val ny = dx / len
+            val halfW = (if (isHighlighted) 5.2f else 3.6f) * scaleRef
+            val mx = x1 + dx * 0.24f
+            val my = y1 + dy * 0.24f
+
+            val bonePath = scratch.path
+            bonePath.reset()
+            bonePath.moveTo(x1, y1)
+            bonePath.lineTo(mx + nx * halfW, my + ny * halfW)
+            bonePath.lineTo(x2, y2)
+            bonePath.lineTo(mx - nx * halfW, my - ny * halfW)
+            bonePath.close()
+
+            fill.color = Color.argb(if (isHighlighted) 145 else 88, Color.red(color), Color.green(color), Color.blue(color))
+            canvas.drawPath(bonePath, fill)
+            linkPaint.strokeWidth = (if (isHighlighted) 2.4f else 1.6f) * scaleRef
+            linkPaint.color = Color.argb(if (isHighlighted) 245 else 185, Color.red(color), Color.green(color), Color.blue(color))
+            canvas.drawPath(bonePath, linkPaint)
         }
 
-        drawLink(IkHandleId.TORSO, IkHandleId.HEAD)
-        drawLink(IkHandleId.TORSO, IkHandleId.LEFT_ELBOW)
-        drawLink(IkHandleId.LEFT_ELBOW, IkHandleId.LEFT_HAND)
-        drawLink(IkHandleId.TORSO, IkHandleId.RIGHT_ELBOW)
-        drawLink(IkHandleId.RIGHT_ELBOW, IkHandleId.RIGHT_HAND)
-        drawLink(IkHandleId.TORSO, IkHandleId.LEFT_FOOT)
-        drawLink(IkHandleId.TORSO, IkHandleId.RIGHT_FOOT)
+        val torso = byId[IkHandleId.TORSO]
+        val head = byId[IkHandleId.HEAD]
+        val lElbow = byId[IkHandleId.LEFT_ELBOW]
+        val lHand = byId[IkHandleId.LEFT_HAND]
+        val rElbow = byId[IkHandleId.RIGHT_ELBOW]
+        val rHand = byId[IkHandleId.RIGHT_HAND]
+        val lKnee = byId[IkHandleId.LEFT_KNEE]
+        val lFoot = byId[IkHandleId.LEFT_FOOT]
+        val rKnee = byId[IkHandleId.RIGHT_KNEE]
+        val rFoot = byId[IkHandleId.RIGHT_FOOT]
 
-        val fill = scratch.fillPaint
+        // Spine & clavicle/pelvis structural cage
+        if (torso != null) {
+            val tx = torso.nx * w
+            val ty = torso.ny * h
+            val nkx = anchors.neckNx * w
+            val nky = anchors.neckNy * h
+            drawTaperedBone(tx, ty, nkx, nky, 0xFF10B981.toInt(), activeIkHandle == IkHandleId.TORSO)
+            if (head != null) {
+                drawTaperedBone(nkx, nky, head.nx * w, head.ny * h, 0xFF38BDF8.toInt(), activeIkHandle == IkHandleId.HEAD)
+            }
+
+            // Shoulders & Arms
+            val lsx = anchors.leftShoulderNx * w
+            val lsy = anchors.leftShoulderNy * h
+            val rsx = anchors.rightShoulderNx * w
+            val rsy = anchors.rightShoulderNy * h
+            linkPaint.strokeWidth = 2.0f * scaleRef
+            linkPaint.color = 0x9994A3B8.toInt()
+            canvas.drawLine(lsx, lsy, rsx, rsy, linkPaint)
+            if (lElbow != null) {
+                val activeLArm = activeIkHandle == IkHandleId.LEFT_ELBOW || activeIkHandle == IkHandleId.LEFT_HAND
+                drawTaperedBone(lsx, lsy, lElbow.nx * w, lElbow.ny * h, 0xFFF59E0B.toInt(), activeLArm)
+                if (lHand != null) {
+                    drawTaperedBone(lElbow.nx * w, lElbow.ny * h, lHand.nx * w, lHand.ny * h, 0xFFFB923C.toInt(), activeIkHandle == IkHandleId.LEFT_HAND)
+                }
+            }
+            if (rElbow != null) {
+                val activeRArm = activeIkHandle == IkHandleId.RIGHT_ELBOW || activeIkHandle == IkHandleId.RIGHT_HAND
+                drawTaperedBone(rsx, rsy, rElbow.nx * w, rElbow.ny * h, 0xFFEC4899.toInt(), activeRArm)
+                if (rHand != null) {
+                    drawTaperedBone(rElbow.nx * w, rElbow.ny * h, rHand.nx * w, rHand.ny * h, 0xFFF472B6.toInt(), activeIkHandle == IkHandleId.RIGHT_HAND)
+                }
+            }
+
+            // Hips & Legs (Hip -> Knee -> Foot)
+            val lhx = anchors.leftHipNx * w
+            val lhy = anchors.leftHipNy * h
+            val rhx = anchors.rightHipNx * w
+            val rhy = anchors.rightHipNy * h
+            linkPaint.strokeWidth = 2.0f * scaleRef
+            linkPaint.color = 0x9994A3B8.toInt()
+            canvas.drawLine(lhx, lhy, rhx, rhy, linkPaint)
+            if (lKnee != null) {
+                val activeLLeg = activeIkHandle == IkHandleId.LEFT_KNEE || activeIkHandle == IkHandleId.LEFT_FOOT
+                drawTaperedBone(lhx, lhy, lKnee.nx * w, lKnee.ny * h, 0xFF8B5CF6.toInt(), activeLLeg)
+                if (lFoot != null) {
+                    drawTaperedBone(lKnee.nx * w, lKnee.ny * h, lFoot.nx * w, lFoot.ny * h, 0xFFA78BFA.toInt(), activeIkHandle == IkHandleId.LEFT_FOOT)
+                }
+            }
+            if (rKnee != null) {
+                val activeRLeg = activeIkHandle == IkHandleId.RIGHT_KNEE || activeIkHandle == IkHandleId.RIGHT_FOOT
+                drawTaperedBone(rhx, rhy, rKnee.nx * w, rKnee.ny * h, 0xFF14B8A6.toInt(), activeRLeg)
+                if (rFoot != null) {
+                    drawTaperedBone(rKnee.nx * w, rKnee.ny * h, rFoot.nx * w, rFoot.ny * h, 0xFF34D399.toInt(), activeIkHandle == IkHandleId.RIGHT_FOOT)
+                }
+            }
+
+            // Small pivot pins at shoulders & hips
+            fill.color = 0xDDE2E8F0.toInt()
+            val pinR = 3.2f * scaleRef
+            canvas.drawCircle(lsx, lsy, pinR, fill)
+            canvas.drawCircle(rsx, rsy, pinR, fill)
+            canvas.drawCircle(lhx, lhy, pinR, fill)
+            canvas.drawCircle(rhx, rhy, pinR, fill)
+        }
+
         val ring = scratch.strokePaint
+        ring.pathEffect = null
         val labelPaint = scratch.textPaint
-        labelPaint.textSize = (min(w, h) * 0.022f).coerceIn(14f, 22f)
+        labelPaint.textSize = (min(w, h) * 0.022f).coerceIn(13f, 22f)
 
         for (hnd in handles) {
             val px = hnd.nx * w
             val py = hnd.ny * h
             val isActive = hnd.id == activeIkHandle
-            val radius = if (isActive) 13f else 9.5f
+            val isEndEffector = hnd.id == IkHandleId.HEAD ||
+                hnd.id == IkHandleId.LEFT_HAND ||
+                hnd.id == IkHandleId.RIGHT_HAND ||
+                hnd.id == IkHandleId.LEFT_FOOT ||
+                hnd.id == IkHandleId.RIGHT_FOOT
+            val baseR = (if (isEndEffector) 10.5f else 8.2f) * scaleRef
+            val radius = if (isActive) baseR * 1.38f else baseR
 
-            // Outer glow
-            fill.color = Color.argb(if (isActive) 110 else 65, Color.red(hnd.color), Color.green(hnd.color), Color.blue(hnd.color))
-            canvas.drawCircle(px, py, radius + 6f, fill)
+            // Soft outer halo
+            fill.color = Color.argb(if (isActive) 130 else 65, Color.red(hnd.color), Color.green(hnd.color), Color.blue(hnd.color))
+            canvas.drawCircle(px, py, radius + 6.5f * scaleRef, fill)
 
-            // Handle core
-            fill.color = hnd.color
-            canvas.drawCircle(px, py, radius, fill)
+            if (isEndEffector) {
+                // Target ring style for IK end-effectors (Hands, Feet, Head)
+                fill.color = 0xE60B1120.toInt()
+                canvas.drawCircle(px, py, radius, fill)
+                fill.color = hnd.color
+                canvas.drawCircle(px, py, radius * 0.52f, fill)
+                ring.strokeWidth = (if (isActive) 3.4f else 2.5f) * scaleRef
+                ring.color = if (isActive) Color.WHITE else hnd.color
+                canvas.drawCircle(px, py, radius, ring)
+                if (isActive) {
+                    ring.strokeWidth = 1.8f * scaleRef
+                    ring.color = Color.argb(210, 255, 255, 255)
+                    canvas.drawCircle(px, py, radius + 5f * scaleRef, ring)
+                }
+            } else {
+                // Sleek rotated diamond for mid-joints (Elbows, Knees, Torso)
+                val dPath = scratch.path
+                dPath.reset()
+                dPath.moveTo(px, py - radius)
+                dPath.lineTo(px + radius, py)
+                dPath.lineTo(px, py + radius)
+                dPath.lineTo(px - radius, py)
+                dPath.close()
+                fill.color = hnd.color
+                canvas.drawPath(dPath, fill)
+                ring.strokeWidth = (if (isActive) 2.8f else 2.0f) * scaleRef
+                ring.color = Color.WHITE
+                canvas.drawPath(dPath, ring)
+            }
 
-            // Crisp white ring
-            ring.strokeWidth = if (isActive) 3.2f else 2.2f
-            ring.color = Color.WHITE
-            canvas.drawCircle(px, py, radius, ring)
-
-            // Label pill above active or primary hand/head handles
+            // Crisp pill label above active handle or primary end-effectors
             if (isActive || hnd.id == IkHandleId.HEAD || hnd.id == IkHandleId.LEFT_HAND || hnd.id == IkHandleId.RIGHT_HAND) {
-                labelPaint.color = Color.WHITE
-                canvas.drawText(hnd.id.label, px, py - radius - 8f, labelPaint)
+                val labelText = hnd.id.label
+                val tw = labelPaint.measureText(labelText)
+                val pillPadX = 6f * scaleRef
+                val pillH = labelPaint.textSize + 6f * scaleRef
+                val pillBottom = py - radius - 6f * scaleRef
+                val pillTop = pillBottom - pillH
+                scratch.rect.set(px - tw * 0.5f - pillPadX, pillTop, px + tw * 0.5f + pillPadX, pillBottom)
+                fill.color = if (isActive) Color.argb(235, Color.red(hnd.color), Color.green(hnd.color), Color.blue(hnd.color)) else 0xC80F172A.toInt()
+                canvas.drawRoundRect(scratch.rect, pillH * 0.5f, pillH * 0.5f, fill)
+                labelPaint.color = if (isActive) 0xFF0A0D12.toInt() else Color.WHITE
+                canvas.drawText(labelText, px, pillBottom - 5f * scaleRef, labelPaint)
             }
         }
     }

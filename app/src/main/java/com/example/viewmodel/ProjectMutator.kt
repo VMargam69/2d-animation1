@@ -1,5 +1,6 @@
 package com.example.viewmodel
 
+import com.example.engine.FacialExpressionEngine
 import com.example.engine.KeyframeEvaluator
 import com.example.model.*
 import java.util.UUID
@@ -255,17 +256,20 @@ object ProjectMutator {
         text: String,
         colorHex: String,
         sizeSp: Float,
-        startFrame: Int
+        startFrame: Int,
+        bubbleStyle: TextBubbleStyle = TextBubbleStyle.NONE,
+        bubbleFillHex: String = "#FFFFFF"
     ): Pair<ProjectDocument, String> {
         val clipId = UUID.randomUUID().toString()
         val cleanText = text.trim().ifBlank { "Title" }
         val updated = updateActiveScene(project) { scene ->
             val layer = AnimationLayer(
-                name = "Text: ${cleanText.take(12)}",
+                name = if (bubbleStyle == TextBubbleStyle.NONE) "Text: ${cleanText.take(12)}" else "${bubbleStyle.displayName}: ${cleanText.take(10)}",
                 type = LayerType.TEXT,
                 orderIndex = (scene.layers.maxOfOrNull { it.orderIndex } ?: -1) + 1
             )
             val dur = (scene.durationFrames - startFrame).coerceAtLeast(48)
+            val defaultY = if (bubbleStyle == TextBubbleStyle.SUBTITLE) 0.86f else 0.24f
             val clip = TimelineClip(
                 id = clipId,
                 layerId = layer.id,
@@ -275,7 +279,9 @@ object ProjectMutator {
                 textContent = cleanText,
                 textColorHex = colorHex,
                 textSizeSp = sizeSp,
-                keyframes = listOf(TransformKeyframe(frame = 0, x = 0.5f, y = 0.22f))
+                textBubbleStyle = bubbleStyle,
+                textBubbleFillHex = bubbleFillHex,
+                keyframes = listOf(TransformKeyframe(frame = 0, x = 0.5f, y = defaultY))
             )
             scene.copy(layers = scene.layers + layer, clips = scene.clips + clip)
         }
@@ -321,6 +327,50 @@ object ProjectMutator {
         return updated to targetClipId
     }
 
+    fun undoLastDrawingStroke(
+        project: ProjectDocument,
+        currentFrame: Int
+    ): Pair<ProjectDocument, Boolean> {
+        var removed = false
+        val updated = updateActiveScene(project) { scene ->
+            val layer = scene.layers.firstOrNull { it.type == LayerType.DRAWING && !it.isLocked }
+                ?: return@updateActiveScene scene
+            val targetClip = scene.clips.firstOrNull {
+                it.layerId == layer.id && currentFrame in it.startFrame until it.endFrame && it.drawingStrokes.isNotEmpty()
+            } ?: scene.clips.lastOrNull { it.layerId == layer.id && it.drawingStrokes.isNotEmpty() }
+                ?: return@updateActiveScene scene
+            removed = true
+            scene.copy(
+                clips = scene.clips.map { c ->
+                    if (c.id == targetClip.id) c.copy(drawingStrokes = c.drawingStrokes.dropLast(1)) else c
+                }
+            )
+        }
+        return updated to removed
+    }
+
+    fun clearDrawingStrokes(
+        project: ProjectDocument,
+        currentFrame: Int
+    ): Pair<ProjectDocument, Boolean> {
+        var cleared = false
+        val updated = updateActiveScene(project) { scene ->
+            val layer = scene.layers.firstOrNull { it.type == LayerType.DRAWING && !it.isLocked }
+                ?: return@updateActiveScene scene
+            val targetClip = scene.clips.firstOrNull {
+                it.layerId == layer.id && currentFrame in it.startFrame until it.endFrame && it.drawingStrokes.isNotEmpty()
+            } ?: scene.clips.lastOrNull { it.layerId == layer.id && it.drawingStrokes.isNotEmpty() }
+                ?: return@updateActiveScene scene
+            cleared = true
+            scene.copy(
+                clips = scene.clips.map { c ->
+                    if (c.id == targetClip.id) c.copy(drawingStrokes = emptyList()) else c
+                }
+            )
+        }
+        return updated to cleared
+    }
+
     fun upsertKeyframeAtFrame(
         project: ProjectDocument,
         clipId: String,
@@ -344,7 +394,10 @@ object ProjectMutator {
                 scaleY = eval.scaleY,
                 opacity = eval.opacity,
                 poseOffsets = eval.poseOffsets,
-                expressionOverride = eval.expressionOverride
+                expressionOverride = eval.expressionOverride,
+                facialPresetId = eval.facialPresetId,
+                handPoseOverride = eval.handPoseOverride,
+                blinkOverride = eval.blinkOverride
             )
         }
         val nextKf = transformUpdater(base)
@@ -352,6 +405,71 @@ object ProjectMutator {
         scene.copy(
             clips = scene.clips.map { if (it.id == clipId) it.copy(keyframes = merged) else it }
         )
+    }
+
+    /**
+     * Drops an algorithmic facial expression preset onto a Character layer/clip at [globalFrame],
+     * automatically inserting an organic expression keyframe with EASE_IN_OUT timing and
+     * returning the updated project paired with the affected clip ID (or null if layer is invalid/locked).
+     */
+    fun dropFacialExpressionPreset(
+        project: ProjectDocument,
+        layerId: String,
+        clipId: String?,
+        globalFrame: Int,
+        presetId: String
+    ): Pair<ProjectDocument, String?> {
+        val preset = FacialExpressionEngine.presetById(presetId) ?: return project to null
+        var affectedClipId: String? = null
+        val updated = updateActiveScene(project) { scene ->
+            val layer = scene.layers.firstOrNull { it.id == layerId }
+            if (layer == null || layer.type != LayerType.CHARACTER || layer.isLocked) {
+                return@updateActiveScene scene
+            }
+            val layerClips = scene.clips.filter { it.layerId == layer.id && it.characterId != null }
+            val targetClip = (clipId?.let { id -> layerClips.firstOrNull { it.id == id } })
+                ?: layerClips.firstOrNull { globalFrame in it.startFrame until it.endFrame }
+                ?: layerClips.minByOrNull { kotlin.math.abs(it.startFrame - globalFrame) }
+                ?: return@updateActiveScene scene
+
+            affectedClipId = targetClip.id
+            val clampedGlobal = globalFrame.coerceIn(
+                targetClip.startFrame,
+                (targetClip.endFrame - 1).coerceAtLeast(targetClip.startFrame)
+            )
+            val localFrame = (clampedGlobal - targetClip.startFrame)
+                .coerceIn(0, (targetClip.durationFrames - 1).coerceAtLeast(0))
+
+            val existing = targetClip.keyframes.firstOrNull { it.frame == localFrame }
+            val eval = KeyframeEvaluator.evaluate(targetClip, clampedGlobal)
+            val baseKf = existing ?: TransformKeyframe(
+                frame = localFrame,
+                x = eval.x,
+                y = eval.y,
+                rotation = eval.rotation,
+                scaleX = eval.scaleX,
+                scaleY = eval.scaleY,
+                opacity = eval.opacity,
+                easing = EasingType.EASE_IN_OUT,
+                poseOffsets = eval.poseOffsets,
+                handPoseOverride = eval.handPoseOverride
+            )
+            val updatedKf = baseKf.copy(
+                easing = EasingType.EASE_IN_OUT,
+                expressionOverride = preset.baseExpression,
+                facialPresetId = preset.id,
+                blinkOverride = null
+            )
+            val merged = (targetClip.keyframes.filterNot { it.frame == localFrame } + updatedKf)
+                .sortedBy { it.frame }
+
+            scene.copy(
+                clips = scene.clips.map { c ->
+                    if (c.id == targetClip.id) c.copy(keyframes = merged) else c
+                }
+            )
+        }
+        return updated to affectedClipId
     }
 
     fun toggleKeyframeAtFrame(
@@ -378,7 +496,10 @@ object ProjectMutator {
                 scaleY = eval.scaleY,
                 opacity = eval.opacity,
                 poseOffsets = eval.poseOffsets,
-                expressionOverride = eval.expressionOverride
+                expressionOverride = eval.expressionOverride,
+                facialPresetId = eval.facialPresetId,
+                handPoseOverride = eval.handPoseOverride,
+                blinkOverride = eval.blinkOverride
             )).sortedBy { it.frame }
         } else {
             clip.keyframes
@@ -444,7 +565,10 @@ object ProjectMutator {
                     scaleY = evalAtSplit.scaleY,
                     opacity = evalAtSplit.opacity,
                     poseOffsets = evalAtSplit.poseOffsets,
-                    expressionOverride = evalAtSplit.expressionOverride
+                    expressionOverride = evalAtSplit.expressionOverride,
+                    facialPresetId = evalAtSplit.facialPresetId,
+                    handPoseOverride = evalAtSplit.handPoseOverride,
+                    blinkOverride = evalAtSplit.blinkOverride
                 )
             )
         }
@@ -458,7 +582,10 @@ object ProjectMutator {
                 scaleY = evalAtSplit.scaleY,
                 opacity = evalAtSplit.opacity,
                 poseOffsets = evalAtSplit.poseOffsets,
-                expressionOverride = evalAtSplit.expressionOverride
+                expressionOverride = evalAtSplit.expressionOverride,
+                facialPresetId = evalAtSplit.facialPresetId,
+                handPoseOverride = evalAtSplit.handPoseOverride,
+                blinkOverride = evalAtSplit.blinkOverride
             )
         ) + clip.keyframes.filter { it.frame > splitLocal }.map { it.copy(frame = it.frame - splitLocal) })
             .distinctBy { it.frame }
@@ -514,4 +641,145 @@ object ProjectMutator {
             val reindexed = sorted.mapIndexed { i, l -> l.copy(orderIndex = i) }
             scene.copy(layers = reindexed)
         }
+
+    /**
+     * Deep-clones the active scene with fresh UUIDs for scene, layers, and clips,
+     * remapping layerId and cameraFocusClipId references, and switches to the copy.
+     */
+    fun duplicateActiveScene(project: ProjectDocument): ProjectDocument {
+        if (project.scenes.isEmpty()) return project
+        val idx = project.activeSceneIndex.coerceIn(0, project.scenes.lastIndex)
+        val source = project.scenes[idx]
+
+        val layerIdMap = HashMap<String, String>(source.layers.size)
+        val clonedLayers = source.layers.map { layer ->
+            val newId = UUID.randomUUID().toString()
+            layerIdMap[layer.id] = newId
+            layer.copy(id = newId)
+        }
+        val clipIdMap = HashMap<String, String>(source.clips.size)
+        val clonedClips = source.clips.map { clip ->
+            val newId = UUID.randomUUID().toString()
+            clipIdMap[clip.id] = newId
+            clip.copy(
+                id = newId,
+                layerId = layerIdMap[clip.layerId] ?: clip.layerId,
+                drawingStrokes = clip.drawingStrokes.map { st -> st.copy(id = UUID.randomUUID().toString()) }
+            )
+        }
+        val baseTitle = source.name.removeSuffix(" Copy").trim().ifBlank { "Scene ${idx + 1}" }
+        val clonedScene = source.copy(
+            id = UUID.randomUUID().toString(),
+            name = "$baseTitle Copy",
+            cameraFocusClipId = source.cameraFocusClipId?.let { clipIdMap[it] },
+            layers = clonedLayers,
+            clips = clonedClips
+        )
+        val nextScenes = project.scenes.toMutableList().apply { add(idx + 1, clonedScene) }
+        return project.copy(
+            scenes = nextScenes,
+            activeSceneIndex = idx + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Stamps a 1-tap expressive multi-keyframe motion preset onto [clipId] starting at [startGlobalFrame].
+     */
+    fun applyQuickMotionPreset(
+        project: ProjectDocument,
+        clipId: String,
+        startGlobalFrame: Int,
+        presetId: String
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val clip = scene.clips.firstOrNull { it.id == clipId } ?: return@updateActiveScene scene
+        val layer = scene.layers.firstOrNull { it.id == clip.layerId }
+        if (layer?.isLocked == true) return@updateActiveScene scene
+
+        val maxLocal = (clip.durationFrames - 1).coerceAtLeast(1)
+        val f0 = (startGlobalFrame - clip.startFrame).coerceIn(0, (maxLocal - 12).coerceAtLeast(0))
+        val span = (maxLocal - f0).coerceIn(12, 48)
+        val fMid = (f0 + span / 2).coerceAtMost(maxLocal)
+        val fEnd = (f0 + span).coerceAtMost(maxLocal)
+        val base = KeyframeEvaluator.evaluate(clip, clip.startFrame + f0)
+
+        val generated: List<TransformKeyframe> = when (presetId) {
+            "bounce_in" -> listOf(
+                TransformKeyframe(frame = f0, x = base.x, y = 0.14f, scaleX = base.scaleX * 0.85f, scaleY = base.scaleY * 1.15f, opacity = 0.25f, easing = EasingType.BOUNCE),
+                TransformKeyframe(frame = fEnd, x = base.x, y = base.y, scaleX = base.scaleX, scaleY = base.scaleY, opacity = 1f, easing = EasingType.EASE_OUT)
+            )
+            "slide_overshoot" -> listOf(
+                TransformKeyframe(frame = f0, x = 0.12f, y = base.y, scaleX = base.scaleX, scaleY = base.scaleY, opacity = 0.4f, easing = EasingType.ELASTIC),
+                TransformKeyframe(frame = fEnd, x = base.x.coerceIn(0.32f, 0.82f), y = base.y, scaleX = base.scaleX, scaleY = base.scaleY, opacity = 1f, easing = EasingType.EASE_OUT)
+            )
+            "float_hover" -> listOf(
+                TransformKeyframe(frame = f0, x = base.x, y = base.y, rotation = -2f, scaleX = base.scaleX, scaleY = base.scaleY, easing = EasingType.EASE_IN_OUT),
+                TransformKeyframe(frame = fMid, x = base.x, y = (base.y - 0.10f).coerceAtLeast(0.12f), rotation = 2.5f, scaleX = base.scaleX, scaleY = base.scaleY, easing = EasingType.EASE_IN_OUT),
+                TransformKeyframe(frame = fEnd, x = base.x, y = base.y, rotation = 0f, scaleX = base.scaleX, scaleY = base.scaleY, easing = EasingType.EASE_IN_OUT)
+            )
+            "dash_across" -> listOf(
+                TransformKeyframe(frame = f0, x = 0.14f, y = base.y, rotation = -6f, scaleX = base.scaleX * 1.08f, scaleY = base.scaleY * 0.94f, easing = EasingType.EASE_IN),
+                TransformKeyframe(frame = fMid, x = 0.56f, y = (base.y - 0.04f).coerceAtLeast(0.15f), rotation = 4f, scaleX = base.scaleX * 1.04f, scaleY = base.scaleY * 0.96f, easing = EasingType.EASE_OUT),
+                TransformKeyframe(frame = fEnd, x = 0.84f, y = base.y, rotation = 0f, scaleX = base.scaleX, scaleY = base.scaleY, easing = EasingType.EASE_OUT)
+            )
+            "pop_scale" -> listOf(
+                TransformKeyframe(frame = f0, x = base.x, y = base.y, scaleX = base.scaleX * 0.22f, scaleY = base.scaleY * 0.22f, opacity = 0f, easing = EasingType.ELASTIC),
+                TransformKeyframe(frame = fEnd, x = base.x, y = base.y, scaleX = base.scaleX, scaleY = base.scaleY, opacity = 1f, easing = EasingType.EASE_OUT)
+            )
+            "hero_landing" -> listOf(
+                TransformKeyframe(frame = f0, x = base.x, y = 0.12f, rotation = -8f, scaleX = base.scaleX * 0.9f, scaleY = base.scaleY * 1.14f, easing = EasingType.EASE_IN),
+                TransformKeyframe(frame = fMid, x = base.x, y = (base.y + 0.03f).coerceAtMost(0.92f), rotation = 0f, scaleX = base.scaleX * 1.16f, scaleY = base.scaleY * 0.84f, easing = EasingType.BOUNCE),
+                TransformKeyframe(frame = fEnd, x = base.x, y = base.y, rotation = 0f, scaleX = base.scaleX, scaleY = base.scaleY, easing = EasingType.EASE_OUT)
+            )
+            else -> return@updateActiveScene scene
+        }
+
+        val generatedFrames = generated.map { it.frame }.toSet()
+        val merged = (clip.keyframes.filterNot { it.frame in generatedFrames } + generated).sortedBy { it.frame }
+        scene.copy(clips = scene.clips.map { if (it.id == clipId) it.copy(keyframes = merged) else it })
+    }
+
+    /**
+     * Stamps a 1-tap cinematic camera choreography sequence onto the active scene.
+     */
+    fun applyCinematicCameraPreset(
+        project: ProjectDocument,
+        startFrame: Int,
+        presetId: String
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val maxFrame = (scene.durationFrames - 1).coerceAtLeast(12)
+        val f0 = startFrame.coerceIn(0, (maxFrame - 12).coerceAtLeast(0))
+        val span = (maxFrame - f0).coerceIn(16, 72)
+        val fMid = (f0 + span / 2).coerceAtMost(maxFrame)
+        val fEnd = (f0 + span).coerceAtMost(maxFrame)
+
+        val keys: List<CameraKeyframe> = when (presetId) {
+            "push_in" -> listOf(
+                CameraKeyframe(frame = f0, x = 0.50f, y = 0.50f, zoom = 1.0f, rotation = 0f, easing = EasingType.EASE_IN_OUT),
+                CameraKeyframe(frame = fEnd, x = 0.50f, y = 0.46f, zoom = 1.36f, rotation = 0f, easing = EasingType.EASE_OUT)
+            )
+            "pull_out" -> listOf(
+                CameraKeyframe(frame = f0, x = 0.50f, y = 0.46f, zoom = 1.50f, rotation = 0f, easing = EasingType.EASE_OUT),
+                CameraKeyframe(frame = fEnd, x = 0.50f, y = 0.50f, zoom = 1.0f, rotation = 0f, easing = EasingType.EASE_IN_OUT)
+            )
+            "pan_lr" -> listOf(
+                CameraKeyframe(frame = f0, x = 0.36f, y = 0.50f, zoom = 1.28f, rotation = 0f, easing = EasingType.EASE_IN_OUT),
+                CameraKeyframe(frame = fEnd, x = 0.64f, y = 0.50f, zoom = 1.28f, rotation = 0f, easing = EasingType.EASE_IN_OUT)
+            )
+            "crash_zoom" -> listOf(
+                CameraKeyframe(frame = f0, x = 0.50f, y = 0.50f, zoom = 1.0f, rotation = 0f, easing = EasingType.ELASTIC),
+                CameraKeyframe(frame = (f0 + 18).coerceAtMost(maxFrame), x = 0.50f, y = 0.45f, zoom = 1.62f, rotation = -2.5f, easing = EasingType.EASE_OUT)
+            )
+            "dutch_sweep" -> listOf(
+                CameraKeyframe(frame = f0, x = 0.44f, y = 0.50f, zoom = 1.18f, rotation = -6.5f, easing = EasingType.EASE_IN_OUT),
+                CameraKeyframe(frame = fMid, x = 0.56f, y = 0.48f, zoom = 1.24f, rotation = 5.0f, easing = EasingType.EASE_IN_OUT),
+                CameraKeyframe(frame = fEnd, x = 0.50f, y = 0.50f, zoom = 1.06f, rotation = 0f, easing = EasingType.EASE_OUT)
+            )
+            else -> return@updateActiveScene scene
+        }
+
+        val replacedFrames = keys.map { it.frame }.toSet()
+        val merged = (scene.cameraKeyframes.filterNot { it.frame in replacedFrames } + keys).sortedBy { it.frame }
+        scene.copy(cameraKeyframes = merged)
+    }
 }

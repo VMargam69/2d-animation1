@@ -163,6 +163,7 @@ fun TransformInspectorDialog(
     onUpdateClip: (((TimelineClip) -> TimelineClip) -> Unit)? = null,
     isIkPosingMode: Boolean = false,
     onToggleIkPosingMode: (() -> Unit)? = null,
+    onOpenEasingCurveEditor: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val eval = remember(clip, currentFrame) { KeyframeEvaluator.evaluate(clip, currentFrame) }
@@ -223,13 +224,30 @@ fun TransformInspectorDialog(
                     }
                 }
 
-                Text("Keyframe Interpolation", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    EasingType.entries.forEach { easing ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Keyframe Interpolation", style = MaterialTheme.typography.labelLarge, color = StudioTextSecondary)
+                    if (onOpenEasingCurveEditor != null) {
+                        TextButton(
+                            onClick = onOpenEasingCurveEditor,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.testTag("inspector_open_curve_editor_btn")
+                        ) {
+                            Icon(Icons.Rounded.ShowChart, null, tint = ElectricCyan, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Curve Editor", color = ElectricCyan, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(EasingType.entries) { easing ->
                         FilterChip(
                             selected = currentEasing == easing,
                             onClick = { onUpdateTransform { it.copy(easing = easing) } },
-                            label = { Text(easing.displayName, style = MaterialTheme.typography.labelMedium) }
+                            label = { Text(easing.shortLabel, style = MaterialTheme.typography.labelMedium) }
                         )
                     }
                 }
@@ -651,8 +669,15 @@ fun CharacterActingAndPropsDialog(
                         FilterChip(
                             selected = activeExpression == expr,
                             onClick = {
+                                val mappedPresetId = if (expr == FacialExpression.AUTO) null
+                                    else com.example.engine.FacialExpressionEngine.presetForExpression(expr).id
                                 onUpdateClip { it.copy(facialExpression = expr) }
-                                onUpdateTransform { it.copy(expressionOverride = expr) }
+                                onUpdateTransform {
+                                    it.copy(
+                                        expressionOverride = expr,
+                                        facialPresetId = mappedPresetId
+                                    )
+                                }
                             },
                             label = { Text(expr.displayName) },
                             modifier = Modifier.testTag("expression_chip_${expr.name.lowercase()}")
@@ -773,11 +798,30 @@ fun CharacterActingAndPropsDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Secondary Motion Sway Physics", style = MaterialTheme.typography.bodyMedium, color = StudioTextPrimary)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Secondary Motion Sway Physics", style = MaterialTheme.typography.bodyMedium, color = StudioTextPrimary)
+                            Text(
+                                "Spring-pendulum physics for hand/head props & cape/scarf",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioTextMuted
+                            )
+                        }
                         Switch(
                             checked = clip.propSwayEnabled,
-                            onCheckedChange = { sway -> onUpdateClip { it.copy(propSwayEnabled = sway) } }
+                            onCheckedChange = { sway -> onUpdateClip { it.copy(propSwayEnabled = sway) } },
+                            modifier = Modifier.testTag("prop_sway_physics_switch")
                         )
+                    }
+
+                    if (clip.propSwayEnabled) {
+                        LabeledSlider(
+                            "Sway Physics Strength",
+                            clip.propSwayStrength,
+                            0.0f..2.0f,
+                            "${(clip.propSwayStrength * 100).toInt()}%"
+                        ) { v ->
+                            onUpdateClip { it.copy(propSwayStrength = v) }
+                        }
                     }
                 }
 
@@ -793,7 +837,9 @@ fun CharacterActingAndPropsDialog(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         OutlinedButton(
                             onClick = {
-                                onToggleIkPosingMode()
+                                if (!isIkPosingMode) {
+                                    onToggleIkPosingMode()
+                                }
                                 onDismiss()
                             },
                             border = BorderStroke(1.dp, ElectricCyan),
@@ -833,8 +879,14 @@ fun CharacterActingAndPropsDialog(
                 LabeledSlider("Right Leg Hip", pose.rightLegOffset, -110f..110f, "${pose.rightLegOffset.toInt()}°") { v ->
                     onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(rightLegOffset = v)) }
                 }
+                LabeledSlider("Right Knee Bend", pose.rightKneeOffset, -135f..135f, "${pose.rightKneeOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(rightKneeOffset = v)) }
+                }
                 LabeledSlider("Left Leg Hip", pose.leftLegOffset, -110f..110f, "${pose.leftLegOffset.toInt()}°") { v ->
                     onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(leftLegOffset = v)) }
+                }
+                LabeledSlider("Left Knee Bend", pose.leftKneeOffset, -135f..135f, "${pose.leftKneeOffset.toInt()}°") { v ->
+                    onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(leftKneeOffset = v)) }
                 }
             }
         },
@@ -860,6 +912,7 @@ fun CameraAndChromaKeyDialog(
     onDeleteCameraKeyframeAtFrame: () -> Unit,
     onResetAllCameraKeyframes: () -> Unit,
     onToggleCameraKeyMode: () -> Unit,
+    onApplyCinematicPreset: (presetId: String, label: String) -> Unit = { _, _ -> },
     onDismiss: () -> Unit
 ) {
     val evalCam = remember(scene, currentFrame) {
@@ -924,6 +977,39 @@ fun CameraAndChromaKeyDialog(
                             onClick = { onSetCameraFocusClip(clip.id) },
                             label = { Text("Track: ${clip.name.take(18)}") },
                             modifier = Modifier.testTag("camera_focus_clip_${clip.id}")
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 2.5. 1-Tap Cinematic Camera Presets
+                Text("1-Tap Cinematic Camera Presets", style = MaterialTheme.typography.labelLarge, color = AmberKeyframe)
+                val camPresets = remember {
+                    listOf(
+                        "push_in" to "Push-In",
+                        "pull_out" to "Pull-Out",
+                        "pan_lr" to "Pan L→R",
+                        "crash_zoom" to "Crash Zoom",
+                        "dutch_sweep" to "Dutch Sweep"
+                    )
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(camPresets) { (id, label) ->
+                        AssistChip(
+                            onClick = { onApplyCinematicPreset(id, label) },
+                            label = { Text(label, color = StudioTextPrimary, style = MaterialTheme.typography.labelMedium) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.MovieFilter,
+                                    contentDescription = label,
+                                    tint = AmberKeyframe,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(containerColor = StudioCard),
+                            border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.45f)),
+                            modifier = Modifier.testTag("camera_preset_$id")
                         )
                     }
                 }

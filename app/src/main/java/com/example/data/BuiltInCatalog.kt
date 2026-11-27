@@ -401,6 +401,46 @@ object BuiltInCatalog {
             tag = "Action",
             defaultDurationFrames = 44,
             description = "Rhythmic groove with alternating arm lifts and hip bounce."
+        ),
+        AnimationPreset(
+            id = "preset_fighting",
+            type = AnimationPresetType.FIGHTING,
+            name = "Fighting",
+            tag = "Action",
+            defaultDurationFrames = 30,
+            description = "Dynamic martial stance with alternating punches and springy footwork."
+        ),
+        AnimationPreset(
+            id = "preset_flying",
+            type = AnimationPresetType.FLYING,
+            name = "Flying",
+            tag = "Action",
+            defaultDurationFrames = 36,
+            description = "Airborne superhero soar with forward glide tilt and hover sway."
+        ),
+        AnimationPreset(
+            id = "preset_sleeping",
+            type = AnimationPresetType.SLEEPING,
+            name = "Sleeping",
+            tag = "Pose",
+            defaultDurationFrames = 60,
+            description = "Peaceful resting loop with slow breathing rise and gentle head droop."
+        ),
+        AnimationPreset(
+            id = "preset_clapping",
+            type = AnimationPresetType.CLAPPING,
+            name = "Clapping",
+            tag = "Gesture",
+            defaultDurationFrames = 28,
+            description = "Energetic applause cycle with rhythmic hand claps and happy bounce."
+        ),
+        AnimationPreset(
+            id = "preset_thinking",
+            type = AnimationPresetType.THINKING,
+            name = "Thinking",
+            tag = "Emotion",
+            defaultDurationFrames = 48,
+            description = "Contemplative chin-rest pose with subtle head tilt and curiosity blink."
         )
     )
 
@@ -594,6 +634,184 @@ object BuiltInCatalog {
                                         TransformKeyframe(frame = 0, x = 0.5f, y = 0.64f, scaleX = 1.15f, scaleY = 1.15f),
                                         TransformKeyframe(frame = 60, x = 0.5f, y = 0.56f, scaleX = 1.25f, scaleY = 1.25f, easing = EasingType.EASE_IN_OUT),
                                         TransformKeyframe(frame = 119, x = 0.5f, y = 0.64f, scaleX = 1.15f, scaleY = 1.15f, easing = EasingType.EASE_IN_OUT)
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            }
+        ),
+        SceneTemplate(
+            id = "tpl_vfx_neon_rain",
+            title = "Neon Rain Night",
+            subtitle = "16:9 VFX • Cyber rain, neon color grade, camera push-in & comic shout",
+            aspectRatio = AspectRatioPreset.RATIO_16_9,
+            buildProject = { projectName ->
+                val bgLayerId = UUID.randomUUID().toString()
+                val charLayerId = UUID.randomUUID().toString()
+                val textLayerId = UUID.randomUUID().toString()
+                ProjectDocument(
+                    name = projectName,
+                    width = 1280,
+                    height = 720,
+                    aspectRatioPreset = AspectRatioPreset.RATIO_16_9,
+                    fps = 24,
+                    scenes = listOf(
+                        AnimationScene(
+                            name = "Neon Rain",
+                            backgroundColorHex = "#0B1020",
+                            backgroundBundledKey = BG_CITY_TWILIGHT,
+                            vfxConfig = SceneVfxConfig(
+                                particleType = SceneParticleType.RAIN,
+                                particleIntensity = 0.78f,
+                                particleSpeed = 1.25f,
+                                lightingMood = SceneLightingMood.NEON_CYBER,
+                                vignetteIntensity = 0.48f,
+                                cameraShakeIntensity = 0.14f
+                            ),
+                            cameraKeyframes = listOf(
+                                CameraKeyframe(frame = 0, x = 0.50f, y = 0.50f, zoom = 1.0f, rotation = 0f, easing = EasingType.EASE_OUT),
+                                CameraKeyframe(frame = 110, x = 0.52f, y = 0.46f, zoom = 1.22f, rotation = -1.5f, easing = EasingType.EASE_IN_OUT)
+                            ),
+                            durationFrames = 144,
+                            layers = listOf(
+                                AnimationLayer(id = bgLayerId, name = "Background", type = LayerType.BACKGROUND, orderIndex = 0),
+                                AnimationLayer(id = charLayerId, name = "Alex Hero", type = LayerType.CHARACTER, orderIndex = 1),
+                                AnimationLayer(id = textLayerId, name = "Shout Bubble", type = LayerType.TEXT, orderIndex = 2)
+                            ),
+                            clips = listOf(
+                                TimelineClip(
+                                    layerId = bgLayerId,
+                                    name = "City Twilight",
+                                    startFrame = 0,
+                                    durationFrames = 144,
+                                    bundledBgKey = BG_CITY_TWILIGHT,
+                                    keyframes = listOf(TransformKeyframe(frame = 0, x = 0.5f, y = 0.5f))
+                                ),
+                                TimelineClip(
+                                    layerId = charLayerId,
+                                    name = "Alex • Fighting",
+                                    startFrame = 0,
+                                    durationFrames = 144,
+                                    characterId = "char_alex_western",
+                                    orientation = CharacterOrientation.THREE_QUARTER_FRONT,
+                                    animationPresetType = AnimationPresetType.FIGHTING,
+                                    keyframes = listOf(
+                                        TransformKeyframe(frame = 0, x = 0.28f, y = 0.70f, scaleX = 0.96f, scaleY = 0.96f, easing = EasingType.ELASTIC),
+                                        TransformKeyframe(frame = 48, x = 0.52f, y = 0.68f, scaleX = 1.08f, scaleY = 1.08f, easing = EasingType.BOUNCE),
+                                        TransformKeyframe(frame = 132, x = 0.56f, y = 0.68f, scaleX = 1.12f, scaleY = 1.12f, easing = EasingType.EASE_OUT)
+                                    )
+                                ),
+                                TimelineClip(
+                                    layerId = textLayerId,
+                                    name = "Comic Shout",
+                                    startFrame = 18,
+                                    durationFrames = 96,
+                                    textContent = "LET'S GO!",
+                                    textColorHex = "#0F172A",
+                                    textSizeSp = 30f,
+                                    textBubbleStyle = TextBubbleStyle.SHOUT,
+                                    textBubbleFillHex = "#FDE047",
+                                    transitionIn = TransitionType.ZOOM_POP,
+                                    transitionOut = TransitionType.FADE,
+                                    keyframes = listOf(
+                                        TransformKeyframe(frame = 0, x = 0.68f, y = 0.25f, scaleX = 0.9f, scaleY = 0.9f, easing = EasingType.BOUNCE),
+                                        TransformKeyframe(frame = 20, x = 0.68f, y = 0.23f, scaleX = 1.05f, scaleY = 1.05f, easing = EasingType.EASE_OUT)
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            }
+        ),
+        SceneTemplate(
+            id = "tpl_vfx_firefly_grove",
+            title = "Enchanted Firefly Grove",
+            subtitle = "16:9 VFX • Glowing fireflies, golden hour grade & thought/speech bubbles",
+            aspectRatio = AspectRatioPreset.RATIO_16_9,
+            buildProject = { projectName ->
+                val bgLayerId = UUID.randomUUID().toString()
+                val char1LayerId = UUID.randomUUID().toString()
+                val char2LayerId = UUID.randomUUID().toString()
+                val bubbleLayerId = UUID.randomUUID().toString()
+                ProjectDocument(
+                    name = projectName,
+                    width = 1280,
+                    height = 720,
+                    aspectRatioPreset = AspectRatioPreset.RATIO_16_9,
+                    fps = 24,
+                    scenes = listOf(
+                        AnimationScene(
+                            name = "Firefly Grove",
+                            backgroundColorHex = "#10281B",
+                            backgroundBundledKey = BG_FOREST_MEADOW,
+                            vfxConfig = SceneVfxConfig(
+                                particleType = SceneParticleType.FIREFLIES,
+                                particleIntensity = 0.85f,
+                                particleSpeed = 0.9f,
+                                lightingMood = SceneLightingMood.GOLDEN_HOUR,
+                                vignetteIntensity = 0.36f,
+                                cameraShakeIntensity = 0f
+                            ),
+                            durationFrames = 144,
+                            layers = listOf(
+                                AnimationLayer(id = bgLayerId, name = "Background", type = LayerType.BACKGROUND, orderIndex = 0),
+                                AnimationLayer(id = char1LayerId, name = "Meera Thinking", type = LayerType.CHARACTER, orderIndex = 1),
+                                AnimationLayer(id = char2LayerId, name = "Aarav Clapping", type = LayerType.CHARACTER, orderIndex = 2),
+                                AnimationLayer(id = bubbleLayerId, name = "Thought Bubble", type = LayerType.TEXT, orderIndex = 3)
+                            ),
+                            clips = listOf(
+                                TimelineClip(
+                                    layerId = bgLayerId,
+                                    name = "Forest Meadow",
+                                    startFrame = 0,
+                                    durationFrames = 144,
+                                    bundledBgKey = BG_FOREST_MEADOW,
+                                    keyframes = listOf(TransformKeyframe(frame = 0, x = 0.5f, y = 0.5f))
+                                ),
+                                TimelineClip(
+                                    layerId = char1LayerId,
+                                    name = "Meera • Thinking",
+                                    startFrame = 0,
+                                    durationFrames = 144,
+                                    characterId = "char_meera_desi",
+                                    orientation = CharacterOrientation.THREE_QUARTER_FRONT,
+                                    animationPresetType = AnimationPresetType.THINKING,
+                                    keyframes = listOf(
+                                        TransformKeyframe(frame = 0, x = 0.34f, y = 0.70f, scaleX = 1.0f, scaleY = 1.0f, easing = EasingType.EASE_IN_OUT)
+                                    )
+                                ),
+                                TimelineClip(
+                                    layerId = char2LayerId,
+                                    name = "Aarav • Clapping",
+                                    startFrame = 0,
+                                    durationFrames = 144,
+                                    characterId = "char_aarav_desi",
+                                    orientation = CharacterOrientation.THREE_QUARTER_FRONT,
+                                    animationPresetType = AnimationPresetType.CLAPPING,
+                                    flipHorizontal = true,
+                                    keyframes = listOf(
+                                        TransformKeyframe(frame = 0, x = 0.68f, y = 0.70f, scaleX = 1.0f, scaleY = 1.0f, easing = EasingType.EASE_IN_OUT)
+                                    )
+                                ),
+                                TimelineClip(
+                                    layerId = bubbleLayerId,
+                                    name = "Dream Idea",
+                                    startFrame = 12,
+                                    durationFrames = 108,
+                                    textContent = "Look at the fireflies!",
+                                    textColorHex = "#0F172A",
+                                    textSizeSp = 24f,
+                                    textBubbleStyle = TextBubbleStyle.THOUGHT,
+                                    textBubbleFillHex = "#FFFFFF",
+                                    transitionIn = TransitionType.FADE,
+                                    transitionOut = TransitionType.FADE,
+                                    keyframes = listOf(
+                                        TransformKeyframe(frame = 0, x = 0.36f, y = 0.24f, easing = EasingType.EASE_OUT),
+                                        TransformKeyframe(frame = 54, x = 0.36f, y = 0.21f, easing = EasingType.EASE_IN_OUT),
+                                        TransformKeyframe(frame = 107, x = 0.36f, y = 0.24f, easing = EasingType.EASE_IN_OUT)
                                     )
                                 )
                             )

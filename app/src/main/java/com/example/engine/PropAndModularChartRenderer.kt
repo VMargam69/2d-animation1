@@ -11,6 +11,21 @@ import kotlin.math.*
  */
 object PropAndModularChartRenderer {
 
+    private class PropScratch {
+        val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        val srcRect = Rect()
+        val dstRect = RectF()
+        val path = Path()
+    }
+
+    private val scratchLocal = ThreadLocal.withInitial { PropScratch() }
+
     data class ChartPartZone(
         val id: String,
         val label: String,
@@ -169,30 +184,31 @@ object PropAndModularChartRenderer {
         val bh = bitmap.height.coerceAtLeast(1)
         val s = rigScale
         val alphaInt = (alpha.coerceIn(0f, 1f) * 255).toInt()
+        val scratch = scratchLocal.get()!!
 
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-            this.alpha = alphaInt
-            if (tintOverlayColor != null) {
-                colorFilter = PorterDuffColorFilter(tintOverlayColor, PorterDuff.Mode.SRC_ATOP)
-            }
+        val paint = scratch.bmpPaint
+        paint.alpha = alphaInt
+        paint.colorFilter = if (tintOverlayColor != null) {
+            PorterDuffColorFilter(tintOverlayColor, PorterDuff.Mode.SRC_ATOP)
+        } else {
+            null
         }
 
         // Ground shadow
-        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL
-            color = Color.argb((alphaInt * 0.32f).toInt(), 0, 0, 0)
-        }
-        canvas.drawOval(RectF(-34f * s, 82f * s, 34f * s, 94f * s), shadowPaint)
+        scratch.fillPaint.color = Color.argb((alphaInt * 0.32f).toInt(), 0, 0, 0)
+        scratch.dstRect.set(-34f * s, 82f * s, 34f * s, 94f * s)
+        canvas.drawOval(scratch.dstRect, scratch.fillPaint)
 
-        fun drawZoneSlice(zoneId: String, dstRect: RectF) {
+        fun drawZoneSlice(zoneId: String, left: Float, top: Float, right: Float, bottom: Float) {
             val z = MODULAR_CHART_ZONES.firstOrNull { it.id == zoneId } ?: return
-            val src = Rect(
+            scratch.srcRect.set(
                 (z.u0 * bw).toInt().coerceIn(0, bw - 1),
                 (z.v0 * bh).toInt().coerceIn(0, bh - 1),
                 (z.u1 * bw).toInt().coerceIn(1, bw),
                 (z.v1 * bh).toInt().coerceIn(1, bh)
             )
-            canvas.drawBitmap(bitmap, src, dstRect, paint)
+            scratch.dstRect.set(left, top, right, bottom)
+            canvas.drawBitmap(bitmap, scratch.srcRect, scratch.dstRect, paint)
         }
 
         val shoulderHalf = 24f * s
@@ -206,14 +222,17 @@ object PropAndModularChartRenderer {
         canvas.save()
         canvas.translate(-shoulderHalf, -30f * s)
         canvas.rotate(pose.leftArmDeg)
-        drawZoneSlice("L_UPPER_ARM", RectF(-10f * s, -4f * s, 10f * s, upperArmLen + 4f * s))
+        drawZoneSlice("L_UPPER_ARM", -10f * s, -4f * s, 10f * s, upperArmLen + 4f * s)
         canvas.translate(0f, upperArmLen - 3f * s)
         canvas.rotate(pose.leftForearmDeg)
-        drawZoneSlice("L_FOREARM_HAND", RectF(-10f * s, -3f * s, 10f * s, foreArmLen + 8f * s))
+        drawZoneSlice("L_FOREARM_HAND", -10f * s, -3f * s, 10f * s, foreArmLen + 8f * s)
         if (propType != CharacterPropType.NONE && propAttachment == PropAttachmentPoint.LEFT_HAND) {
             canvas.save()
             canvas.translate(0f, foreArmLen + 2f * s)
-            drawPropAtSocket(canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg, alphaInt)
+            drawPropAtSocket(
+                canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg, alphaInt,
+                pose.propSwayOffsetX * s, pose.propSwayOffsetY * s
+            )
             canvas.restore()
         }
         canvas.restore()
@@ -222,37 +241,40 @@ object PropAndModularChartRenderer {
         canvas.save()
         canvas.translate(-hipHalf, 20f * s)
         canvas.rotate(pose.leftLegDeg)
-        drawZoneSlice("L_THIGH", RectF(-12f * s, -4f * s, 12f * s, thighLen + 4f * s))
+        drawZoneSlice("L_THIGH", -12f * s, -4f * s, 12f * s, thighLen + 4f * s)
         canvas.translate(0f, thighLen - 3f * s)
         canvas.rotate(pose.leftKneeDeg)
-        drawZoneSlice("L_SHIN_FOOT", RectF(-12f * s, -3f * s, 14f * s, calfLen + 10f * s))
+        drawZoneSlice("L_SHIN_FOOT", -12f * s, -3f * s, 14f * s, calfLen + 10f * s)
         canvas.restore()
 
         // 3. Right Leg
         canvas.save()
         canvas.translate(hipHalf, 20f * s)
         canvas.rotate(pose.rightLegDeg)
-        drawZoneSlice("R_THIGH", RectF(-12f * s, -4f * s, 12f * s, thighLen + 4f * s))
+        drawZoneSlice("R_THIGH", -12f * s, -4f * s, 12f * s, thighLen + 4f * s)
         canvas.translate(0f, thighLen - 3f * s)
         canvas.rotate(pose.rightKneeDeg)
-        drawZoneSlice("R_SHIN_FOOT", RectF(-12f * s, -3f * s, 14f * s, calfLen + 10f * s))
+        drawZoneSlice("R_SHIN_FOOT", -12f * s, -3f * s, 14f * s, calfLen + 10f * s)
         canvas.restore()
 
         // 4. Torso
-        drawZoneSlice("TORSO", RectF(-28f * s, -38f * s, 28f * s, 26f * s))
+        drawZoneSlice("TORSO", -28f * s, -38f * s, 28f * s, 26f * s)
 
         // 5. Head
         canvas.save()
         canvas.translate(0f, -68f * s)
         canvas.rotate(pose.headNodDeg)
-        drawZoneSlice("HEAD", RectF(-26f * s, -28f * s, 26f * s, 24f * s))
+        drawZoneSlice("HEAD", -26f * s, -28f * s, 26f * s, 24f * s)
         if (pose.facialExpression != FacialExpression.AUTO) {
-            drawModularExpressionBadgeOverlay(canvas, pose, s, alphaInt)
+            drawModularExpressionBadgeOverlay(canvas, pose, s, alphaInt, scratch)
         }
         if (propType != CharacterPropType.NONE && propAttachment == PropAttachmentPoint.HEAD) {
             canvas.save()
             canvas.translate(0f, -26f * s)
-            drawPropAtSocket(canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg, alphaInt)
+            drawPropAtSocket(
+                canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg, alphaInt,
+                pose.propSwayOffsetX * s, pose.propSwayOffsetY * s
+            )
             canvas.restore()
         }
         canvas.restore()
@@ -261,28 +283,29 @@ object PropAndModularChartRenderer {
         canvas.save()
         canvas.translate(shoulderHalf, -30f * s)
         canvas.rotate(pose.rightArmDeg)
-        drawZoneSlice("R_UPPER_ARM", RectF(-10f * s, -4f * s, 10f * s, upperArmLen + 4f * s))
+        drawZoneSlice("R_UPPER_ARM", -10f * s, -4f * s, 10f * s, upperArmLen + 4f * s)
         canvas.translate(0f, upperArmLen - 3f * s)
         canvas.rotate(pose.rightForearmDeg)
-        drawZoneSlice("R_FOREARM_HAND", RectF(-10f * s, -3f * s, 10f * s, foreArmLen + 8f * s))
+        drawZoneSlice("R_FOREARM_HAND", -10f * s, -3f * s, 10f * s, foreArmLen + 8f * s)
         if (propType != CharacterPropType.NONE && propAttachment == PropAttachmentPoint.RIGHT_HAND) {
             canvas.save()
             canvas.translate(0f, foreArmLen + 2f * s)
-            drawPropAtSocket(canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg, alphaInt)
+            drawPropAtSocket(
+                canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg, alphaInt,
+                pose.propSwayOffsetX * s, pose.propSwayOffsetY * s
+            )
             canvas.restore()
         }
         canvas.restore()
 
+        paint.colorFilter = null
+
         if (skeleton.showBoneOverlay) {
-            val bonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                style = Paint.Style.STROKE
-                strokeWidth = 2.2f * s
-                color = Color.argb(190, 56, 189, 248)
-            }
-            val jointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                style = Paint.Style.FILL
-                color = Color.argb(230, 250, 204, 21)
-            }
+            val bonePaint = scratch.strokePaint
+            bonePaint.strokeWidth = 2.2f * s
+            bonePaint.color = Color.argb(190, 56, 189, 248)
+            val jointPaint = scratch.fillPaint
+            jointPaint.color = Color.argb(230, 250, 204, 21)
             canvas.drawLine(0f, 18f * s, 0f, -34f * s, bonePaint)
             canvas.drawLine(0f, -34f * s, 0f, -68f * s, bonePaint)
             canvas.drawCircle(0f, -68f * s, 3.8f * s, jointPaint)
@@ -297,15 +320,13 @@ object PropAndModularChartRenderer {
         canvas: Canvas,
         pose: ProceduralRigRenderer.PoseAngles,
         s: Float,
-        alphaInt: Int
+        alphaInt: Int,
+        scratch: PropScratch
     ) {
-        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2.2f * s
-            strokeCap = Paint.Cap.ROUND
-            color = Color.argb(alphaInt, 20, 18, 16)
-        }
-        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val stroke = scratch.strokePaint
+        stroke.strokeWidth = 2.2f * s
+        stroke.color = Color.argb(alphaInt, 20, 18, 16)
+        val fill = scratch.fillPaint
         when (pose.facialExpression) {
             FacialExpression.ANGRY -> {
                 canvas.drawLine(-11f * s, -9f * s, -3f * s, -5f * s, stroke)
@@ -313,11 +334,13 @@ object PropAndModularChartRenderer {
             }
             FacialExpression.SAD -> {
                 fill.color = Color.argb(alphaInt, 56, 189, 248)
-                canvas.drawOval(RectF(8f * s, -1f * s, 12f * s, 6f * s), fill)
+                scratch.dstRect.set(8f * s, -1f * s, 12f * s, 6f * s)
+                canvas.drawOval(scratch.dstRect, fill)
             }
             FacialExpression.SHOCKED -> {
                 fill.color = Color.argb(alphaInt, 127, 29, 29)
-                canvas.drawOval(RectF(-4.5f * s, 7f * s, 4.5f * s, 16f * s), fill)
+                scratch.dstRect.set(-4.5f * s, 7f * s, 4.5f * s, 16f * s)
+                canvas.drawOval(scratch.dstRect, fill)
             }
             FacialExpression.SLEEPING -> {
                 canvas.drawLine(-10f * s, -2f * s, -3f * s, -2f * s, stroke)
@@ -328,7 +351,8 @@ object PropAndModularChartRenderer {
     }
 
     /**
-     * Draws an attached Hand or Head prop in local socket coordinates (0, 0).
+     * Draws an attached Hand or Head prop in local socket coordinates (0, 0) with
+     * spring-pendulum sway rotation and optional inertial lag translation.
      */
     fun drawPropAtSocket(
         canvas: Canvas,
@@ -336,32 +360,36 @@ object PropAndModularChartRenderer {
         customPropBitmap: Bitmap?,
         s: Float,
         swayDeg: Float,
-        alphaInt: Int
+        alphaInt: Int,
+        swayOffsetX: Float = 0f,
+        swayOffsetY: Float = 0f
     ) {
         if (propType == CharacterPropType.NONE) return
+        val scratch = scratchLocal.get()!!
         canvas.save()
+        if (swayOffsetX != 0f || swayOffsetY != 0f) {
+            canvas.translate(swayOffsetX, swayOffsetY)
+        }
         canvas.rotate(swayDeg)
 
-        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2.0f * s
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-            color = Color.argb(alphaInt, 15, 23, 42)
-        }
+        val fill = scratch.fillPaint
+        val stroke = scratch.strokePaint
+        stroke.strokeWidth = 2.0f * s
+        stroke.color = Color.argb(alphaInt, 15, 23, 42)
+        val rect = scratch.dstRect
+        val path = scratch.path
 
         when (propType) {
             CharacterPropType.NONE -> Unit
             CharacterPropType.CUSTOM_PNG -> {
                 if (customPropBitmap != null && !customPropBitmap.isRecycled) {
-                    val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-                        alpha = alphaInt
-                    }
+                    val bmpPaint = scratch.bmpPaint
+                    bmpPaint.alpha = alphaInt
+                    bmpPaint.colorFilter = null
                     val targetH = 38f * s
                     val aspect = customPropBitmap.width.toFloat() / customPropBitmap.height.coerceAtLeast(1).toFloat()
                     val targetW = targetH * aspect
-                    val rect = RectF(-targetW * 0.5f, -targetH * 0.75f, targetW * 0.5f, targetH * 0.25f)
+                    rect.set(-targetW * 0.5f, -targetH * 0.75f, targetW * 0.5f, targetH * 0.25f)
                     canvas.drawBitmap(customPropBitmap, null, rect, bmpPaint)
                 }
             }
@@ -507,8 +535,8 @@ object PropAndModularChartRenderer {
     }
 
     /**
-     * Computes stage-normalized (0..1) positions for the 8 interactive IK posing handles
-     * on the currently selected character clip so the user can drag limbs/head directly on stage.
+     * Computes stage-normalized (0..1) positions for the 10 interactive IK posing handles
+     * on the currently selected character clip via [IkRigSolver].
      */
     internal fun computeStageIkHandles(
         clip: TimelineClip,
@@ -517,103 +545,18 @@ object PropAndModularChartRenderer {
         pose: ProceduralRigRenderer.PoseAngles,
         stageWidth: Float,
         stageHeight: Float
-    ): List<StageIkHandle> {
-        val w = stageWidth.coerceAtLeast(1f)
-        val h = stageHeight.coerceAtLeast(1f)
-        val baseScale = min(w, h) / 420f
-        val sx = (if (clip.flipHorizontal) -1f else 1f) * transform.scaleX * pose.squashX
-        val sy = (if (clip.flipVertical) -1f else 1f) * transform.scaleY * pose.squashY
-
-        val isSide = clip.orientation == CharacterOrientation.SIDE
-        val isThreeQuarter = clip.orientation == CharacterOrientation.THREE_QUARTER_FRONT ||
-            clip.orientation == CharacterOrientation.THREE_QUARTER_BACK
-        val build = rig.buildType
-        val shoulderHalf = (if (isSide) 7f else if (isThreeQuarter) 22f else 26f) * build.shoulderScale * baseScale
-        val hipHalf = (if (isSide) 5f else 11.5f) * build.torsoScale * baseScale
-
-        val totalRotRad = ((transform.rotation + pose.bodyTiltDeg) * PI / 180.0).toFloat()
-        val cosR = cos(totalRotRad)
-        val sinR = sin(totalRotRad)
-        val bobY = pose.bodyBobY * baseScale
-
-        val cx = transform.x * w
-        val cy = transform.y * h
-
-        fun localToStageNorm(lx: Float, ly: Float): Pair<Float, Float> {
-            val yWithBob = ly + bobY
-            val scaledX = lx * sx
-            val scaledY = yWithBob * sy
-            val wx = cx + (scaledX * cosR - scaledY * sinR)
-            val wy = cy + (scaledX * sinR + scaledY * cosR)
-            return ((wx / w).coerceIn(0.02f, 0.98f)) to ((wy / h).coerceIn(0.02f, 0.98f))
-        }
-
-        fun fkChain(
-            originX: Float,
-            originY: Float,
-            upperDeg: Float,
-            lowerDeg: Float,
-            upperLen: Float,
-            lowerLen: Float
-        ): Pair<Pair<Float, Float>, Pair<Float, Float>> {
-            val uRad = (upperDeg * PI / 180.0).toFloat()
-            val midX = originX - sin(uRad) * upperLen
-            val midY = originY + cos(uRad) * upperLen
-            val lRad = ((upperDeg + lowerDeg) * PI / 180.0).toFloat()
-            val endX = midX - sin(lRad) * lowerLen
-            val endY = midY + cos(lRad) * lowerLen
-            return (midX to midY) to (endX to endY)
-        }
-
-        val headRad = (pose.headNodDeg * PI / 180.0).toFloat()
-        val headX = sin(headRad) * 18f * baseScale
-        val headY = -68f * baseScale - cos(headRad) * 18f * baseScale
-        val (headNx, headNy) = localToStageNorm(headX, headY)
-        val (torsoNx, torsoNy) = localToStageNorm(0f, -8f * baseScale)
-
-        val (lElbowLocal, lHandLocal) = fkChain(
-            -shoulderHalf, -30f * baseScale,
-            pose.leftArmDeg, pose.leftForearmDeg,
-            25f * baseScale, 26f * baseScale
-        )
-        val (rElbowLocal, rHandLocal) = fkChain(
-            shoulderHalf, -30f * baseScale,
-            pose.rightArmDeg, pose.rightForearmDeg,
-            25f * baseScale, 26f * baseScale
-        )
-        val (_, lFootLocal) = fkChain(
-            -hipHalf, 20f * baseScale,
-            pose.leftLegDeg, pose.leftKneeDeg,
-            29f * baseScale, 31f * baseScale
-        )
-        val (_, rFootLocal) = fkChain(
-            hipHalf, 20f * baseScale,
-            pose.rightLegDeg, pose.rightKneeDeg,
-            29f * baseScale, 31f * baseScale
-        )
-
-        val (lElNx, lElNy) = localToStageNorm(lElbowLocal.first, lElbowLocal.second)
-        val (lHdNx, lHdNy) = localToStageNorm(lHandLocal.first, lHandLocal.second)
-        val (rElNx, rElNy) = localToStageNorm(rElbowLocal.first, rElbowLocal.second)
-        val (rHdNx, rHdNy) = localToStageNorm(rHandLocal.first, rHandLocal.second)
-        val (lFtNx, lFtNy) = localToStageNorm(lFootLocal.first, lFootLocal.second)
-        val (rFtNx, rFtNy) = localToStageNorm(rFootLocal.first, rFootLocal.second)
-
-        return listOf(
-            StageIkHandle(IkHandleId.HEAD, headNx, headNy, 0xFF38BDF8.toInt()),
-            StageIkHandle(IkHandleId.TORSO, torsoNx, torsoNy, 0xFF10B981.toInt()),
-            StageIkHandle(IkHandleId.LEFT_ELBOW, lElNx, lElNy, 0xFFF59E0B.toInt()),
-            StageIkHandle(IkHandleId.LEFT_HAND, lHdNx, lHdNy, 0xFFFB923C.toInt()),
-            StageIkHandle(IkHandleId.RIGHT_ELBOW, rElNx, rElNy, 0xFFEC4899.toInt()),
-            StageIkHandle(IkHandleId.RIGHT_HAND, rHdNx, rHdNy, 0xFFF472B6.toInt()),
-            StageIkHandle(IkHandleId.LEFT_FOOT, lFtNx, lFtNy, 0xFFA78BFA.toInt()),
-            StageIkHandle(IkHandleId.RIGHT_FOOT, rFtNx, rFtNy, 0xFF34D399.toInt())
-        )
-    }
+    ): List<StageIkHandle> = IkRigSolver.computeStageIkHandles(
+        clip = clip,
+        rig = rig,
+        transform = transform,
+        pose = pose,
+        stageWidth = stageWidth,
+        stageHeight = stageHeight
+    )
 
     /**
-     * Converts a user drag of [handleId] to stage-normalized position ([targetNx], [targetNy])
-     * into updated [PoseKeyframeOffsets] relative to the preset's base [basePose].
+     * Converts a user drag of [handleId] to world-normalized stage position ([targetNx], [targetNy])
+     * into updated [PoseKeyframeOffsets] using analytical 2-bone IK via [IkRigSolver].
      */
     internal fun solveIkDragToOffsets(
         handleId: IkHandleId,
@@ -625,130 +568,19 @@ object PropAndModularChartRenderer {
         basePose: ProceduralRigRenderer.PoseAngles,
         currentOffsets: PoseKeyframeOffsets,
         stageWidth: Float,
-        stageHeight: Float
-    ): PoseKeyframeOffsets {
-        val w = stageWidth.coerceAtLeast(1f)
-        val h = stageHeight.coerceAtLeast(1f)
-        val baseScale = min(w, h) / 420f
-        val posed = basePose.withOffsets(currentOffsets, clip.facialExpression)
-
-        val sx = ((if (clip.flipHorizontal) -1f else 1f) * transform.scaleX * posed.squashX).let {
-            if (abs(it) < 0.05f) 0.05f else it
-        }
-        val sy = ((if (clip.flipVertical) -1f else 1f) * transform.scaleY * posed.squashY).let {
-            if (abs(it) < 0.05f) 0.05f else it
-        }
-
-        val totalRotRad = ((transform.rotation + posed.bodyTiltDeg) * PI / 180.0).toFloat()
-        val cosR = cos(-totalRotRad)
-        val sinR = sin(-totalRotRad)
-        val bobY = posed.bodyBobY * baseScale
-
-        val dx = targetNx * w - transform.x * w
-        val dy = targetNy * h - transform.y * h
-        val unrotX = dx * cosR - dy * sinR
-        val unrotY = dx * sinR + dy * cosR
-        val lx = unrotX / sx
-        val ly = (unrotY / sy) - bobY
-
-        val isSide = clip.orientation == CharacterOrientation.SIDE
-        val isThreeQuarter = clip.orientation == CharacterOrientation.THREE_QUARTER_FRONT ||
-            clip.orientation == CharacterOrientation.THREE_QUARTER_BACK
-        val build = rig.buildType
-        val shoulderHalf = (if (isSide) 7f else if (isThreeQuarter) 22f else 26f) * build.shoulderScale * baseScale
-        val hipHalf = (if (isSide) 5f else 11.5f) * build.torsoScale * baseScale
-
-        // In Canvas coordinates where +Y points downward and local rotation(deg) rotates clockwise:
-        // A limb of length L rotated by angle A has tip (-sin(A)*L, cos(A)*L).
-        // Therefore A = atan2(-vx, vy) in degrees!
-        fun angleFromDownDeg(vx: Float, vy: Float): Float {
-            return (atan2(-vx.toDouble(), vy.toDouble()) * 180.0 / PI).toFloat()
-        }
-
-        return when (handleId) {
-            IkHandleId.HEAD -> {
-                val vx = lx
-                val vy = -(ly - (-68f * baseScale))
-                val worldDeg = (atan2(vx.toDouble(), vy.toDouble()) * 180.0 / PI).toFloat().coerceIn(-55f, 55f)
-                currentOffsets.copy(headNodOffset = (worldDeg - basePose.headNodDeg).coerceIn(-55f, 55f))
-            }
-            IkHandleId.TORSO -> {
-                val vx = lx
-                val vy = -(ly - (18f * baseScale))
-                val tiltDeg = (atan2(vx.toDouble(), vy.toDouble()) * 180.0 / PI).toFloat().coerceIn(-45f, 45f)
-                currentOffsets.copy(torsoTiltOffset = (tiltDeg - basePose.bodyTiltDeg).coerceIn(-45f, 45f))
-            }
-            IkHandleId.LEFT_ELBOW -> {
-                val worldUpper = angleFromDownDeg(lx - (-shoulderHalf), ly - (-30f * baseScale))
-                currentOffsets.copy(leftArmOffset = normalizeAngleDeg(worldUpper - basePose.leftArmDeg))
-            }
-            IkHandleId.LEFT_HAND -> {
-                val uRad = (posed.leftArmDeg * PI / 180.0).toFloat()
-                val elbowX = -shoulderHalf - sin(uRad) * 25f * baseScale
-                val elbowY = -30f * baseScale + cos(uRad) * 25f * baseScale
-                val distFromShoulder = hypot(lx - (-shoulderHalf), ly - (-30f * baseScale))
-                if (distFromShoulder > 34f * baseScale) {
-                    val aimDeg = angleFromDownDeg(lx - (-shoulderHalf), ly - (-30f * baseScale))
-                    val newUpperOffset = normalizeAngleDeg(aimDeg - basePose.leftArmDeg)
-                    val newUpperTotal = basePose.leftArmDeg + newUpperOffset
-                    val uRad2 = (newUpperTotal * PI / 180.0).toFloat()
-                    val ex2 = -shoulderHalf - sin(uRad2) * 25f * baseScale
-                    val ey2 = -30f * baseScale + cos(uRad2) * 25f * baseScale
-                    val worldFore = angleFromDownDeg(lx - ex2, ly - ey2)
-                    val relFore = normalizeAngleDeg(worldFore - newUpperTotal)
-                    currentOffsets.copy(
-                        leftArmOffset = newUpperOffset,
-                        leftForearmOffset = normalizeAngleDeg(relFore - basePose.leftForearmDeg)
-                    )
-                } else {
-                    val worldFore = angleFromDownDeg(lx - elbowX, ly - elbowY)
-                    val relFore = normalizeAngleDeg(worldFore - posed.leftArmDeg)
-                    currentOffsets.copy(leftForearmOffset = normalizeAngleDeg(relFore - basePose.leftForearmDeg))
-                }
-            }
-            IkHandleId.RIGHT_ELBOW -> {
-                val worldUpper = angleFromDownDeg(lx - shoulderHalf, ly - (-30f * baseScale))
-                currentOffsets.copy(rightArmOffset = normalizeAngleDeg(worldUpper - basePose.rightArmDeg))
-            }
-            IkHandleId.RIGHT_HAND -> {
-                val uRad = (posed.rightArmDeg * PI / 180.0).toFloat()
-                val elbowX = shoulderHalf - sin(uRad) * 25f * baseScale
-                val elbowY = -30f * baseScale + cos(uRad) * 25f * baseScale
-                val distFromShoulder = hypot(lx - shoulderHalf, ly - (-30f * baseScale))
-                if (distFromShoulder > 34f * baseScale) {
-                    val aimDeg = angleFromDownDeg(lx - shoulderHalf, ly - (-30f * baseScale))
-                    val newUpperOffset = normalizeAngleDeg(aimDeg - basePose.rightArmDeg)
-                    val newUpperTotal = basePose.rightArmDeg + newUpperOffset
-                    val uRad2 = (newUpperTotal * PI / 180.0).toFloat()
-                    val ex2 = shoulderHalf - sin(uRad2) * 25f * baseScale
-                    val ey2 = -30f * baseScale + cos(uRad2) * 25f * baseScale
-                    val worldFore = angleFromDownDeg(lx - ex2, ly - ey2)
-                    val relFore = normalizeAngleDeg(worldFore - newUpperTotal)
-                    currentOffsets.copy(
-                        rightArmOffset = newUpperOffset,
-                        rightForearmOffset = normalizeAngleDeg(relFore - basePose.rightForearmDeg)
-                    )
-                } else {
-                    val worldFore = angleFromDownDeg(lx - elbowX, ly - elbowY)
-                    val relFore = normalizeAngleDeg(worldFore - posed.rightArmDeg)
-                    currentOffsets.copy(rightForearmOffset = normalizeAngleDeg(relFore - basePose.rightForearmDeg))
-                }
-            }
-            IkHandleId.LEFT_FOOT -> {
-                val aimDeg = angleFromDownDeg(lx - (-hipHalf), ly - (20f * baseScale)).coerceIn(-115f, 115f)
-                currentOffsets.copy(leftLegOffset = normalizeAngleDeg(aimDeg - basePose.leftLegDeg))
-            }
-            IkHandleId.RIGHT_FOOT -> {
-                val aimDeg = angleFromDownDeg(lx - hipHalf, ly - (20f * baseScale)).coerceIn(-115f, 115f)
-                currentOffsets.copy(rightLegOffset = normalizeAngleDeg(aimDeg - basePose.rightLegDeg))
-            }
-        }
-    }
-
-    private fun normalizeAngleDeg(angle: Float): Float {
-        var a = angle % 360f
-        if (a > 180f) a -= 360f
-        if (a < -180f) a += 360f
-        return a.coerceIn(-165f, 165f)
-    }
+        stageHeight: Float,
+        bendFlip: Boolean = false
+    ): PoseKeyframeOffsets = IkRigSolver.solveIkDragToOffsets(
+        handleId = handleId,
+        targetNx = targetNx,
+        targetNy = targetNy,
+        clip = clip,
+        rig = rig,
+        transform = transform,
+        basePose = basePose,
+        currentOffsets = currentOffsets,
+        stageWidth = stageWidth,
+        stageHeight = stageHeight,
+        bendFlip = bendFlip
+    )
 }

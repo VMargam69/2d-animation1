@@ -54,7 +54,8 @@ object SpriteAtlasRigRenderer {
         customPropBitmap: Bitmap? = null,
         propScale: Float = 1.0f,
         drawGhostFallbackWhenEmpty: Boolean = false,
-        skipFaceOverlays: Boolean = false
+        skipFaceOverlays: Boolean = false,
+        organicFace: OrganicFacialState? = null
     ) {
         val s = rigScale
         val alphaInt = (alpha.coerceIn(0f, 1f) * 255).toInt()
@@ -86,6 +87,7 @@ object SpriteAtlasRigRenderer {
         }
 
         val isBlinking = blinkOverride ?: pose.blinkClosed
+        val headNodTotal = pose.headNodDeg + (organicFace?.headMicroNodDeg ?: 0f)
         val hasAnyPart = slices.isNotEmpty()
         val showGuide = drawGhostFallbackWhenEmpty && !hasAnyPart
 
@@ -98,7 +100,7 @@ object SpriteAtlasRigRenderer {
         if (hairBackBmp != null && !hairBackBmp.isRecycled) {
             canvas.save()
             canvas.translate(0f, -36f * s)
-            canvas.rotate(pose.headNodDeg)
+            canvas.rotate(headNodTotal)
             drawBitmapAnchored(canvas, hairBackBmp, 74f * s, 74f * s, 0.50f, 0.78f, paint, scratch.dst)
             canvas.restore()
         }
@@ -121,7 +123,9 @@ object SpriteAtlasRigRenderer {
             propType = if (propAttachment == PropAttachmentPoint.LEFT_HAND) propType else CharacterPropType.NONE,
             customPropBitmap = customPropBitmap,
             propScale = propScale,
-            swayDeg = pose.propSwayDeg
+            swayDeg = pose.propSwayDeg,
+            swayOffsetX = pose.propSwayOffsetX * s,
+            swayOffsetY = pose.propSwayOffsetY * s
         )
 
         drawLegChain(
@@ -168,7 +172,7 @@ object SpriteAtlasRigRenderer {
         // Anchored directly to CHEST_BODY's top-neck pivot (-36f * s) so chin/neck never detaches from torso
         canvas.save()
         canvas.translate(0f, -36f * s)
-        canvas.rotate(pose.headNodDeg)
+        canvas.rotate(headNodTotal)
 
         val headBmp = slices[AtlasPartSlot.HEAD]
         if (headBmp != null && !headBmp.isRecycled) {
@@ -178,7 +182,7 @@ object SpriteAtlasRigRenderer {
         }
 
         if (!skipFaceOverlays) {
-            // Eyes (Eye White -> Eyeball -> Eyelid / Blink) — only draw if at least one eye slice exists
+            // Eyes (Eye White -> Eyeball -> Eyelid / Organic Asymmetric Blink & Squint)
             val eyeWhite = slices[AtlasPartSlot.EYE_WHITE]?.takeIf { !it.isRecycled }
             val eyeball = slices[AtlasPartSlot.EYEBALL]?.takeIf { !it.isRecycled }
             val eyelid = slices[AtlasPartSlot.EYELID]?.takeIf { !it.isRecycled }
@@ -193,33 +197,67 @@ object SpriteAtlasRigRenderer {
             }
 
             if (hasAnyEyeSlice) {
-                for (ex in eyeOffsets) {
+                eyeOffsets.forEachIndexed { idx, ex ->
+                    val isRightEye = idx == 1 || (isBackSide && idx == 0)
+                    val eyeClosed = when {
+                        blinkOverride != null -> blinkOverride
+                        organicFace != null -> if (isRightEye) organicFace.isBlinkingRight else organicFace.isBlinkingLeft
+                        else -> isBlinking
+                    }
+                    val lidClose = when {
+                        eyeClosed -> 1f
+                        organicFace != null -> if (isRightEye) organicFace.rightEyelidClose else organicFace.leftEyelidClose
+                        else -> 0f
+                    }
+                    val eyeOpenScaleY = when {
+                        organicFace != null -> (if (isRightEye) organicFace.rightEyeOpenness else organicFace.leftEyeOpenness).coerceIn(0.20f, 1.38f)
+                        else -> 1f
+                    }
+                    val happyArc = organicFace?.happyEyeArc ?: 0f
+
                     canvas.save()
                     canvas.translate(ex, eyeY)
-                    if (isBlinking) {
+                    if (eyeClosed) {
                         if (eyelid != null) {
-                            drawBitmapAnchored(canvas, eyelid, 16f * s, 9f * s, 0.50f, 0.50f, paint, scratch.dst)
+                            // Subtle upward curve tilt when laughing/winking vs relaxed flat blink
+                            val closedY = if (happyArc > 0.5f) -1.2f * s else 0.6f * s
+                            canvas.translate(0f, closedY)
+                            drawBitmapAnchored(canvas, eyelid, 16.5f * s, 9.2f * s, 0.50f, 0.50f, paint, scratch.dst)
                         } else if (eyeWhite != null || eyeball != null) {
-                            // Clean blink line when eyes exist but eyelid slice wasn't provided
                             scratch.guideStroke.color = Color.argb(alphaInt, 24, 24, 36)
                             scratch.guideStroke.strokeWidth = 2.4f * s
-                            canvas.drawLine(-6f * s, 0f, 6f * s, 0f, scratch.guideStroke)
+                            if (happyArc > 0.45f) {
+                                scratch.dst.set(-5.8f * s, -3.2f * s, 5.8f * s, 3.6f * s)
+                                canvas.drawArc(scratch.dst, 195f, 150f, false, scratch.guideStroke)
+                            } else {
+                                canvas.drawLine(-6f * s, 0f, 6f * s, 0f, scratch.guideStroke)
+                            }
                         }
                     } else {
                         if (eyeWhite != null) {
+                            canvas.save()
+                            canvas.scale(1f, eyeOpenScaleY)
                             drawBitmapAnchored(canvas, eyeWhite, 15f * s, 12f * s, 0.50f, 0.50f, paint, scratch.dst)
+                            canvas.restore()
                         }
                         if (eyeball != null) {
-                            val lookX = if (isThreeQuarter || isBackSide) 1.5f * s else 0f
+                            val baseLookX = if (isThreeQuarter || isBackSide) 1.5f * s else 0f
+                            val lookX = baseLookX + (organicFace?.eyeLookX ?: 0f) * 2.4f * s
+                            val lookY = (organicFace?.eyeLookY ?: 0f) * 1.8f * s
+                            val pScale = (organicFace?.pupilScale ?: 1f).coerceIn(0.72f, 1.24f)
                             canvas.save()
-                            canvas.translate(lookX, 0f)
+                            canvas.translate(lookX, lookY)
+                            canvas.scale(pScale, pScale * eyeOpenScaleY.coerceAtMost(1.05f))
                             drawBitmapAnchored(canvas, eyeball, 9.5f * s, 9.5f * s, 0.50f, 0.50f, paint, scratch.dst)
                             canvas.restore()
                         }
                         if (eyelid != null) {
+                            // Smooth eyelid descent as lidClose increases (relaxed squint/angry/sleepy)
+                            val lidY = (-4.8f + lidClose * 4.2f) * s
+                            val lidH = (6.4f + lidClose * 3.4f) * s
                             canvas.save()
-                            canvas.translate(0f, -4.5f * s)
-                            drawBitmapAnchored(canvas, eyelid, 16f * s, 7f * s, 0.50f, 0.50f, paint, scratch.dst)
+                            canvas.translate(0f, lidY)
+                            drawBitmapAnchored(canvas, eyelid, 16f * s, lidH, 0.50f, 0.50f, paint, scratch.dst)
                             canvas.restore()
                         }
                     }
@@ -227,38 +265,60 @@ object SpriteAtlasRigRenderer {
                 }
             }
 
-            // Eyebrow Expression Swap (Happy / Angry / Idle / Scared)
-            val browBmp = resolveEyebrowBitmap(slices, pose.facialExpression, pose.happySmile)
+            // Eyebrow Expression Swap (automatic slot selection + organic asymmetric lift & tilt)
+            val browBmp = resolveEyebrowBitmap(
+                slices = slices,
+                expression = organicFace?.resolvedExpression ?: pose.facialExpression,
+                happySmile = pose.happySmile,
+                browSlotOverride = organicFace?.resolvedBrowSlot
+            )
             if (browBmp != null && !browBmp.isRecycled) {
-                val browY = -37f * s
+                val baseBrowY = -37f * s
+                val leftLiftY = -(organicFace?.leftBrowLift ?: 0f) * 3.2f * s
+                val rightLiftY = -(organicFace?.rightBrowLift ?: 0f) * 3.2f * s
+                val leftTilt = (organicFace?.leftBrowTiltDeg ?: 0f) * 0.55f
+                val rightTilt = -(organicFace?.rightBrowTiltDeg ?: 0f) * 0.55f
                 if (isBackSide) {
                     canvas.save()
-                    canvas.translate(faceShiftX, browY)
+                    canvas.translate(faceShiftX, baseBrowY + rightLiftY)
+                    canvas.rotate(rightTilt)
                     drawBitmapAnchored(canvas, browBmp, 16f * s, 8f * s, 0.50f, 0.50f, paint, scratch.dst)
                     canvas.restore()
                 } else {
                     canvas.save()
-                    canvas.translate(eyeOffsets.first(), browY)
+                    canvas.translate(eyeOffsets.first(), baseBrowY + leftLiftY)
+                    canvas.rotate(leftTilt)
                     drawBitmapAnchored(canvas, browBmp, 16f * s, 8f * s, 0.50f, 0.50f, paint, scratch.dst)
                     canvas.restore()
 
                     canvas.save()
-                    canvas.translate(eyeOffsets.last(), browY)
+                    canvas.translate(eyeOffsets.last(), baseBrowY + rightLiftY)
+                    canvas.rotate(rightTilt)
                     canvas.scale(-1f, 1f)
                     drawBitmapAnchored(canvas, browBmp, 16f * s, 8f * s, 0.50f, 0.50f, paint, scratch.dst)
                     canvas.restore()
                 }
             }
 
-            // Mouth / Lips Expression & Talking Lip-Sync (MTH1..MTH4 + Shocked)
-            val mouthBmp = resolveMouthBitmap(slices, pose.facialExpression, pose.mouthOpen, pose.happySmile, mouthSlotOverride)
+            // Mouth / Lips Expression & Talking Lip-Sync (automatic slot selection + volume-preserving squash/stretch)
+            val effectiveMouthSlot = mouthSlotOverride ?: organicFace?.resolvedMouthSlot
+            val effectiveMouthOpen = organicFace?.mouthOpen ?: pose.mouthOpen
+            val mouthBmp = resolveMouthBitmap(
+                slices = slices,
+                expression = organicFace?.resolvedExpression ?: pose.facialExpression,
+                mouthOpen = effectiveMouthOpen,
+                happySmile = pose.happySmile,
+                mouthSlotOverride = effectiveMouthSlot
+            )
             if (mouthBmp != null && !mouthBmp.isRecycled) {
                 canvas.save()
-                canvas.translate(faceShiftX * 0.85f, -11.5f * s)
-                val talkScaleY = if (mouthSlotOverride == null && pose.mouthOpen > 0.15f) {
+                val cheekLiftY = -(organicFace?.cheekSquint ?: 0f) * 0.9f * s
+                canvas.translate(faceShiftX * 0.85f, -11.5f * s + cheekLiftY)
+                val sxMouth = organicFace?.mouthScaleX ?: 1f
+                val syMouth = organicFace?.mouthScaleY ?: if (mouthSlotOverride == null && pose.mouthOpen > 0.15f) {
                     1f + pose.mouthOpen * 0.35f
                 } else 1f
-                canvas.scale(1f, talkScaleY)
+                canvas.scale(sxMouth, syMouth)
                 drawBitmapAnchored(canvas, mouthBmp, 20f * s, 13f * s, 0.50f, 0.50f, paint, scratch.dst)
                 canvas.restore()
             }
@@ -277,6 +337,9 @@ object SpriteAtlasRigRenderer {
         if (accBmp != null && !accBmp.isRecycled) {
             canvas.save()
             canvas.translate(0f, -49f * s)
+            if (pose.accessoryFlutterDeg != 0f) {
+                canvas.rotate(pose.accessoryFlutterDeg * 0.25f)
+            }
             drawBitmapAnchored(canvas, accBmp, 64f * s, 44f * s, 0.50f, 0.72f, paint, scratch.dst)
             canvas.restore()
         }
@@ -286,7 +349,8 @@ object SpriteAtlasRigRenderer {
             canvas.save()
             canvas.translate(0f, -51f * s)
             PropAndModularChartRenderer.drawPropAtSocket(
-                canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg * 0.5f, alphaInt
+                canvas, propType, customPropBitmap, s * propScale, pose.propSwayDeg * 0.78f, alphaInt,
+                pose.propSwayOffsetX * s, pose.propSwayOffsetY * s
             )
             canvas.restore()
         }
@@ -311,7 +375,9 @@ object SpriteAtlasRigRenderer {
             propType = if (propAttachment == PropAttachmentPoint.RIGHT_HAND) propType else CharacterPropType.NONE,
             customPropBitmap = customPropBitmap,
             propScale = propScale,
-            swayDeg = pose.propSwayDeg
+            swayDeg = pose.propSwayDeg,
+            swayOffsetX = pose.propSwayOffsetX * s,
+            swayOffsetY = pose.propSwayOffsetY * s
         )
 
         paint.colorFilter = null
@@ -334,7 +400,9 @@ object SpriteAtlasRigRenderer {
         propType: CharacterPropType,
         customPropBitmap: Bitmap?,
         propScale: Float,
-        swayDeg: Float
+        swayDeg: Float,
+        swayOffsetX: Float = 0f,
+        swayOffsetY: Float = 0f
     ) {
         val upperLen = 28f * s
         val lowerLen = 25f * s
@@ -368,7 +436,8 @@ object SpriteAtlasRigRenderer {
 
         if (propType != CharacterPropType.NONE) {
             PropAndModularChartRenderer.drawPropAtSocket(
-                canvas, propType, customPropBitmap, s * propScale, swayDeg, alphaInt
+                canvas, propType, customPropBitmap, s * propScale, swayDeg, alphaInt,
+                swayOffsetX, swayOffsetY
             )
         }
         canvas.restore()
@@ -433,8 +502,12 @@ object SpriteAtlasRigRenderer {
     private fun resolveEyebrowBitmap(
         slices: Map<AtlasPartSlot, Bitmap>,
         expression: FacialExpression,
-        happySmile: Boolean
+        happySmile: Boolean,
+        browSlotOverride: AtlasPartSlot? = null
     ): Bitmap? {
+        if (browSlotOverride != null) {
+            return slices[browSlotOverride] ?: slices[AtlasPartSlot.BROW_IDLE] ?: slices[AtlasPartSlot.BROW_HAPPY]
+        }
         val target = when (expression) {
             FacialExpression.HAPPY, FacialExpression.LAUGHING -> AtlasPartSlot.BROW_HAPPY
             FacialExpression.ANGRY -> AtlasPartSlot.BROW_ANGRY

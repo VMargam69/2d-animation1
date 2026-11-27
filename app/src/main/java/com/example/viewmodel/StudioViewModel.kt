@@ -41,6 +41,8 @@ enum class ActiveEditorSheet {
     TRANSFORM_INSPECTOR,
     CHARACTER_ACTING_PROPS,
     CAMERA_CHROMA_STUDIO,
+    SCENE_VFX_STUDIO,
+    EASING_CURVE_EDITOR,
     SPEED_SETTINGS,
     TRANSITIONS,
     LAYER_MANAGER,
@@ -75,6 +77,7 @@ data class StudioUiState(
     val currentFrame: Int = 0,
     val isPlaying: Boolean = false,
     val isLooping: Boolean = true,
+    val playbackSpeed: Float = 1.0f,
     val canvasZoom: Float = 1f,
     val canvasPanX: Float = 0f,
     val canvasPanY: Float = 0f,
@@ -82,9 +85,11 @@ data class StudioUiState(
     val waveformSensitivity: Float = 1.0f,
     val isDrawingMode: Boolean = false,
     val isIkPosingMode: Boolean = false,
+    val ikFlipBend: Boolean = false,
     val isCameraKeyMode: Boolean = false,
     val brushColorHex: String = "#38BDF8",
     val brushWidthRatio: Float = 0.009f,
+    val brushStyle: BrushStyle = BrushStyle.SOLID,
     val activeSheet: ActiveEditorSheet = ActiveEditorSheet.NONE,
     val exportState: ExportUiState = ExportUiState.Idle,
     val canUndo: Boolean = false,
@@ -149,11 +154,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private var playbackJob: Job? = null
     private var exportJob: Job? = null
     private var statusClearJob: Job? = null
+    private var autoSaveJob: Job? = null
+    private var lastCoalescedUndoMs: Long = 0L
+    private var lastCoalescedUndoTag: String? = null
     private var mediaPlayer: MediaPlayer? = null
     @Volatile private var isAudioPrepared: Boolean = false
 
     companion object {
         private const val MAX_UNDO_HISTORY = 20
+        private const val AUTO_SAVE_DEBOUNCE_MS = 450L
+        private const val UNDO_COALESCE_WINDOW_MS = 650L
     }
 
     init {
@@ -379,11 +389,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun saveCurrentProject(silent: Boolean = false) {
+        autoSaveJob?.cancel()
+        autoSaveJob = null
         val current = _uiState.value.project
         viewModelScope.launch {
             val saved = repository.saveProject(current, markAsLastOpened = true)
-            _uiState.update { it.copy(project = saved) }
+            _uiState.update { state ->
+                if (state.project.id == saved.id && state.project.updatedAt == current.updatedAt) {
+                    state.copy(project = saved)
+                } else state
+            }
             if (!silent) showStatus("Saved locally offline")
+        }
+    }
+
+    private fun scheduleDebouncedSave() {
+        autoSaveJob?.cancel()
+        autoSaveJob = viewModelScope.launch {
+            delay(AUTO_SAVE_DEBOUNCE_MS)
+            val current = _uiState.value.project
+            repository.saveProject(current, markAsLastOpened = true)
         }
     }
 
@@ -543,7 +568,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             character = character,
             orientation = orientation,
             preset = presetType,
-            startFrame = state.currentFrame,
+            startFrame = _playbackFrame.value,
             durationFrames = durationFrames,
             speedMultiplier = speedMultiplier,
             loopAnimation = loopAnimation
@@ -589,7 +614,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val state = _uiState.value
         if (asset.type == MediaAssetType.AUDIO && !asset.localFilePath.isNullOrBlank()) {
             val (updated, clipId) = ProjectMutator.addAudioClip(
-                state.project, asset.name, asset.localFilePath, state.currentFrame
+                state.project, asset.name, asset.localFilePath, _playbackFrame.value
             )
             commitProjectChange(updated)
             router.popUpTo(HashRoute.HASH_EDITOR)
@@ -605,7 +630,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             name = asset.name,
             imagePath = asset.localFilePath,
             bundledKey = asset.bundledResKey,
-            startFrame = state.currentFrame,
+            startFrame = _playbackFrame.value,
             asBackground = asBackground
         )
         commitProjectChange(updated)
@@ -681,8 +706,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun updateSelectedClipTransform(updater: (TransformKeyframe) -> TransformKeyframe) {
         val state = _uiState.value
         val clipId = state.selectedClipId ?: return
-        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clipId, state.currentFrame, updater)
-        commitProjectChange(updated)
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clipId, frame, updater)
+        commitProjectChange(updated, coalesceUndoTag = "transform_$clipId")
     }
 
     fun toggleKeyframeAtCurrentFrame() {
@@ -691,9 +717,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             showStatus("Select an object on canvas or timeline first")
             return
         }
-        val updated = ProjectMutator.toggleKeyframeAtFrame(state.project, clipId, state.currentFrame)
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.toggleKeyframeAtFrame(state.project, clipId, frame)
         commitProjectChange(updated)
-        showStatus("Keyframe updated at F${state.currentFrame + 1}")
+        showStatus("Keyframe updated at F${frame + 1}")
     }
 
     fun selectKeyframeNode(clipId: String, globalFrame: Int) {
@@ -715,12 +742,60 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun cycleSelectedKeyframeEasing() {
         val state = _uiState.value
         val clip = state.selectedClip ?: return
-        val localFrame = (state.currentFrame - clip.startFrame).coerceAtLeast(0)
+        val localFrame = (_playbackFrame.value - clip.startFrame).coerceAtLeast(0)
         val existing = clip.keyframes.firstOrNull { it.frame == localFrame } ?: return
         val entries = EasingType.entries
         val nextEasing = entries[(entries.indexOf(existing.easing) + 1) % entries.size]
         updateSelectedClipTransform { it.copy(easing = nextEasing) }
         showStatus("Easing: ${nextEasing.displayName}")
+    }
+
+    fun updateSelectedKeyframeEasing(
+        easing: EasingType,
+        p1x: Float,
+        p1y: Float,
+        p2x: Float,
+        p2y: Float
+    ) {
+        val state = _uiState.value
+        val clip = state.selectedClip ?: return
+        val localFrame = (_playbackFrame.value - clip.startFrame).coerceAtLeast(0)
+        val targetFrame = clip.keyframes.firstOrNull { it.frame == localFrame }?.frame
+            ?: clip.keyframes.filter { it.frame <= localFrame }.maxByOrNull { it.frame }?.frame
+            ?: clip.keyframes.firstOrNull()?.frame
+            ?: 0
+        val globalTarget = (clip.startFrame + targetFrame).coerceIn(0, (state.project.activeScene.durationFrames - 1).coerceAtLeast(0))
+        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clip.id, globalTarget) { kf ->
+            kf.copy(
+                easing = easing,
+                easingP1X = p1x.coerceIn(0.01f, 0.99f),
+                easingP1Y = p1y.coerceIn(-0.6f, 1.6f),
+                easingP2X = p2x.coerceIn(0.01f, 0.99f),
+                easingP2Y = p2y.coerceIn(-0.6f, 1.6f)
+            )
+        }
+        commitProjectChange(updated, coalesceUndoTag = "easing_${clip.id}")
+        showStatus("Curve set: ${easing.displayName}")
+    }
+
+    fun applyQuickMotionPreset(presetId: String, label: String) {
+        val state = _uiState.value
+        val clipId = state.selectedClipId
+            ?: state.project.activeScene.clips.firstOrNull { it.characterId != null }?.id
+            ?: state.project.activeScene.clips.firstOrNull()?.id
+            ?: run {
+                showStatus("Select a clip on stage or timeline first")
+                return
+            }
+        val updated = ProjectMutator.applyQuickMotionPreset(
+            project = state.project,
+            clipId = clipId,
+            startGlobalFrame = _playbackFrame.value,
+            presetId = presetId
+        )
+        commitProjectChange(updated)
+        _uiState.update { it.copy(selectedClipId = clipId) }
+        showStatus("Applied $label motion")
     }
 
     fun updateSelectedClipProps(updater: (TimelineClip) -> TimelineClip) {
@@ -732,7 +807,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             if (locked) scene
             else scene.copy(clips = scene.clips.map { if (it.id == clipId) updater(it) else it })
         }
-        commitProjectChange(updated)
+        commitProjectChange(updated, coalesceUndoTag = "clip_props_$clipId")
     }
 
     fun flipSelectedClip(horizontal: Boolean) {
@@ -745,10 +820,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun splitSelectedClipAtPlayhead() {
         val state = _uiState.value
         val clipId = state.selectedClipId ?: return
-        val updated = ProjectMutator.splitClipAtFrame(state.project, clipId, state.currentFrame)
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.splitClipAtFrame(state.project, clipId, frame)
         if (updated != state.project) {
             commitProjectChange(updated)
-            showStatus("Clip split at F${state.currentFrame + 1}")
+            showStatus("Clip split at F${frame + 1}")
         } else {
             showStatus("Move playhead inside the clip to split")
         }
@@ -780,18 +856,32 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun addShape(kind: ShapeKind, fillHex: String, strokeHex: String) {
         val state = _uiState.value
-        val (updated, clipId) = ProjectMutator.addShapeClip(state.project, kind, fillHex, strokeHex, state.currentFrame)
+        val (updated, clipId) = ProjectMutator.addShapeClip(state.project, kind, fillHex, strokeHex, _playbackFrame.value)
         commitProjectChange(updated)
         _uiState.update { it.copy(selectedClipId = clipId, activeSheet = ActiveEditorSheet.NONE) }
         showStatus("Added ${kind.displayName}")
     }
 
-    fun addText(text: String, colorHex: String, sizeSp: Float) {
+    fun addText(
+        text: String,
+        colorHex: String,
+        sizeSp: Float,
+        bubbleStyle: TextBubbleStyle = TextBubbleStyle.NONE,
+        bubbleFillHex: String = "#FFFFFF"
+    ) {
         val state = _uiState.value
-        val (updated, clipId) = ProjectMutator.addTextClip(state.project, text, colorHex, sizeSp, state.currentFrame)
+        val (updated, clipId) = ProjectMutator.addTextClip(
+            project = state.project,
+            text = text,
+            colorHex = colorHex,
+            sizeSp = sizeSp,
+            startFrame = _playbackFrame.value,
+            bubbleStyle = bubbleStyle,
+            bubbleFillHex = bubbleFillHex
+        )
         commitProjectChange(updated)
         _uiState.update { it.copy(selectedClipId = clipId, activeSheet = ActiveEditorSheet.NONE) }
-        showStatus("Added text layer")
+        showStatus(if (bubbleStyle == TextBubbleStyle.NONE) "Added text layer" else "Added ${bubbleStyle.displayName} bubble")
     }
 
     fun toggleDrawingMode() {
@@ -882,6 +972,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(project = updated) }
     }
 
+    fun toggleIkFlipBend() {
+        val next = !_uiState.value.ikFlipBend
+        _uiState.update { it.copy(ikFlipBend = next) }
+        showStatus(if (next) "IK Bend Direction: Reversed" else "IK Bend Direction: Natural")
+    }
+
+    fun mirrorSelectedClipPoseAtCurrentFrame() {
+        val state = _uiState.value
+        val clipId = state.selectedClipId
+            ?: state.project.activeScene.clips.firstOrNull { it.characterId != null }?.id
+            ?: return
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clipId, frame) { kf ->
+            kf.copy(poseOffsets = com.example.engine.IkRigSolver.mirrorPoseOffsets(kf.poseOffsets))
+        }
+        commitProjectChange(updated)
+        showStatus("Mirrored L↔R limb pose at F${frame + 1}")
+    }
+
     fun resetSelectedClipPoseAtCurrentFrame() {
         val state = _uiState.value
         val clipId = state.selectedClipId ?: return
@@ -911,10 +1020,45 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             proj = ProjectMutator.upsertKeyframeAtFrame(proj, targetClip.id, frame) { it }
             commitProjectChange(proj)
             _uiState.update { it.copy(selectedClipId = targetClip.id) }
-            showStatus("Stamped Pose Keyframe #${(targetClip.keyframes.size)} at F${frame + 1}")
+            val updatedCount = proj.activeScene.clips.firstOrNull { it.id == targetClip.id }?.keyframes?.size ?: targetClip.keyframes.size
+            showStatus("Stamped Pose Keyframe #$updatedCount at F${frame + 1}")
         } else {
             showStatus("Add or select a character first")
         }
+    }
+
+    fun dropFacialExpressionOnTimeline(
+        layerId: String,
+        clipId: String?,
+        globalFrame: Int,
+        presetId: String
+    ) {
+        stopPlayback()
+        val state = _uiState.value
+        val preset = com.example.engine.FacialExpressionEngine.presetById(presetId) ?: return
+        val scene = state.project.activeScene
+        val safeFrame = globalFrame.coerceIn(0, (scene.durationFrames - 1).coerceAtLeast(0))
+        val (updated, affectedClipId) = ProjectMutator.dropFacialExpressionPreset(
+            project = state.project,
+            layerId = layerId,
+            clipId = clipId,
+            globalFrame = safeFrame,
+            presetId = presetId
+        )
+        if (affectedClipId == null) {
+            showStatus("Drop onto an unlocked Character layer")
+            return
+        }
+        commitProjectChange(updated)
+        _playbackFrame.value = safeFrame
+        _uiState.update {
+            it.copy(
+                currentFrame = safeFrame,
+                selectedClipId = affectedClipId,
+                selectedLayerId = layerId
+            )
+        }
+        showStatus("Applied ${preset.name} at F${safeFrame + 1}")
     }
 
     fun stepToAdjacentKeyframe(forward: Boolean) {
@@ -945,7 +1089,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val state = _uiState.value
         val frame = _playbackFrame.value
         val updated = ProjectMutator.upsertCameraKeyframeAtFrame(state.project, frame, updater)
-        commitProjectChange(updated)
+        commitProjectChange(updated, coalesceUndoTag = "camera_$frame")
     }
 
     fun setCameraFocusClip(clipId: String?) {
@@ -985,6 +1129,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         showStatus("Stage Background: ${mode.displayName}")
     }
 
+    fun applyCinematicCameraPreset(presetId: String, label: String) {
+        val updated = ProjectMutator.applyCinematicCameraPreset(
+            project = _uiState.value.project,
+            startFrame = _playbackFrame.value,
+            presetId = presetId
+        )
+        commitProjectChange(updated)
+        showStatus("Camera preset: $label")
+    }
+
+    fun updateSceneVfxConfig(updater: (SceneVfxConfig) -> SceneVfxConfig) {
+        val updated = ProjectMutator.updateActiveScene(_uiState.value.project) { scene ->
+            scene.copy(vfxConfig = updater(scene.vfxConfig))
+        }
+        commitProjectChange(updated, coalesceUndoTag = "scene_vfx")
+    }
+
     fun exportBlank2048ModularChartTemplate(onSavedPath: (String) -> Unit = {}) {
         viewModelScope.launch {
             val savedPath = assetStorage.saveBlank2048ModularChartTemplate()
@@ -997,8 +1158,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun setBrushStyle(colorHex: String, widthRatio: Float) {
-        _uiState.update { it.copy(brushColorHex = colorHex, brushWidthRatio = widthRatio) }
+    fun setBrushStyle(colorHex: String, widthRatio: Float, style: BrushStyle = _uiState.value.brushStyle) {
+        _uiState.update {
+            it.copy(
+                brushColorHex = colorHex,
+                brushWidthRatio = widthRatio,
+                brushStyle = style
+            )
+        }
     }
 
     fun finishDrawingStroke(points: List<NormalizedPoint>) {
@@ -1007,11 +1174,34 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val stroke = DrawingStroke(
             points = points,
             colorHex = state.brushColorHex,
-            strokeWidthRatio = state.brushWidthRatio
+            strokeWidthRatio = state.brushWidthRatio,
+            brushStyle = state.brushStyle
         )
-        val (updated, clipId) = ProjectMutator.addDrawingStroke(state.project, stroke, state.currentFrame)
+        val (updated, clipId) = ProjectMutator.addDrawingStroke(state.project, stroke, _playbackFrame.value)
         commitProjectChange(updated)
         _uiState.update { it.copy(selectedClipId = clipId) }
+    }
+
+    fun undoLastDrawingStroke() {
+        val state = _uiState.value
+        val (updated, removed) = ProjectMutator.undoLastDrawingStroke(state.project, _playbackFrame.value)
+        if (removed) {
+            commitProjectChange(updated)
+            showStatus("Undid last brush stroke")
+        } else {
+            showStatus("No brush strokes to undo")
+        }
+    }
+
+    fun clearDrawingStrokes() {
+        val state = _uiState.value
+        val (updated, cleared) = ProjectMutator.clearDrawingStrokes(state.project, _playbackFrame.value)
+        if (cleared) {
+            commitProjectChange(updated)
+            showStatus("Cleared sketch strokes")
+        } else {
+            showStatus("Sketch layer is already empty")
+        }
     }
 
     fun setSceneBackgroundColor(hex: String) {
@@ -1123,6 +1313,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         showStatus("Added Scene $nextNum")
     }
 
+    fun duplicateActiveScene() {
+        stopPlayback()
+        val updated = ProjectMutator.duplicateActiveScene(_uiState.value.project)
+        commitProjectChange(updated)
+        _playbackFrame.value = 0
+        _uiState.update { it.copy(currentFrame = 0, selectedClipId = null) }
+        prefetchActiveScene(updated)
+        showStatus("Duplicated scene: ${updated.activeScene.name}")
+    }
+
     fun deleteActiveScene() {
         val proj = _uiState.value.project
         if (proj.scenes.size <= 1) return
@@ -1220,6 +1420,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(isLooping = !it.isLooping) }
     }
 
+    fun cyclePlaybackSpeed() {
+        val speeds = listOf(0.25f, 0.5f, 1.0f, 1.5f, 2.0f)
+        val current = _uiState.value.playbackSpeed
+        val idx = speeds.indexOfFirst { kotlin.math.abs(it - current) < 0.05f }
+        val next = speeds[(idx + 1) % speeds.size]
+        _uiState.update { it.copy(playbackSpeed = next) }
+        applyMediaPlayerSpeed()
+        val label = if (next == next.toInt().toFloat()) "${next.toInt()}x" else "${next}x"
+        showStatus("Playback Speed: $label")
+    }
+
     fun togglePlayback() {
         if (_uiState.value.isPlaying) {
             stopPlayback()
@@ -1239,13 +1450,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         startAudioPreviewIfPresent()
 
         playbackJob = viewModelScope.launch {
-            val fps = _uiState.value.project.fps.coerceIn(12, 60)
-            val frameDurationNs = 1_000_000_000L / fps
             var anchorFrame = startFrame
             var anchorTimeNs = System.nanoTime()
+            var lastSpeed = _uiState.value.playbackSpeed.coerceIn(0.25f, 2.0f)
 
             while (isActive && _uiState.value.isPlaying) {
                 val nowNs = System.nanoTime()
+                val speed = _uiState.value.playbackSpeed.coerceIn(0.25f, 2.0f)
+                if (kotlin.math.abs(speed - lastSpeed) > 0.01f) {
+                    anchorFrame = _playbackFrame.value
+                    anchorTimeNs = nowNs
+                    lastSpeed = speed
+                }
+                val fps = _uiState.value.project.fps.coerceIn(12, 60)
+                val frameDurationNs = (1_000_000_000.0 / (fps * speed)).toLong().coerceAtLeast(4_000_000L)
                 val elapsedFrames = ((nowNs - anchorTimeNs) / frameDurationNs).toInt()
                 val targetRaw = anchorFrame + elapsedFrames
                 val total = _uiState.value.project.activeScene.durationFrames.coerceAtLeast(1)
@@ -1380,13 +1598,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun activePlayableAudioClip(): TimelineClip? {
         val scene = _uiState.value.project.activeScene
-        val visibleAudioLayerIds = scene.layers
-            .filter { it.type == LayerType.AUDIO && it.isVisible }
-            .map { it.id }
-            .toSet()
         return scene.clips.firstOrNull { clip ->
-            !clip.audioPath.isNullOrBlank() &&
-                (visibleAudioLayerIds.isEmpty() || clip.layerId in visibleAudioLayerIds)
+            if (clip.audioPath.isNullOrBlank()) return@firstOrNull false
+            val layer = scene.layers.firstOrNull { it.id == clip.layerId }
+            layer?.isVisible != false
+        }
+    }
+
+    private fun applyMediaPlayerSpeed() {
+        val mp = mediaPlayer ?: return
+        if (!isAudioPrepared) return
+        val audioClip = activePlayableAudioClip() ?: return
+        val combinedSpeed = (_uiState.value.playbackSpeed * audioClip.speedMultiplier).coerceIn(0.25f, 4.0f)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            runCatching {
+                val params = mp.playbackParams
+                if (kotlin.math.abs(params.speed - combinedSpeed) > 0.02f) {
+                    mp.playbackParams = params.setSpeed(combinedSpeed)
+                }
+            }
         }
     }
 
@@ -1419,6 +1649,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         if (seekMs < endLimitMs) {
                             mp.seekTo(seekMs)
                             mp.start()
+                            applyMediaPlayerSpeed()
                         }
                     } else if (currentF < audioClip.startFrame) {
                         val seekMs = audioClip.audioTrimStartMs.toInt().coerceIn(0, endLimitMs)
@@ -1438,7 +1669,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private fun syncAudioPreviewForFrame(frame: Int) {
         val mp = mediaPlayer ?: return
         if (!isAudioPrepared) return
-        val audioClip = activePlayableAudioClip() ?: return
+        val audioClip = activePlayableAudioClip() ?: run {
+            runCatching { if (mp.isPlaying) mp.pause() }
+            return
+        }
         val fps = _uiState.value.project.fps.coerceAtLeast(1)
         val safeSpeed = audioClip.speedMultiplier.coerceIn(0.1f, 4f)
         runCatching {
@@ -1459,6 +1693,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             } else if (!mp.isPlaying) {
                 mp.seekTo(expectedMs.coerceIn(0, endLimitMs))
                 mp.start()
+                applyMediaPlayerSpeed()
             }
         }
     }
@@ -1493,6 +1728,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     // --- Export ---
     fun startExport(format: ExportFormat, resolution: ExportResolution, fps: Int, durationFrames: Int) {
         stopPlayback()
+        saveCurrentProject(silent = true)
         exportJob?.cancel()
         val state = _uiState.value
         val total = durationFrames.coerceIn(1, state.project.activeScene.durationFrames.coerceAtLeast(1))
@@ -1531,6 +1767,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     // --- Undo / Redo ---
     fun undo() {
         if (undoStack.isEmpty()) return
+        lastCoalescedUndoTag = null
         val prev = undoStack.removeLast()
         redoStack.addLast(_uiState.value.project)
         _uiState.update {
@@ -1541,6 +1778,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun redo() {
         if (redoStack.isEmpty()) return
+        lastCoalescedUndoTag = null
         val next = redoStack.removeLast()
         undoStack.addLast(_uiState.value.project)
         _uiState.update {
@@ -1549,15 +1787,27 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         saveCurrentProject(silent = true)
     }
 
-    private fun commitProjectChange(newProject: ProjectDocument) {
+    private fun commitProjectChange(newProject: ProjectDocument, coalesceUndoTag: String? = null) {
         val current = _uiState.value.project
         if (newProject == current) return
-        pushUndoSnapshot(current)
+        val nowMs = System.currentTimeMillis()
+        val shouldCoalesce = coalesceUndoTag != null &&
+            coalesceUndoTag == lastCoalescedUndoTag &&
+            (nowMs - lastCoalescedUndoMs) < UNDO_COALESCE_WINDOW_MS
+        if (!shouldCoalesce) {
+            pushUndoSnapshot(current)
+        }
+        lastCoalescedUndoTag = coalesceUndoTag
+        lastCoalescedUndoMs = nowMs
         _uiState.update {
             it.copy(project = newProject, canUndo = undoStack.isNotEmpty(), canRedo = false)
         }
         prefetchActiveScene(newProject)
-        saveCurrentProject(silent = true)
+        if (coalesceUndoTag != null) {
+            scheduleDebouncedSave()
+        } else {
+            saveCurrentProject(silent = true)
+        }
     }
 
     private fun pushUndoSnapshot(snapshot: ProjectDocument) {
@@ -1576,6 +1826,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private fun clearHistory() {
         undoStack.clear()
         redoStack.clear()
+        lastCoalescedUndoTag = null
         _uiState.update { it.copy(canUndo = false, canRedo = false) }
     }
 

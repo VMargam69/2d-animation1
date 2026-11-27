@@ -130,12 +130,14 @@ enum class PropAttachmentPoint(val displayName: String, val shortLabel: String) 
 enum class IkHandleId(val label: String) {
     HEAD("Head"),
     TORSO("Torso"),
-    LEFT_ELBOW("L.Arm"),
+    LEFT_ELBOW("L.Elbow"),
     LEFT_HAND("L.Hand"),
-    RIGHT_ELBOW("R.Arm"),
+    RIGHT_ELBOW("R.Elbow"),
     RIGHT_HAND("R.Hand"),
-    LEFT_FOOT("L.Leg"),
-    RIGHT_FOOT("R.Leg")
+    LEFT_KNEE("L.Knee"),
+    LEFT_FOOT("L.Foot"),
+    RIGHT_KNEE("R.Knee"),
+    RIGHT_FOOT("R.Foot")
 }
 
 enum class ChromaKeyMode(val displayName: String, val colorHex: String?) {
@@ -170,7 +172,11 @@ data class CameraKeyframe(
     val y: Float = 0.5f,
     val zoom: Float = 1.0f,
     val rotation: Float = 0f,
-    val easing: EasingType = EasingType.EASE_IN_OUT
+    val easing: EasingType = EasingType.EASE_IN_OUT,
+    val easingP1X: Float = 0.42f,
+    val easingP1Y: Float = 0f,
+    val easingP2X: Float = 0.58f,
+    val easingP2Y: Float = 1f
 )
 
 data class SkeletonRigConfig(
@@ -245,7 +251,12 @@ enum class AnimationPresetType(
     TALKING("Talking", 40, "Dialogue"),
     WAVING("Waving", 36, "Gesture"),
     JUMPING("Jumping", 30, "Action"),
-    DANCING("Dancing", 44, "Action")
+    DANCING("Dancing", 44, "Action"),
+    FIGHTING("Fighting", 30, "Action"),
+    FLYING("Flying", 36, "Action"),
+    SLEEPING("Sleeping", 60, "Pose"),
+    CLAPPING("Clapping", 28, "Gesture"),
+    THINKING("Thinking", 48, "Emotion")
 }
 
 data class AnimationPreset(
@@ -258,10 +269,64 @@ data class AnimationPreset(
     val description: String
 )
 
-enum class EasingType(val displayName: String) {
-    LINEAR("Linear"),
-    HOLD("Hold (Step)"),
-    EASE_IN_OUT("Ease In-Out")
+enum class EasingType(val displayName: String, val shortLabel: String) {
+    LINEAR("Linear", "Linear"),
+    HOLD("Hold (Step)", "Hold"),
+    EASE_IN("Ease In", "Ease In"),
+    EASE_OUT("Ease Out", "Ease Out"),
+    EASE_IN_OUT("Ease In-Out", "Smooth"),
+    BOUNCE("Bounce", "Bounce"),
+    ELASTIC("Elastic", "Elastic"),
+    CUSTOM_CUBIC("Custom Curve", "Cubic")
+}
+
+enum class BrushStyle(val displayName: String) {
+    SOLID("Solid"),
+    NEON_GLOW("Neon"),
+    SKETCH_DASHED("Sketch")
+}
+
+enum class TextBubbleStyle(val displayName: String) {
+    NONE("Plain"),
+    SPEECH("Speech"),
+    THOUGHT("Thought"),
+    SHOUT("Shout"),
+    SUBTITLE("Subtitle")
+}
+
+enum class SceneParticleType(val displayName: String, val accentHex: String) {
+    NONE("None", "#64748B"),
+    RAIN("Rain", "#38BDF8"),
+    SNOW("Snow", "#E2E8F0"),
+    FIREFLIES("Fireflies", "#FACC15"),
+    PETALS("Petals", "#F472B6"),
+    SPARKLES("Sparkles", "#A78BFA"),
+    CONFETTI("Confetti", "#34D399"),
+    EMBERS("Embers", "#FB923C")
+}
+
+enum class SceneLightingMood(val displayName: String, val swatchHex: String) {
+    NONE("Natural", "#475569"),
+    GOLDEN_HOUR("Golden Hour", "#F59E0B"),
+    MIDNIGHT_BLUE("Midnight", "#1D4ED8"),
+    NOIR_DRAMATIC("Noir", "#334155"),
+    NEON_CYBER("Neon Cyber", "#C026D3"),
+    WARM_CINEMA("Warm Cinema", "#EA580C")
+}
+
+data class SceneVfxConfig(
+    val particleType: SceneParticleType = SceneParticleType.NONE,
+    val particleIntensity: Float = 0.65f,
+    val particleSpeed: Float = 1.0f,
+    val lightingMood: SceneLightingMood = SceneLightingMood.NONE,
+    val vignetteIntensity: Float = 0f,
+    val cameraShakeIntensity: Float = 0f
+) {
+    val hasActiveVfx: Boolean
+        get() = particleType != SceneParticleType.NONE ||
+            lightingMood != SceneLightingMood.NONE ||
+            vignetteIntensity > 0.01f ||
+            cameraShakeIntensity > 0.01f
 }
 
 enum class TransitionType(val displayName: String) {
@@ -299,7 +364,8 @@ data class DrawingStroke(
     val id: String = UUID.randomUUID().toString(),
     val points: List<NormalizedPoint>,
     val colorHex: String = "#38BDF8",
-    val strokeWidthRatio: Float = 0.008f
+    val strokeWidthRatio: Float = 0.008f,
+    val brushStyle: BrushStyle = BrushStyle.SOLID
 )
 
 data class TransformKeyframe(
@@ -311,8 +377,13 @@ data class TransformKeyframe(
     val scaleY: Float = 1f,
     val opacity: Float = 1f,
     val easing: EasingType = EasingType.LINEAR,
+    val easingP1X: Float = 0.42f,
+    val easingP1Y: Float = 0f,
+    val easingP2X: Float = 0.58f,
+    val easingP2Y: Float = 1f,
     val poseOffsets: PoseKeyframeOffsets = PoseKeyframeOffsets(),
     val expressionOverride: FacialExpression? = null,
+    val facialPresetId: String? = null,
     val handPoseOverride: HandPoseType? = null,
     val blinkOverride: Boolean? = null
 )
@@ -333,6 +404,7 @@ data class TimelineClip(
     val propAttachment: PropAttachmentPoint = PropAttachmentPoint.RIGHT_HAND,
     val customPropImagePath: String? = null,
     val propSwayEnabled: Boolean = true,
+    val propSwayStrength: Float = 1.0f,
     val propScale: Float = 1.0f,
     val speedMultiplier: Float = 1.0f,
     val loopAnimation: Boolean = true,
@@ -344,6 +416,8 @@ data class TimelineClip(
     val textContent: String? = null,
     val textColorHex: String = "#FFFFFF",
     val textSizeSp: Float = 36f,
+    val textBubbleStyle: TextBubbleStyle = TextBubbleStyle.NONE,
+    val textBubbleFillHex: String = "#FFFFFF",
     val shapeKind: ShapeKind? = null,
     val shapeFillHex: String = "#38BDF8",
     val shapeStrokeHex: String = "#F8FAFC",
@@ -380,6 +454,7 @@ data class AnimationScene(
     val chromaKeyMode: ChromaKeyMode = ChromaKeyMode.NONE,
     val cameraKeyframes: List<CameraKeyframe> = emptyList(),
     val cameraFocusClipId: String? = null,
+    val vfxConfig: SceneVfxConfig = SceneVfxConfig(),
     val durationFrames: Int = 144,
     val layers: List<AnimationLayer> = emptyList(),
     val clips: List<TimelineClip> = emptyList()

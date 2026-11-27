@@ -8,6 +8,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -15,6 +16,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import com.example.engine.IkRigSolver
 import com.example.engine.KeyframeEvaluator
 import com.example.engine.ProceduralRigRenderer
 import com.example.engine.PropAndModularChartRenderer
@@ -44,15 +46,18 @@ fun EditorCanvas(
     canvasZoom: Float,
     isDrawingMode: Boolean,
     isIkPosingMode: Boolean = false,
+    ikFlipBend: Boolean = false,
     isCameraKeyMode: Boolean = false,
     brushColorHex: String,
     brushWidthRatio: Float,
+    brushStyle: BrushStyle = BrushStyle.SOLID,
     sceneRenderer: SceneRenderer,
     onSelectClip: (String?) -> Unit,
     onCommitClipTranslation: (clipId: String, totalDxNormalized: Float, totalDyNormalized: Float) -> Unit,
     onCommitIkPose: (clipId: String, finalOffsets: PoseKeyframeOffsets) -> Unit = { _, _ -> },
     onCommitCameraPan: (totalDxNormalized: Float, totalDyNormalized: Float) -> Unit = { _, _ -> },
     onDragStateChanged: (isDragging: Boolean) -> Unit,
+    onActiveIkHandleChanged: (IkHandleId?) -> Unit = {},
     onFinishStroke: (List<NormalizedPoint>) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -73,11 +78,12 @@ fun EditorCanvas(
     val latestScene by rememberUpdatedState(scene)
     val latestCharactersById by rememberUpdatedState(charactersById)
     val latestSelectedId by rememberUpdatedState(selectedClipId)
-    val latestZoom by rememberUpdatedState(canvasZoom)
     val latestDrawingMode by rememberUpdatedState(isDrawingMode)
     val latestIkPosingMode by rememberUpdatedState(isIkPosingMode)
+    val latestIkFlipBend by rememberUpdatedState(ikFlipBend)
     val latestCameraKeyMode by rememberUpdatedState(isCameraKeyMode)
     val latestIsPlaying by rememberUpdatedState(isPlaying)
+    val latestOnActiveIkHandleChanged by rememberUpdatedState(onActiveIkHandleChanged)
     val liveFrameState = playbackFrameFlow.collectAsState()
     val bitmapVersionState = bitmapVersionFlow.collectAsState()
 
@@ -85,13 +91,22 @@ fun EditorCanvas(
         modifier = modifier
             .fillMaxSize()
             .testTag("editor_canvas")
-            // Tap gesture: hit-test objects in normalized stage coordinates to select or deselect
+            // Tap gesture: hit-test objects in camera-world normalized stage coordinates
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
                     if (latestDrawingMode || latestIsPlaying) return@detectTapGestures
-                    val nx = (offset.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
-                    val ny = (offset.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f)
-                    val hitClip = hitTestClipAtPoint(latestScene, liveFrameState.value, nx, ny)
+                    val w = size.width.coerceAtLeast(1).toFloat()
+                    val h = size.height.coerceAtLeast(1).toFloat()
+                    val frame = liveFrameState.value
+                    val camera = KeyframeEvaluator.evaluateCamera(latestScene, frame)
+                    val (wx, wy) = IkRigSolver.screenNormToWorldNorm(
+                        screenNx = (offset.x / w).coerceIn(0f, 1f),
+                        screenNy = (offset.y / h).coerceIn(0f, 1f),
+                        camera = camera,
+                        stageWidth = w,
+                        stageHeight = h
+                    )
+                    val hitClip = hitTestClipAtPoint(latestScene, frame, wx, wy)
                     onSelectClip(hitClip?.id)
                 }
             }
@@ -103,6 +118,9 @@ fun EditorCanvas(
                 var ikDragRig: CharacterRigDefinition? = null
                 var ikBaseEval: com.example.engine.EvaluatedTransform? = null
                 var ikBasePose: ProceduralRigRenderer.PoseAngles? = null
+                var dragCameraSnapshot: com.example.engine.EvaluatedCamera = com.example.engine.EvaluatedCamera()
+                var smoothVelX = 0f
+                var smoothVelY = 0f
                 var lastStrokePxX = 0f
                 var lastStrokePxY = 0f
 
@@ -111,14 +129,18 @@ fun EditorCanvas(
                         if (latestIsPlaying) return@detectDragGestures
                         val w = size.width.coerceAtLeast(1).toFloat()
                         val h = size.height.coerceAtLeast(1).toFloat()
-                        val nx = (startOffset.x / w).coerceIn(0f, 1f)
-                        val ny = (startOffset.y / h).coerceIn(0f, 1f)
+                        val sx = (startOffset.x / w).coerceIn(0f, 1f)
+                        val sy = (startOffset.y / h).coerceIn(0f, 1f)
                         val frame = liveFrameState.value
+                        val camera = KeyframeEvaluator.evaluateCamera(latestScene, frame)
+                        dragCameraSnapshot = camera
+                        smoothVelX = 0f
+                        smoothVelY = 0f
 
                         if (latestDrawingMode) {
                             liveStrokePoints.clear()
                             liveStrokePath.reset()
-                            liveStrokePoints.add(NormalizedPoint(nx, ny))
+                            liveStrokePoints.add(NormalizedPoint(sx, sy))
                             liveStrokePath.moveTo(startOffset.x, startOffset.y)
                             lastStrokePxX = startOffset.x
                             lastStrokePxY = startOffset.y
@@ -133,19 +155,23 @@ fun EditorCanvas(
                             return@detectDragGestures
                         }
 
-                        // When IK Posing Mode is active, first check if user grabbed one of the 8 IK handles
+                        val (wx, wy) = IkRigSolver.screenNormToWorldNorm(sx, sy, camera, w, h)
+
+                        // When IK Posing Mode is active, first check if user grabbed any of the 10 IK handles
                         if (latestIkPosingMode) {
                             val selClip = latestScene.clips.firstOrNull { it.id == latestSelectedId }
                             val rig = selClip?.characterId?.let { latestCharactersById[it] }
                             if (selClip != null && rig != null && frame in selClip.startFrame until selClip.endFrame) {
+                                val hitRadius = (0.095f / camera.zoom.coerceIn(0.6f, 2.5f)).coerceIn(0.045f, 0.14f)
                                 val hitHandle = hitTestIkHandleAtPoint(
                                     clip = selClip,
                                     rig = rig,
                                     frame = frame,
-                                    nx = nx,
-                                    ny = ny,
+                                    nx = wx,
+                                    ny = wy,
                                     stageWidth = w,
-                                    stageHeight = h
+                                    stageHeight = h,
+                                    hitRadius = hitRadius
                                 )
                                 if (hitHandle != null) {
                                     val eval = KeyframeEvaluator.evaluate(selClip, frame)
@@ -158,6 +184,7 @@ fun EditorCanvas(
                                     ikBaseEval = eval
                                     ikBasePose = ProceduralRigRenderer.computePose(selClip.animationPresetType, phase)
                                     activeIkHandleState.value = hitHandle
+                                    latestOnActiveIkHandleChanged(hitHandle)
                                     gesturePreviewState.value = StageGesturePreview(
                                         ikClipId = selClip.id,
                                         ikPoseOffsets = eval.poseOffsets
@@ -168,8 +195,8 @@ fun EditorCanvas(
                             }
                         }
 
-                        // Standard object hit-test & translation
-                        val hit = hitTestClipAtPoint(latestScene, frame, nx, ny)
+                        // Standard object hit-test & translation in camera-world space
+                        val hit = hitTestClipAtPoint(latestScene, frame, wx, wy)
                         activeDragClipId = hit?.id ?: latestSelectedId
                         if (hit != null && hit.id != latestSelectedId) {
                             onSelectClip(hit.id)
@@ -194,9 +221,15 @@ fun EditorCanvas(
                                 strokeDrawVersion.intValue++
                             }
                         } else if (draggingCamera) {
-                            val zoomFactor = latestZoom.coerceAtLeast(0.25f)
-                            val dxNorm = dragAmount.x / (w * zoomFactor)
-                            val dyNorm = dragAmount.y / (h * zoomFactor)
+                            // Canvas already receives unscaled local coordinates inside graphicsLayer;
+                            // apply only the scene camera zoom/rotation inverse transform.
+                            val (dxNorm, dyNorm) = IkRigSolver.screenDeltaToWorldNormDelta(
+                                dxPx = dragAmount.x,
+                                dyPx = dragAmount.y,
+                                camera = dragCameraSnapshot,
+                                stageWidth = w,
+                                stageHeight = h
+                            )
                             val cur = gesturePreviewState.value
                             gesturePreviewState.value = cur.copy(
                                 cameraDeltaX = cur.cameraDeltaX + dxNorm,
@@ -209,20 +242,22 @@ fun EditorCanvas(
                             val basePose = ikBasePose
                             val handle = activeIkHandleState.value
                             if (clip != null && rig != null && eval != null && basePose != null && handle != null) {
-                                val nx = (change.position.x / w).coerceIn(0.01f, 0.99f)
-                                val ny = (change.position.y / h).coerceIn(0.01f, 0.99f)
+                                val sx = (change.position.x / w).coerceIn(-0.15f, 1.15f)
+                                val sy = (change.position.y / h).coerceIn(-0.15f, 1.15f)
+                                val (wx, wy) = IkRigSolver.screenNormToWorldNorm(sx, sy, dragCameraSnapshot, w, h)
                                 val currentOffsets = gesturePreviewState.value.ikPoseOffsets ?: eval.poseOffsets
                                 val solved = PropAndModularChartRenderer.solveIkDragToOffsets(
                                     handleId = handle,
-                                    targetNx = nx,
-                                    targetNy = ny,
+                                    targetNx = wx,
+                                    targetNy = wy,
                                     clip = clip,
                                     rig = rig,
                                     transform = eval.copy(poseOffsets = currentOffsets),
                                     basePose = basePose,
                                     currentOffsets = currentOffsets,
                                     stageWidth = w,
-                                    stageHeight = h
+                                    stageHeight = h,
+                                    bendFlip = latestIkFlipBend
                                 )
                                 gesturePreviewState.value = StageGesturePreview(
                                     ikClipId = clip.id,
@@ -230,14 +265,23 @@ fun EditorCanvas(
                                 )
                             }
                         } else if (activeDragClipId != null) {
-                            val zoomFactor = latestZoom.coerceAtLeast(0.25f)
-                            val dxNorm = dragAmount.x / (w * zoomFactor)
-                            val dyNorm = dragAmount.y / (h * zoomFactor)
+                            val (dxNorm, dyNorm) = IkRigSolver.screenDeltaToWorldNormDelta(
+                                dxPx = dragAmount.x,
+                                dyPx = dragAmount.y,
+                                camera = dragCameraSnapshot,
+                                stageWidth = w,
+                                stageHeight = h
+                            )
+                            // Exponential moving average of drag velocity drives real-time prop sway feedback
+                            smoothVelX = smoothVelX * 0.62f + (dxNorm * 32f) * 0.38f
+                            smoothVelY = smoothVelY * 0.62f + (dyNorm * 32f) * 0.38f
                             val cur = gesturePreviewState.value
                             gesturePreviewState.value = cur.copy(
                                 draggedClipId = activeDragClipId,
                                 clipDeltaX = cur.clipDeltaX + dxNorm,
-                                clipDeltaY = cur.clipDeltaY + dyNorm
+                                clipDeltaY = cur.clipDeltaY + dyNorm,
+                                dragVelocityX = smoothVelX.coerceIn(-1.2f, 1.2f),
+                                dragVelocityY = smoothVelY.coerceIn(-1.2f, 1.2f)
                             )
                         }
                     },
@@ -258,11 +302,14 @@ fun EditorCanvas(
 
                             draggingCamera = false
                             activeIkHandleState.value = null
+                            latestOnActiveIkHandleChanged(null)
                             activeDragClipId = null
                             ikDragClip = null
                             ikDragRig = null
                             ikBaseEval = null
                             ikBasePose = null
+                            smoothVelX = 0f
+                            smoothVelY = 0f
                             gesturePreviewState.value = StageGesturePreview()
 
                             if (finishedCam) {
@@ -283,11 +330,14 @@ fun EditorCanvas(
                         strokeDrawVersion.intValue++
                         draggingCamera = false
                         activeIkHandleState.value = null
+                        latestOnActiveIkHandleChanged(null)
                         activeDragClipId = null
                         ikDragClip = null
                         ikDragRig = null
                         ikBaseEval = null
                         ikBasePose = null
+                        smoothVelX = 0f
+                        smoothVelY = 0f
                         gesturePreviewState.value = StageGesturePreview()
                         onDragStateChanged(false)
                     }
@@ -326,15 +376,48 @@ fun EditorCanvas(
 
         // Live in-progress vector drawing stroke (drawn directly from reusable Path, zero allocations!)
         if (strokeTick > 0 && liveStrokePoints.size >= 2) {
-            drawPath(
-                path = liveStrokePath,
-                color = parsedBrushColor,
-                style = Stroke(
-                    width = (brushWidthRatio * min(size.width, size.height)).coerceAtLeast(3f),
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round
-                )
-            )
+            val baseW = (brushWidthRatio * min(size.width, size.height)).coerceAtLeast(3f)
+            when (brushStyle) {
+                BrushStyle.SOLID -> {
+                    drawPath(
+                        path = liveStrokePath,
+                        color = parsedBrushColor,
+                        style = Stroke(width = baseW, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    )
+                }
+                BrushStyle.NEON_GLOW -> {
+                    drawPath(
+                        path = liveStrokePath,
+                        color = parsedBrushColor.copy(alpha = 0.24f),
+                        style = Stroke(width = baseW * 3.2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    )
+                    drawPath(
+                        path = liveStrokePath,
+                        color = parsedBrushColor.copy(alpha = 0.55f),
+                        style = Stroke(width = baseW * 1.85f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    )
+                    drawPath(
+                        path = liveStrokePath,
+                        color = Color.White.copy(alpha = 0.92f),
+                        style = Stroke(width = (baseW * 0.68f).coerceAtLeast(2f), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    )
+                }
+                BrushStyle.SKETCH_DASHED -> {
+                    drawPath(
+                        path = liveStrokePath,
+                        color = parsedBrushColor,
+                        style = Stroke(
+                            width = baseW,
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                            pathEffect = PathEffect.dashPathEffect(
+                                floatArrayOf((baseW * 2.4f).coerceAtLeast(8f), (baseW * 1.6f).coerceAtLeast(6f)),
+                                0f
+                            )
+                        )
+                    )
+                }
+            }
         }
     }
 }
@@ -346,7 +429,8 @@ private fun hitTestIkHandleAtPoint(
     nx: Float,
     ny: Float,
     stageWidth: Float,
-    stageHeight: Float
+    stageHeight: Float,
+    hitRadius: Float = 0.095f
 ): IkHandleId? {
     val eval = KeyframeEvaluator.evaluate(clip, frame)
     val localFrame = (frame - clip.startFrame).coerceAtLeast(0)
@@ -364,7 +448,7 @@ private fun hitTestIkHandleAtPoint(
         stageHeight = stageHeight
     )
     var bestId: IkHandleId? = null
-    var bestDist = 0.085f
+    var bestDist = hitRadius
     for (h in handles) {
         val d = hypot(nx - h.nx, ny - h.ny)
         if (d < bestDist) {

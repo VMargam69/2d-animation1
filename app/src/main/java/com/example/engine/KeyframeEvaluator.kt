@@ -11,7 +11,10 @@ import com.example.model.TimelineClip
 import com.example.model.TransformKeyframe
 import com.example.model.TransitionType
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.sin
 
 data class EvaluatedTransform(
     val x: Float,
@@ -22,6 +25,9 @@ data class EvaluatedTransform(
     val opacity: Float,
     val poseOffsets: PoseKeyframeOffsets = PoseKeyframeOffsets(),
     val expressionOverride: FacialExpression? = null,
+    val facialPresetId: String? = null,
+    val previousFacialPresetId: String? = null,
+    val framesSinceFacialKey: Int = 999,
     val handPoseOverride: HandPoseType? = null,
     val blinkOverride: Boolean? = null
 )
@@ -53,13 +59,24 @@ object KeyframeEvaluator {
         if (sortedKeyframes.isEmpty()) {
             return EvaluatedTransform(0.5f, 0.55f, 0f, 1f, 1f, 1f)
         }
+        val exprState = resolveExpressionTrackState(sortedKeyframes, localFrame)
         val first = sortedKeyframes.first()
         if (sortedKeyframes.size == 1 || localFrame <= first.frame) {
-            return first.toEvaluated()
+            return first.toEvaluated().copy(
+                expressionOverride = exprState.expressionOverride ?: first.expressionOverride,
+                facialPresetId = exprState.activePresetId,
+                previousFacialPresetId = exprState.previousPresetId,
+                framesSinceFacialKey = exprState.framesSinceKey
+            )
         }
         val last = sortedKeyframes.last()
         if (localFrame >= last.frame) {
-            return last.toEvaluated()
+            return last.toEvaluated().copy(
+                expressionOverride = exprState.expressionOverride ?: last.expressionOverride,
+                facialPresetId = exprState.activePresetId,
+                previousFacialPresetId = exprState.previousPresetId,
+                framesSinceFacialKey = exprState.framesSinceKey
+            )
         }
 
         var prev = first
@@ -76,11 +93,15 @@ object KeyframeEvaluator {
 
         val span = (next.frame - prev.frame).coerceAtLeast(1)
         val rawT = ((localFrame - prev.frame).toFloat() / span.toFloat()).coerceIn(0f, 1f)
-        val t = when (prev.easing) {
-            EasingType.HOLD -> if (localFrame >= next.frame) 1f else 0f
-            EasingType.LINEAR -> rawT
-            EasingType.EASE_IN_OUT -> (0.5f - 0.5f * cos(rawT * PI)).toFloat()
-        }
+        val t = evaluateEasing(
+            easing = prev.easing,
+            rawT = rawT,
+            p1x = prev.easingP1X,
+            p1y = prev.easingP1Y,
+            p2x = prev.easingP2X,
+            p2y = prev.easingP2Y,
+            isAtEnd = localFrame >= next.frame
+        )
 
         val pPose = prev.poseOffsets
         val nPose = next.poseOffsets
@@ -109,9 +130,56 @@ object KeyframeEvaluator {
             scaleY = lerp(prev.scaleY, next.scaleY, t),
             opacity = lerp(prev.opacity, next.opacity, t).coerceIn(0f, 1f),
             poseOffsets = interpPose,
-            expressionOverride = if (t >= 1f) (next.expressionOverride ?: prev.expressionOverride) else prev.expressionOverride,
+            expressionOverride = exprState.expressionOverride
+                ?: if (t >= 1f) (next.expressionOverride ?: prev.expressionOverride) else prev.expressionOverride,
+            facialPresetId = exprState.activePresetId,
+            previousFacialPresetId = exprState.previousPresetId,
+            framesSinceFacialKey = exprState.framesSinceKey,
             handPoseOverride = if (t >= 1f) (next.handPoseOverride ?: prev.handPoseOverride) else prev.handPoseOverride,
             blinkOverride = if (t >= 1f) (next.blinkOverride ?: prev.blinkOverride) else prev.blinkOverride
+        )
+    }
+
+    private data class ExpressionTrackState(
+        val activePresetId: String? = null,
+        val previousPresetId: String? = null,
+        val expressionOverride: FacialExpression? = null,
+        val framesSinceKey: Int = 999
+    )
+
+    /**
+     * Scans expression-bearing keyframes independently of pure transform keyframes so
+     * dropped facial expression presets hold smoothly across movement keyframes and
+     * transition organically from the previous expression.
+     */
+    private fun resolveExpressionTrackState(
+        sortedKeyframes: List<TransformKeyframe>,
+        localFrame: Int
+    ): ExpressionTrackState {
+        var activeKf: TransformKeyframe? = null
+        var previousKf: TransformKeyframe? = null
+        for (i in sortedKeyframes.indices) {
+            val kf = sortedKeyframes[i]
+            if (kf.frame > localFrame) break
+            if (kf.facialPresetId != null || kf.expressionOverride != null) {
+                previousKf = activeKf
+                activeKf = kf
+            }
+        }
+        val cur = activeKf ?: return ExpressionTrackState()
+        val activePreset = cur.facialPresetId ?: cur.expressionOverride?.let {
+            FacialExpressionEngine.presetForExpression(it).id
+        }
+        val prevPreset = previousKf?.let { prev ->
+            prev.facialPresetId ?: prev.expressionOverride?.let {
+                FacialExpressionEngine.presetForExpression(it).id
+            }
+        }
+        return ExpressionTrackState(
+            activePresetId = activePreset,
+            previousPresetId = prevPreset,
+            expressionOverride = cur.expressionOverride,
+            framesSinceKey = (localFrame - cur.frame).coerceAtLeast(0)
         )
     }
 
@@ -166,11 +234,15 @@ object KeyframeEvaluator {
         }
         val span = (next.frame - prev.frame).coerceAtLeast(1)
         val rawT = ((globalFrame - prev.frame).toFloat() / span.toFloat()).coerceIn(0f, 1f)
-        val t = when (prev.easing) {
-            EasingType.HOLD -> if (globalFrame >= next.frame) 1f else 0f
-            EasingType.LINEAR -> rawT
-            EasingType.EASE_IN_OUT -> (0.5f - 0.5f * cos(rawT * PI)).toFloat()
-        }
+        val t = evaluateEasing(
+            easing = prev.easing,
+            rawT = rawT,
+            p1x = prev.easingP1X,
+            p1y = prev.easingP1Y,
+            p2x = prev.easingP2X,
+            p2y = prev.easingP2Y,
+            isAtEnd = globalFrame >= next.frame
+        )
         return EvaluatedCamera(
             x = lerp(prev.x, next.x, t),
             y = lerp(prev.y, next.y, t),
@@ -271,9 +343,129 @@ object KeyframeEvaluator {
         opacity = opacity.coerceIn(0f, 1f),
         poseOffsets = poseOffsets,
         expressionOverride = expressionOverride,
+        facialPresetId = facialPresetId,
         handPoseOverride = handPoseOverride,
         blinkOverride = blinkOverride
     )
 
     private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+    /**
+     * Evaluates natural, non-robotic interpolation curves for any [EasingType],
+     * including physics-inspired Bounce and Elastic curves and an arbitrary cubic Bézier
+     * defined by (0,0) -> (p1x,p1y) -> (p2x,p2y) -> (1,1).
+     */
+    fun evaluateEasing(
+        easing: EasingType,
+        rawT: Float,
+        p1x: Float = 0.42f,
+        p1y: Float = 0f,
+        p2x: Float = 0.58f,
+        p2y: Float = 1f,
+        isAtEnd: Boolean = rawT >= 1f
+    ): Float {
+        val x = rawT.coerceIn(0f, 1f)
+        if (x <= 0f) return 0f
+        if (x >= 1f && easing != EasingType.HOLD) return 1f
+        return when (easing) {
+            EasingType.HOLD -> if (isAtEnd) 1f else 0f
+            EasingType.LINEAR -> x
+            EasingType.EASE_IN -> x * x * x
+            EasingType.EASE_OUT -> {
+                val inv = 1f - x
+                1f - inv * inv * inv
+            }
+            EasingType.EASE_IN_OUT -> (0.5f - 0.5f * cos(x * PI)).toFloat()
+            EasingType.BOUNCE -> easeOutBounce(x)
+            EasingType.ELASTIC -> easeOutElastic(x)
+            EasingType.CUSTOM_CUBIC -> evaluateCubicBezier(
+                x = x,
+                p1x = p1x.coerceIn(0.01f, 0.99f),
+                p1y = p1y.coerceIn(-0.6f, 1.6f),
+                p2x = p2x.coerceIn(0.01f, 0.99f),
+                p2y = p2y.coerceIn(-0.6f, 1.6f)
+            )
+        }
+    }
+
+    /**
+     * Default cubic Bézier control handles representing each preset curve for visual editing.
+     */
+    fun defaultBezierHandles(easing: EasingType): FloatArray = when (easing) {
+        EasingType.LINEAR -> floatArrayOf(0.25f, 0.25f, 0.75f, 0.75f)
+        EasingType.HOLD -> floatArrayOf(0.95f, 0.0f, 0.99f, 0.0f)
+        EasingType.EASE_IN -> floatArrayOf(0.55f, 0.0f, 0.90f, 0.25f)
+        EasingType.EASE_OUT -> floatArrayOf(0.10f, 0.75f, 0.45f, 1.0f)
+        EasingType.EASE_IN_OUT -> floatArrayOf(0.42f, 0.0f, 0.58f, 1.0f)
+        EasingType.BOUNCE -> floatArrayOf(0.30f, 1.25f, 0.65f, 0.92f)
+        EasingType.ELASTIC -> floatArrayOf(0.22f, 1.45f, 0.48f, 0.88f)
+        EasingType.CUSTOM_CUBIC -> floatArrayOf(0.34f, 1.32f, 0.64f, 1.0f)
+    }
+
+    private fun easeOutBounce(x: Float): Float {
+        val n1 = 7.5625f
+        val d1 = 2.75f
+        return when {
+            x < 1f / d1 -> n1 * x * x
+            x < 2f / d1 -> {
+                val u = x - 1.5f / d1
+                n1 * u * u + 0.75f
+            }
+            x < 2.5f / d1 -> {
+                val u = x - 2.25f / d1
+                n1 * u * u + 0.9375f
+            }
+            else -> {
+                val u = x - 2.625f / d1
+                n1 * u * u + 0.984375f
+            }
+        }
+    }
+
+    private fun easeOutElastic(x: Float): Float {
+        if (x <= 0f) return 0f
+        if (x >= 1f) return 1f
+        val c4 = (2.0 * PI) / 3.0
+        val value = 2.0.pow(-10.0 * x) * sin((x * 10.0 - 0.75) * c4) + 1.0
+        return value.toFloat()
+    }
+
+    private fun evaluateCubicBezier(
+        x: Float,
+        p1x: Float,
+        p1y: Float,
+        p2x: Float,
+        p2y: Float
+    ): Float {
+        // Solve B_x(u) = x via Newton-Raphson with binary-search fallback for guaranteed convergence
+        var u = x
+        val ax = 3f * p1x - 3f * p2x + 1f
+        val bx = -6f * p1x + 3f * p2x
+        val cx = 3f * p1x
+
+        for (i in 0 until 6) {
+            val xu = ((ax * u + bx) * u + cx) * u
+            val err = xu - x
+            if (abs(err) < 1e-4f) break
+            val dxu = (3f * ax * u + 2f * bx) * u + cx
+            if (abs(dxu) < 1e-5f) break
+            u = (u - err / dxu).coerceIn(0f, 1f)
+        }
+        // Refine if needed via bisection
+        val checkX = ((ax * u + bx) * u + cx) * u
+        if (abs(checkX - x) > 1e-3f) {
+            var lo = 0f
+            var hi = 1f
+            for (i in 0 until 12) {
+                val mid = (lo + hi) * 0.5f
+                val xm = ((ax * mid + bx) * mid + cx) * mid
+                if (xm < x) lo = mid else hi = mid
+            }
+            u = (lo + hi) * 0.5f
+        }
+        val ay = 3f * p1y - 3f * p2y + 1f
+        val by = -6f * p1y + 3f * p2y
+        val cy = 3f * p1y
+        return ((ay * u + by) * u + cy) * u
+    }
 }

@@ -2,6 +2,7 @@ package com.example
 
 import com.example.data.BuiltInCatalog
 import com.example.engine.KeyframeEvaluator
+import com.example.engine.ProceduralRigRenderer
 import com.example.model.*
 import com.example.viewmodel.ProjectMutator
 import com.squareup.moshi.Moshi
@@ -940,5 +941,499 @@ class AnimationEngineTest {
         assertEquals(2.8f, restored.audioSyncTracks.first().waveformSensitivity, 0.001f)
         assertEquals(16, restored.audioSyncTracks.first().volumeCurve.size)
         assertEquals(syncMeta.phonemeMappings.size, restored.audioSyncTracks.first().phonemeMappings.size)
+    }
+
+    @Test
+    fun `organic facial expression engine produces overshoot, staggered brow-lead, asymmetric wink, and living micro-saccades`() {
+        // 1. Overshoot curve should exceed 1.0 slightly mid-transition and settle back to 1.0
+        val peakSample = (1..20).maxOf { i ->
+            com.example.engine.FacialExpressionEngine.organicOvershootCurve(i / 20f, overshoot = 0.35f)
+        }
+        assertTrue("Expected elastic overshoot > 1.0, got $peakSample", peakSample > 1.02f)
+        assertEquals(1f, com.example.engine.FacialExpressionEngine.organicOvershootCurve(1f, 0.35f), 0.0001f)
+
+        // 2. Staggered overlap: early in transition from Neutral -> Shocked, brows lead ahead of mouth
+        val earlyTransition = com.example.engine.FacialExpressionEngine.evaluateOrganicFace(
+            activePresetId = com.example.engine.FacialExpressionEngine.PRESET_SHOCKED,
+            previousPresetId = com.example.engine.FacialExpressionEngine.PRESET_NEUTRAL,
+            fallbackExpression = FacialExpression.SHOCKED,
+            framesSinceKey = 1,
+            globalFrame = 10,
+            fps = 24
+        )
+        assertEquals(AtlasPartSlot.BROW_SCARED, earlyTransition.resolvedBrowSlot)
+        assertTrue("Expected brows already lifting early in shock transition", earlyTransition.leftBrowLift > 0.3f)
+
+        // 3. Settled Angry & Happy map automatically to matching mouth/brow atlas slots
+        val angry = com.example.engine.FacialExpressionEngine.evaluateOrganicFace(
+            activePresetId = com.example.engine.FacialExpressionEngine.PRESET_ANGRY,
+            previousPresetId = com.example.engine.FacialExpressionEngine.PRESET_ANGRY,
+            fallbackExpression = FacialExpression.ANGRY,
+            framesSinceKey = 24,
+            globalFrame = 40,
+            fps = 24
+        )
+        assertEquals(AtlasPartSlot.BROW_ANGRY, angry.resolvedBrowSlot)
+        assertEquals(AtlasPartSlot.LIP_ANGRY, angry.resolvedMouthSlot)
+        assertTrue(angry.showGrittedTeeth)
+
+        val happy = com.example.engine.FacialExpressionEngine.evaluateOrganicFace(
+            activePresetId = com.example.engine.FacialExpressionEngine.PRESET_HAPPY,
+            previousPresetId = com.example.engine.FacialExpressionEngine.PRESET_HAPPY,
+            fallbackExpression = FacialExpression.HAPPY,
+            framesSinceKey = 24,
+            globalFrame = 40,
+            fps = 24
+        )
+        assertEquals(AtlasPartSlot.BROW_HAPPY, happy.resolvedBrowSlot)
+        assertEquals(AtlasPartSlot.LIP_HAPPY, happy.resolvedMouthSlot)
+        assertTrue(happy.smileCurve > 0.6f)
+
+        // 4. Playful Wink is genuinely asymmetric (right eye closed, left eye open)
+        val wink = com.example.engine.FacialExpressionEngine.evaluateOrganicFace(
+            activePresetId = com.example.engine.FacialExpressionEngine.PRESET_WINK,
+            previousPresetId = com.example.engine.FacialExpressionEngine.PRESET_WINK,
+            fallbackExpression = FacialExpression.HAPPY,
+            framesSinceKey = 24,
+            globalFrame = 5,
+            fps = 24,
+            blinkOverride = null
+        )
+        assertTrue("Right eye should close for wink", wink.rightEyelidClose > 0.85f)
+        assertTrue("Left eye should stay noticeably more open than right eye", wink.leftEyeOpenness > wink.rightEyeOpenness + 0.5f)
+
+        // 5. Micro-saccades keep gaze organically alive across frames on a held Neutral expression
+        val gazeSamples = (0..72 step 12).map { f ->
+            com.example.engine.FacialExpressionEngine.evaluateOrganicFace(
+                activePresetId = com.example.engine.FacialExpressionEngine.PRESET_NEUTRAL,
+                previousPresetId = com.example.engine.FacialExpressionEngine.PRESET_NEUTRAL,
+                fallbackExpression = FacialExpression.NEUTRAL,
+                framesSinceKey = 60,
+                globalFrame = f,
+                fps = 24
+            ).eyeLookX
+        }
+        assertTrue("Expected living micro-saccade gaze variation across frames", gazeSamples.max() - gazeSamples.min() > 0.05f)
+    }
+
+    @Test
+    fun `dropping facial expression preset onto character layer inserts keyframe and tracks transitions across transform keys`() {
+        val base = BuiltInCatalog.sceneTemplates.first().buildProject("Facial Drop Test")
+        val charLayer = base.activeScene.layers.first { it.type == LayerType.CHARACTER }
+        val charClip = base.activeScene.clips.first { it.layerId == charLayer.id && it.characterId != null }
+
+        // Drop Happy at frame 12 and Angry at frame 30
+        val (afterHappy, clipId1) = ProjectMutator.dropFacialExpressionPreset(
+            project = base,
+            layerId = charLayer.id,
+            clipId = charClip.id,
+            globalFrame = charClip.startFrame + 12,
+            presetId = com.example.engine.FacialExpressionEngine.PRESET_HAPPY
+        )
+        assertEquals(charClip.id, clipId1)
+
+        // Add a transform-only keyframe in between at frame 20 (should NOT erase Happy expression)
+        val afterMove = ProjectMutator.upsertKeyframeAtFrame(
+            project = afterHappy,
+            clipId = charClip.id,
+            globalFrame = charClip.startFrame + 20
+        ) { it.copy(x = 0.62f) }
+
+        val (afterAngry, clipId2) = ProjectMutator.dropFacialExpressionPreset(
+            project = afterMove,
+            layerId = charLayer.id,
+            clipId = charClip.id,
+            globalFrame = charClip.startFrame + 30,
+            presetId = com.example.engine.FacialExpressionEngine.PRESET_ANGRY
+        )
+        assertEquals(charClip.id, clipId2)
+
+        val updatedClip = afterAngry.activeScene.clips.first { it.id == charClip.id }
+
+        // At frame 24 (after movement keyframe), Happy is still active
+        val evalAt24 = KeyframeEvaluator.evaluate(updatedClip, charClip.startFrame + 24)
+        assertEquals(com.example.engine.FacialExpressionEngine.PRESET_HAPPY, evalAt24.facialPresetId)
+
+        // At frame 33 (3 frames into Angry), active = Angry, previous = Happy, framesSinceFacialKey = 3
+        val evalAt33 = KeyframeEvaluator.evaluate(updatedClip, charClip.startFrame + 33)
+        assertEquals(com.example.engine.FacialExpressionEngine.PRESET_ANGRY, evalAt33.facialPresetId)
+        assertEquals(com.example.engine.FacialExpressionEngine.PRESET_HAPPY, evalAt33.previousFacialPresetId)
+        assertEquals(3, evalAt33.framesSinceFacialKey)
+
+        // Dropping onto a non-character layer is safely rejected
+        val bgLayer = afterAngry.activeScene.layers.firstOrNull { it.type != LayerType.CHARACTER }
+        if (bgLayer != null) {
+            val (_, rejectedClip) = ProjectMutator.dropFacialExpressionPreset(
+                project = afterAngry,
+                layerId = bgLayer.id,
+                clipId = null,
+                globalFrame = 10,
+                presetId = com.example.engine.FacialExpressionEngine.PRESET_SAD
+            )
+            assertNull(rejectedClip)
+        }
+
+        // Verify Moshi JSON round-trip preserves facialPresetId
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(afterAngry))
+        assertNotNull(restored)
+        val restoredClip = restored!!.activeScene.clips.first { it.id == charClip.id }
+        assertTrue(restoredClip.keyframes.any { it.facialPresetId == com.example.engine.FacialExpressionEngine.PRESET_ANGRY })
+    }
+
+    @Test
+    fun `advanced easing curves evaluate accurately including Bounce, Elastic overshoot, and Custom Cubic Bezier`() {
+        for (easing in EasingType.entries) {
+            assertEquals("Start value for $easing", 0f, KeyframeEvaluator.evaluateEasing(easing, 0f), 0.001f)
+            assertEquals("End value for $easing", 1f, KeyframeEvaluator.evaluateEasing(easing, 1f, isAtEnd = true), 0.001f)
+        }
+        // Ease-In starts slower than linear; Ease-Out starts faster than linear
+        val easeInMid = KeyframeEvaluator.evaluateEasing(EasingType.EASE_IN, 0.5f)
+        val easeOutMid = KeyframeEvaluator.evaluateEasing(EasingType.EASE_OUT, 0.5f)
+        assertTrue("Ease-In at 0.5 ($easeInMid) should be < 0.5", easeInMid < 0.3f)
+        assertTrue("Ease-Out at 0.5 ($easeOutMid) should be > 0.5", easeOutMid > 0.7f)
+
+        // Elastic overshoots above 1.0 before settling cleanly to 1.0
+        val elasticSamples = (1..20).map { KeyframeEvaluator.evaluateEasing(EasingType.ELASTIC, it / 20f) }
+        assertTrue("Elastic curve should overshoot > 1.0", elasticSamples.any { it > 1.05f })
+
+        // Bounce rebounds cleanly within 0..1.01
+        val bounceMid = KeyframeEvaluator.evaluateEasing(EasingType.BOUNCE, 0.55f)
+        assertTrue("Bounce curve should be in (0.5..1.01), got $bounceMid", bounceMid in 0.5f..1.01f)
+
+        // Custom Cubic Bézier with overshoot control point produces y > 1.0 in mid-travel
+        val cubicOvershoot = KeyframeEvaluator.evaluateEasing(
+            easing = EasingType.CUSTOM_CUBIC,
+            rawT = 0.65f,
+            p1x = 0.25f,
+            p1y = 1.45f,
+            p2x = 0.60f,
+            p2y = 1.25f
+        )
+        assertTrue("Custom cubic with overshoot handles should exceed 1.0, got $cubicOvershoot", cubicOvershoot > 1.0f)
+    }
+
+    @Test
+    fun `scene VFX config, deterministic camera shake, and two VFX starter templates work cleanly`() {
+        // Deterministic camera shake returns identical offsets for identical (frame, fps, intensity, seed)
+        val s1 = com.example.engine.SceneVfxEngine.computeCameraShake(frame = 17, fps = 24, intensity = 0.6f, seed = 99)
+        val s2 = com.example.engine.SceneVfxEngine.computeCameraShake(frame = 17, fps = 24, intensity = 0.6f, seed = 99)
+        assertEquals(s1, s2)
+        assertFalse("Active shake must be non-zero", s1.isZero)
+
+        val zeroShake = com.example.engine.SceneVfxEngine.computeCameraShake(frame = 17, fps = 24, intensity = 0f, seed = 99)
+        assertTrue(zeroShake.isZero)
+
+        // All 7 particle types + NONE and 5 lighting moods + NONE exist
+        assertEquals(8, SceneParticleType.entries.size)
+        assertEquals(6, SceneLightingMood.entries.size)
+
+        // Verify two new VFX starter templates exist AND tpl_blank_stage remains LAST for resetCurrentProject()
+        val templates = BuiltInCatalog.sceneTemplates
+        assertEquals("tpl_blank_stage", templates.last().id)
+        val neonTpl = templates.firstOrNull { it.id == "tpl_vfx_neon_rain" }
+        val fireflyTpl = templates.firstOrNull { it.id == "tpl_vfx_firefly_grove" }
+        assertNotNull(neonTpl)
+        assertNotNull(fireflyTpl)
+
+        val neonProj = neonTpl!!.buildProject("Neon Test")
+        assertEquals(SceneParticleType.RAIN, neonProj.activeScene.vfxConfig.particleType)
+        assertEquals(SceneLightingMood.NEON_CYBER, neonProj.activeScene.vfxConfig.lightingMood)
+        assertTrue(neonProj.activeScene.vfxConfig.vignetteIntensity > 0.3f)
+
+        val fireflyProj = fireflyTpl!!.buildProject("Grove Test")
+        assertEquals(SceneParticleType.FIREFLIES, fireflyProj.activeScene.vfxConfig.particleType)
+        assertEquals(SceneLightingMood.GOLDEN_HOUR, fireflyProj.activeScene.vfxConfig.lightingMood)
+
+        // Verify Moshi JSON round-trip of SceneVfxConfig
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(neonProj))
+        assertEquals(neonProj.activeScene.vfxConfig, restored?.activeScene?.vfxConfig)
+    }
+
+    @Test
+    fun `5 new character animations, comic bubbles, neon brush undo-clear, quick motion, camera presets, and scene duplication work`() {
+        // 5 new character animations produce valid distinct poses
+        val newPresets = listOf(
+            AnimationPresetType.FIGHTING,
+            AnimationPresetType.FLYING,
+            AnimationPresetType.SLEEPING,
+            AnimationPresetType.CLAPPING,
+            AnimationPresetType.THINKING
+        )
+        val poses = newPresets.map { ProceduralRigRenderer.computePose(it, 0.25f) }
+        assertEquals("All 5 new animations must produce distinct poses", 5, poses.toSet().size)
+        assertTrue("Sleeping pose closes eyes", ProceduralRigRenderer.computePose(AnimationPresetType.SLEEPING, 0.3f).blinkClosed)
+        assertTrue("Flying pose elevates body", ProceduralRigRenderer.computePose(AnimationPresetType.FLYING, 0.25f).bodyBobY < -10f)
+        for (preset in newPresets) {
+            assertTrue("BuiltInCatalog missing $preset", BuiltInCatalog.animationPresets.any { it.type == preset })
+        }
+
+        // Comic text bubble creation & persistence
+        var proj = BuiltInCatalog.sceneTemplates.first().buildProject("Studio Test")
+        val (withBubble, bubbleId) = ProjectMutator.addTextClip(
+            project = proj,
+            text = "BOOM!",
+            colorHex = "#0F172A",
+            sizeSp = 30f,
+            startFrame = 10,
+            bubbleStyle = TextBubbleStyle.SHOUT,
+            bubbleFillHex = "#FDE047"
+        )
+        proj = withBubble
+        val bubbleClip = proj.activeScene.clips.first { it.id == bubbleId }
+        assertEquals(TextBubbleStyle.SHOUT, bubbleClip.textBubbleStyle)
+        assertEquals("#FDE047", bubbleClip.textBubbleFillHex)
+
+        // Quick Motion preset stamps eased keyframes
+        val targetChar = proj.activeScene.clips.first { it.characterId != null }
+        val withMotion = ProjectMutator.applyQuickMotionPreset(proj, targetChar.id, 0, "bounce_in")
+        assertTrue(withMotion.activeScene.clips.first { it.id == targetChar.id }.keyframes.any { it.easing == EasingType.BOUNCE })
+
+        // 1-Tap Cinematic Camera Preset stamps camera keyframes
+        val withCam = ProjectMutator.applyCinematicCameraPreset(withMotion, 0, "crash_zoom")
+        assertTrue(withCam.activeScene.cameraKeyframes.size >= 2)
+        assertTrue(withCam.activeScene.cameraKeyframes.any { it.easing == EasingType.ELASTIC })
+
+        // Neon Glow & Sketch Dashed brush strokes + per-stroke undo & clear
+        val neonStroke = DrawingStroke(
+            points = listOf(NormalizedPoint(0.2f, 0.3f), NormalizedPoint(0.5f, 0.5f)),
+            colorHex = "#38BDF8",
+            brushStyle = BrushStyle.NEON_GLOW
+        )
+        val sketchStroke = DrawingStroke(
+            points = listOf(NormalizedPoint(0.3f, 0.6f), NormalizedPoint(0.7f, 0.6f)),
+            colorHex = "#F59E0B",
+            brushStyle = BrushStyle.SKETCH_DASHED
+        )
+        val (afterStroke1, drawClipId) = ProjectMutator.addDrawingStroke(withCam, neonStroke, 0)
+        val (afterStroke2, _) = ProjectMutator.addDrawingStroke(afterStroke1, sketchStroke, 0)
+        assertEquals(2, afterStroke2.activeScene.clips.first { it.id == drawClipId }.drawingStrokes.size)
+
+        val (afterUndo, didUndo) = ProjectMutator.undoLastDrawingStroke(afterStroke2, 0)
+        assertTrue(didUndo)
+        val remainingStrokes = afterUndo.activeScene.clips.first { it.id == drawClipId }.drawingStrokes
+        assertEquals(1, remainingStrokes.size)
+        assertEquals(BrushStyle.NEON_GLOW, remainingStrokes.first().brushStyle)
+
+        val (afterClear, didClear) = ProjectMutator.clearDrawingStrokes(afterUndo, 0)
+        assertTrue(didClear)
+        assertTrue(afterClear.activeScene.clips.first { it.id == drawClipId }.drawingStrokes.isEmpty())
+
+        // Scene duplication deep-clones scene, layers, and clips with fresh UUIDs and remapped layerIds
+        val origScene = afterClear.activeScene
+        val duplicated = ProjectMutator.duplicateActiveScene(afterClear)
+        assertEquals(afterClear.scenes.size + 1, duplicated.scenes.size)
+        val dupScene = duplicated.activeScene
+        assertNotEquals(origScene.id, dupScene.id)
+        assertEquals(origScene.layers.size, dupScene.layers.size)
+        assertEquals(origScene.clips.size, dupScene.clips.size)
+        val dupLayerIds = dupScene.layers.map { it.id }.toSet()
+        assertTrue("All duplicated clips must map to duplicated layer IDs", dupScene.clips.all { it.layerId in dupLayerIds })
+        assertTrue("Duplicated layer IDs must be distinct from originals", dupLayerIds.intersect(origScene.layers.map { it.id }.toSet()).isEmpty())
+    }
+
+    @Test
+    fun `prop sway physics engine computes deterministic spring pendulum motion, live drag kick, and respects toggle and strength`() {
+        val movingClip = TimelineClip(
+            id = "clip_lantern",
+            layerId = "char_layer",
+            name = "Hero Lantern Walk",
+            characterId = "char_aarav_desi",
+            startFrame = 0,
+            durationFrames = 60,
+            animationPresetType = AnimationPresetType.WALK,
+            propType = CharacterPropType.LANTERN,
+            propAttachment = PropAttachmentPoint.RIGHT_HAND,
+            propSwayEnabled = true,
+            propSwayStrength = 1.0f,
+            keyframes = listOf(
+                TransformKeyframe(frame = 0, x = 0.2f, y = 0.65f, easing = EasingType.EASE_IN_OUT),
+                TransformKeyframe(frame = 30, x = 0.8f, y = 0.65f, easing = EasingType.EASE_IN_OUT)
+            )
+        )
+        val rig = BuiltInCatalog.builtInCharacters.first()
+
+        // Deterministic evaluation at same frame
+        val s1 = com.example.engine.PropSwayPhysicsEngine.evaluatePropSway(movingClip, rig, frame = 15, fps = 24)
+        val s2 = com.example.engine.PropSwayPhysicsEngine.evaluatePropSway(movingClip, rig, frame = 15, fps = 24)
+        assertEquals(s1, s2)
+        assertTrue("Running lantern should have noticeable sway angle", kotlin.math.abs(s1.angleDeg) > 1.5f)
+        assertTrue("Running character should have accessory flutter", kotlin.math.abs(s1.accessoryFlutterDeg) > 0.5f)
+
+        // Disabled sway returns zero state
+        val disabled = com.example.engine.PropSwayPhysicsEngine.evaluatePropSway(
+            movingClip.copy(propSwayEnabled = false), rig, frame = 15, fps = 24
+        )
+        assertEquals(0f, disabled.angleDeg, 0.0001f)
+        assertEquals(0f, disabled.offsetX, 0.0001f)
+        assertEquals(0f, disabled.accessoryFlutterDeg, 0.0001f)
+
+        // Strength scaling amplifies response
+        val boosted = com.example.engine.PropSwayPhysicsEngine.evaluatePropSway(
+            movingClip.copy(propSwayStrength = 1.8f), rig, frame = 15, fps = 24
+        )
+        assertTrue("Higher sway strength should increase sway magnitude", kotlin.math.abs(boosted.angleDeg) > kotlin.math.abs(s1.angleDeg))
+
+        // Live drag velocity produces immediate directional sway reaction
+        val dragKickRight = com.example.engine.PropSwayPhysicsEngine.evaluatePropSway(
+            clip = movingClip.copy(keyframes = listOf(TransformKeyframe(frame = 0, x = 0.5f, y = 0.65f)), animationPresetType = AnimationPresetType.IDLE),
+            rig = rig,
+            frame = 0,
+            fps = 24,
+            gesturePreview = com.example.engine.StageGesturePreview(draggedClipId = movingClip.id, dragVelocityX = 0.85f)
+        )
+        val dragKickLeft = com.example.engine.PropSwayPhysicsEngine.evaluatePropSway(
+            clip = movingClip.copy(keyframes = listOf(TransformKeyframe(frame = 0, x = 0.5f, y = 0.65f)), animationPresetType = AnimationPresetType.IDLE),
+            rig = rig,
+            frame = 0,
+            fps = 24,
+            gesturePreview = com.example.engine.StageGesturePreview(draggedClipId = movingClip.id, dragVelocityX = -0.85f)
+        )
+        assertTrue("Rightward drag should lag prop angle negatively", dragKickRight.angleDeg < -2f)
+        assertTrue("Leftward drag should lag prop angle positively", dragKickLeft.angleDeg > 2f)
+
+        // Moshi JSON round-trip preserves propSwayStrength
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(TimelineClip::class.java)
+        val restored = adapter.fromJson(adapter.toJson(movingClip.copy(propSwayStrength = 1.65f)))
+        assertEquals(1.65f, restored?.propSwayStrength ?: 0f, 0.001f)
+    }
+
+    @Test
+    fun `analytical 2-bone IK solver handles 10 stage handles, bendFlip, torso lean, pose mirroring, and camera inverse transforms`() {
+        // 1. Camera screen-to-world inverse transform round-trip under zoom + pan + rotation
+        val cam = com.example.engine.EvaluatedCamera(x = 0.35f, y = 0.62f, zoom = 1.75f, rotation = 18f)
+        val stageW = 1280f
+        val stageH = 720f
+        val (worldCenterX, worldCenterY) = com.example.engine.IkRigSolver.screenNormToWorldNorm(0.5f, 0.5f, cam, stageW, stageH)
+        assertEquals(cam.x, worldCenterX, 0.0005f)
+        assertEquals(cam.y, worldCenterY, 0.0005f)
+
+        // Screen delta inverse scales inversely with camera zoom
+        val unrotatedCam = com.example.engine.EvaluatedCamera(x = 0.5f, y = 0.5f, zoom = 2.0f, rotation = 0f)
+        val (dxW, dyW) = com.example.engine.IkRigSolver.screenDeltaToWorldNormDelta(128f, 72f, unrotatedCam, stageW, stageH)
+        assertEquals(0.05f, dxW, 0.0005f)
+        assertEquals(0.05f, dyW, 0.0005f)
+
+        // 2. Stage IK handles include all 10 joints (including LEFT_KNEE & RIGHT_KNEE)
+        val project = BuiltInCatalog.sceneTemplates.first().buildProject("IK Stage Test")
+        val charClip = project.activeScene.clips.first { it.characterId != null }
+        val rig = BuiltInCatalog.builtInCharacters.first { it.id == charClip.characterId }
+        val eval = KeyframeEvaluator.evaluate(charClip, 0)
+        val basePose = ProceduralRigRenderer.PoseAngles()
+        val handles = com.example.engine.IkRigSolver.computeStageIkHandles(charClip, rig, eval, basePose, stageW, stageH)
+        assertEquals(10, handles.size)
+        assertTrue(handles.any { it.id == IkHandleId.LEFT_KNEE })
+        assertTrue(handles.any { it.id == IkHandleId.RIGHT_KNEE })
+
+        // 3. Analytical 2-bone IK arm solve converges close to target & bendFlip inverts elbow bend
+        val targetX = eval.x + 0.09f
+        val targetY = eval.y - 0.06f
+        val naturalSolved = com.example.engine.IkRigSolver.solveIkDragToOffsets(
+            handleId = IkHandleId.RIGHT_HAND,
+            targetNx = targetX,
+            targetNy = targetY,
+            clip = charClip,
+            rig = rig,
+            transform = eval,
+            basePose = basePose,
+            currentOffsets = PoseKeyframeOffsets(),
+            stageWidth = stageW,
+            stageHeight = stageH,
+            bendFlip = false
+        )
+        val flippedSolved = com.example.engine.IkRigSolver.solveIkDragToOffsets(
+            handleId = IkHandleId.RIGHT_HAND,
+            targetNx = targetX,
+            targetNy = targetY,
+            clip = charClip,
+            rig = rig,
+            transform = eval,
+            basePose = basePose,
+            currentOffsets = PoseKeyframeOffsets(),
+            stageWidth = stageW,
+            stageHeight = stageH,
+            bendFlip = true
+        )
+        assertNotEquals("bendFlip should produce a different elbow bend angle", naturalSolved.rightForearmOffset, flippedSolved.rightForearmOffset, 5f)
+
+        // Verify solved FK hand handle actually moves near the requested target!
+        val posedHandles = com.example.engine.IkRigSolver.computeStageIkHandles(
+            charClip, rig, eval.copy(poseOffsets = naturalSolved),
+            basePose.withOffsets(naturalSolved, FacialExpression.AUTO), stageW, stageH
+        )
+        val solvedHand = posedHandles.first { it.id == IkHandleId.RIGHT_HAND }
+        val err = kotlin.math.hypot(solvedHand.nx - targetX, solvedHand.ny - targetY)
+        assertTrue("2-bone IK hand should reach within 0.035 normalized stage units of target, got $err", err < 0.035f)
+
+        // 4. Analytical 2-bone leg IK moves thigh + knee together
+        val legSolved = com.example.engine.IkRigSolver.solveIkDragToOffsets(
+            handleId = IkHandleId.LEFT_FOOT,
+            targetNx = eval.x - 0.06f,
+            targetNy = eval.y + 0.14f,
+            clip = charClip,
+            rig = rig,
+            transform = eval,
+            basePose = basePose,
+            currentOffsets = PoseKeyframeOffsets(),
+            stageWidth = stageW,
+            stageHeight = stageH,
+            bendFlip = false
+        )
+        assertNotEquals(0f, legSolved.leftLegOffset)
+
+        // 5. Mirror pose swaps left and right limb offsets cleanly
+        val mirrored = com.example.engine.IkRigSolver.mirrorPoseOffsets(
+            PoseKeyframeOffsets(
+                torsoTiltOffset = 12f,
+                rightArmOffset = -45f,
+                rightForearmOffset = -30f,
+                leftArmOffset = 15f,
+                leftForearmOffset = 10f,
+                rightLegOffset = 25f,
+                rightKneeOffset = 40f,
+                leftLegOffset = -10f,
+                leftKneeOffset = 5f
+            )
+        )
+        assertEquals(-12f, mirrored.torsoTiltOffset, 0.001f)
+        assertEquals(-15f, mirrored.rightArmOffset, 0.001f)
+        assertEquals(45f, mirrored.leftArmOffset, 0.001f)
+        assertEquals(-5f, mirrored.rightKneeOffset, 0.001f)
+        assertEquals(-40f, mirrored.leftKneeOffset, 0.001f)
+    }
+
+    @Test
+    fun `project mutator preserves handPoseOverride, blinkOverride, and facialPresetId on upsert, toggle, and split`() {
+        val base = BuiltInCatalog.sceneTemplates.first().buildProject("Keyframe Preserve Test")
+        val charClip = base.activeScene.clips.first { it.characterId != null }
+
+        val withOverrides = ProjectMutator.upsertKeyframeAtFrame(base, charClip.id, globalFrame = 0) { kf ->
+            kf.copy(
+                handPoseOverride = HandPoseType.POINT,
+                blinkOverride = true,
+                facialPresetId = com.example.engine.FacialExpressionEngine.PRESET_HAPPY,
+                expressionOverride = FacialExpression.HAPPY
+            )
+        }
+        // Upsert a position-only keyframe at frame 12 -> should inherit all overrides!
+        val atFrame12 = ProjectMutator.upsertKeyframeAtFrame(withOverrides, charClip.id, globalFrame = 12) { kf ->
+            kf.copy(x = 0.65f)
+        }
+        val kf12 = atFrame12.activeScene.clips.first { it.id == charClip.id }.keyframes.first { it.frame == 12 }
+        assertEquals(HandPoseType.POINT, kf12.handPoseOverride)
+        assertEquals(true, kf12.blinkOverride)
+        assertEquals(com.example.engine.FacialExpressionEngine.PRESET_HAPPY, kf12.facialPresetId)
+
+        // Split clip at frame 20 -> second half frame 0 should preserve all overrides!
+        val split = ProjectMutator.splitClipAtFrame(atFrame12, charClip.id, globalFrame = 20)
+        val secondHalf = split.activeScene.clips.first { it.startFrame == 20 }
+        val secondKf0 = secondHalf.keyframes.first { it.frame == 0 }
+        assertEquals(HandPoseType.POINT, secondKf0.handPoseOverride)
+        assertEquals(true, secondKf0.blinkOverride)
+        assertEquals(com.example.engine.FacialExpressionEngine.PRESET_HAPPY, secondKf0.facialPresetId)
     }
 }

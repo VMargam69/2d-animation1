@@ -172,19 +172,27 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onCommitIkPose = { clipId, offsets -> viewModel.commitIkPoseOffsets(clipId, offsets) },
                 onCommitCameraPan = { dx, dy -> viewModel.commitCameraPan(dx, dy) },
                 onFinishStroke = { pts -> viewModel.finishDrawingStroke(pts) },
-                onBrushStyleChange = { hex, w -> viewModel.setBrushStyle(hex, w) },
+                onBrushStyleChange = { hex, w, style -> viewModel.setBrushStyle(hex, w, style) },
+                onUndoStroke = { viewModel.undoLastDrawingStroke() },
+                onClearStrokes = { viewModel.clearDrawingStrokes() },
                 onToggleDrawingMode = { viewModel.toggleDrawingMode() },
                 onZoomCanvas = { viewModel.zoomCanvasBy(it) },
                 onResetViewport = { viewModel.resetCanvasViewport() },
                 onSelectScene = { viewModel.selectScene(it) },
                 onAddScene = { viewModel.addScene() },
+                onDuplicateScene = { viewModel.duplicateActiveScene() },
                 onTogglePlayback = { viewModel.togglePlayback() },
                 onStepFrame = { viewModel.stepFrame(it) },
                 onSeekFrame = { viewModel.seekToFrame(it) },
                 onToggleLoop = { viewModel.toggleLooping() },
+                onCyclePlaybackSpeed = { viewModel.cyclePlaybackSpeed() },
                 onToggleKeyframe = { viewModel.toggleKeyframeAtCurrentFrame() },
                 onSelectKeyframeNode = { clipId, frame -> viewModel.selectKeyframeNode(clipId, frame) },
                 onCycleSelectedKeyframeEasing = { viewModel.cycleSelectedKeyframeEasing() },
+                onApplyEasingCurve = { easing, p1x, p1y, p2x, p2y ->
+                    viewModel.updateSelectedKeyframeEasing(easing, p1x, p1y, p2x, p2y)
+                },
+                onApplyQuickMotion = { presetId, label -> viewModel.applyQuickMotionPreset(presetId, label) },
                 onAdjustTimelineZoom = { viewModel.adjustTimelineZoom(it) },
                 onToggleLayerVisibility = { viewModel.toggleLayerVisibility(it) },
                 onToggleLayerLock = { viewModel.toggleLayerLock(it) },
@@ -199,7 +207,9 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onFlipClip = { viewModel.flipSelectedClip(it) },
                 onDeleteClip = { viewModel.deleteSelectedClip() },
                 onAddShape = { kind, fill, stroke -> viewModel.addShape(kind, fill, stroke) },
-                onAddText = { text, col, sp -> viewModel.addText(text, col, sp) },
+                onAddText = { text, col, sp, bubbleStyle, bubbleFill ->
+                    viewModel.addText(text, col, sp, bubbleStyle, bubbleFill)
+                },
                 onSetBackgroundBundled = { viewModel.setSceneBackgroundBundled(it) },
                 onSetBackgroundColor = { viewModel.setSceneBackgroundColor(it) },
                 onApplyTemplate = { viewModel.applyTemplateToCurrentProject(it) },
@@ -211,6 +221,8 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 },
                 onCancelExport = { viewModel.cancelExport() },
                 onToggleIkPosingMode = { viewModel.toggleIkPosingMode() },
+                onToggleIkFlipBend = { viewModel.toggleIkFlipBend() },
+                onMirrorIkPose = { viewModel.mirrorSelectedClipPoseAtCurrentFrame() },
                 onToggleCameraKeyMode = { viewModel.toggleCameraKeyMode() },
                 onStepAdjacentKeyframe = { forward -> viewModel.stepToAdjacentKeyframe(forward) },
                 onStampPoseKey = { viewModel.stampPoseAndCameraKeyframe() },
@@ -220,6 +232,10 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onUpdateCamera = { mutator -> viewModel.updateCameraAtCurrentFrame(mutator) },
                 onDeleteCameraKeyframeAtFrame = { viewModel.deleteCameraKeyframeAtCurrentFrame() },
                 onResetAllCameraKeyframes = { viewModel.resetAllCameraKeyframes() },
+                onApplyCinematicCameraPreset = { presetId, label ->
+                    viewModel.applyCinematicCameraPreset(presetId, label)
+                },
+                onUpdateSceneVfx = { updater -> viewModel.updateSceneVfxConfig(updater) },
                 onImportCustomPropUri = { uri, onPath -> viewModel.importCharacterSpriteUri(uri, onPath) },
                 onTrimAudioClip = { clipId, startF, durF, trimStartMs, trimEndMs ->
                     viewModel.trimAudioClip(clipId, startF, durF, trimStartMs, trimEndMs)
@@ -231,6 +247,9 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 },
                 onWriteWaveformJsonToSafUri = { uri, json, onRes ->
                     viewModel.writeWaveformJsonToSafUri(uri, json, onRes)
+                },
+                onDropFacialExpression = { layerId, clipId, globalFrame, presetId ->
+                    viewModel.dropFacialExpressionOnTimeline(layerId, clipId, globalFrame, presetId)
                 }
             )
         }

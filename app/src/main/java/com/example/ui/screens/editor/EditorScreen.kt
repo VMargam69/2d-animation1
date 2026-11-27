@@ -53,19 +53,25 @@ fun EditorScreen(
     onCommitIkPose: (clipId: String, finalOffsets: PoseKeyframeOffsets) -> Unit = { _, _ -> },
     onCommitCameraPan: (totalDx: Float, totalDy: Float) -> Unit = { _, _ -> },
     onFinishStroke: (List<NormalizedPoint>) -> Unit,
-    onBrushStyleChange: (String, Float) -> Unit,
+    onBrushStyleChange: (String, Float, BrushStyle) -> Unit,
+    onUndoStroke: () -> Unit = {},
+    onClearStrokes: () -> Unit = {},
     onToggleDrawingMode: () -> Unit,
     onZoomCanvas: (Float) -> Unit,
     onResetViewport: () -> Unit,
     onSelectScene: (Int) -> Unit,
     onAddScene: () -> Unit,
+    onDuplicateScene: () -> Unit = {},
     onTogglePlayback: () -> Unit,
     onStepFrame: (Int) -> Unit,
     onSeekFrame: (Int) -> Unit,
     onToggleLoop: () -> Unit,
+    onCyclePlaybackSpeed: () -> Unit = {},
     onToggleKeyframe: () -> Unit,
     onSelectKeyframeNode: (clipId: String, globalFrame: Int) -> Unit,
     onCycleSelectedKeyframeEasing: () -> Unit,
+    onApplyEasingCurve: (EasingType, Float, Float, Float, Float) -> Unit = { _, _, _, _, _ -> },
+    onApplyQuickMotion: (presetId: String, label: String) -> Unit = { _, _ -> },
     onAdjustTimelineZoom: (Float) -> Unit,
     onToggleLayerVisibility: (String) -> Unit,
     onToggleLayerLock: (String) -> Unit,
@@ -80,7 +86,7 @@ fun EditorScreen(
     onFlipClip: (Boolean) -> Unit,
     onDeleteClip: () -> Unit,
     onAddShape: (ShapeKind, String, String) -> Unit,
-    onAddText: (String, String, Float) -> Unit,
+    onAddText: (String, String, Float, TextBubbleStyle, String) -> Unit,
     onSetBackgroundBundled: (String) -> Unit,
     onSetBackgroundColor: (String) -> Unit,
     onApplyTemplate: (String) -> Unit,
@@ -88,6 +94,8 @@ fun EditorScreen(
     onStartExport: (ExportFormat, ExportResolution, Int, Int) -> Unit,
     onCancelExport: () -> Unit,
     onToggleIkPosingMode: () -> Unit = {},
+    onToggleIkFlipBend: () -> Unit = {},
+    onMirrorIkPose: () -> Unit = {},
     onToggleCameraKeyMode: () -> Unit = {},
     onStepAdjacentKeyframe: (Boolean) -> Unit = {},
     onStampPoseKey: () -> Unit = {},
@@ -97,6 +105,8 @@ fun EditorScreen(
     onUpdateCamera: ((CameraKeyframe) -> CameraKeyframe) -> Unit = {},
     onDeleteCameraKeyframeAtFrame: () -> Unit = {},
     onResetAllCameraKeyframes: () -> Unit = {},
+    onApplyCinematicCameraPreset: (presetId: String, label: String) -> Unit = { _, _ -> },
+    onUpdateSceneVfx: ((SceneVfxConfig) -> SceneVfxConfig) -> Unit = {},
     onImportCustomPropUri: (Uri, (String) -> Unit) -> Unit = { _, _ -> },
     onTrimAudioClip: (
         clipId: String,
@@ -108,7 +118,8 @@ fun EditorScreen(
     onResetAudioTrim: () -> Unit = {},
     onWaveformSensitivityChange: (Float) -> Unit = {},
     onSaveWaveformJsonToProject: (clipName: String, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> },
-    onWriteWaveformJsonToSafUri: (uri: Uri, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> }
+    onWriteWaveformJsonToSafUri: (uri: Uri, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> },
+    onDropFacialExpression: (layerId: String, clipId: String?, globalFrame: Int, presetId: String) -> Unit = { _, _, _, _ -> }
 ) {
     // Non-exported stage composition grid toggle & resizable canvas/timeline split
     var showGridOverlay by remember { mutableStateOf(false) }
@@ -210,17 +221,26 @@ fun EditorScreen(
                             canvasPanY = state.canvasPanY,
                             isDrawingMode = state.isDrawingMode,
                             isIkPosingMode = state.isIkPosingMode,
+                            ikFlipBend = state.ikFlipBend,
                             isCameraKeyMode = state.isCameraKeyMode,
                             showGridOverlay = showGridOverlay,
                             brushColorHex = state.brushColorHex,
                             brushWidthRatio = state.brushWidthRatio,
+                            brushStyle = state.brushStyle,
                             sceneRenderer = sceneRenderer,
                             onSelectClip = onSelectClip,
                             onCommitClipTranslation = onCommitClipTranslation,
                             onCommitIkPose = onCommitIkPose,
                             onCommitCameraPan = onCommitCameraPan,
+                            onToggleIkFlipBend = onToggleIkFlipBend,
+                            onMirrorIkPose = onMirrorIkPose,
+                            onStampPoseKey = onStampPoseKey,
+                            onResetPoseAtFrame = onResetPoseAtCurrentFrame,
+                            onExitIkPosingMode = onToggleIkPosingMode,
                             onFinishStroke = onFinishStroke,
                             onBrushStyleChange = onBrushStyleChange,
+                            onUndoStroke = onUndoStroke,
+                            onClearStrokes = onClearStrokes,
                             onExitDrawingMode = onToggleDrawingMode,
                             onZoomBy = onZoomCanvas,
                             onResetViewport = onResetViewport,
@@ -236,17 +256,21 @@ fun EditorScreen(
                             playbackFrameFlow = playbackFrameFlow,
                             isPlaying = state.isPlaying,
                             isLooping = state.isLooping,
+                            playbackSpeed = state.playbackSpeed,
                             selectedClipId = state.selectedClipId,
                             selectedLayerId = state.selectedLayerId,
                             timelineZoom = state.timelineZoom,
                             onSelectScene = onSelectScene,
                             onAddScene = onAddScene,
+                            onDuplicateScene = onDuplicateScene,
                             onTogglePlayback = onTogglePlayback,
                             onSeekFrame = onSeekFrame,
                             onToggleLoop = onToggleLoop,
+                            onCyclePlaybackSpeed = onCyclePlaybackSpeed,
                             onToggleKeyframe = onToggleKeyframe,
                             onSelectKeyframeNode = onSelectKeyframeNode,
                             onCycleSelectedKeyframeEasing = onCycleSelectedKeyframeEasing,
+                            onOpenEasingEditor = { onOpenSheet(ActiveEditorSheet.EASING_CURVE_EDITOR) },
                             onAdjustTimelineZoom = onAdjustTimelineZoom,
                             onSelectClip = { onSelectClip(it) },
                             onToggleLayerVisibility = onToggleLayerVisibility,
@@ -255,6 +279,7 @@ fun EditorScreen(
                             onTrimAudioClip = onTrimAudioClip,
                             waveformSensitivity = state.waveformSensitivity,
                             onWaveformSensitivityChange = onWaveformSensitivityChange,
+                            onDropFacialExpression = onDropFacialExpression,
                             modifier = Modifier
                                 .weight(0.42f)
                                 .fillMaxHeight()
@@ -276,17 +301,26 @@ fun EditorScreen(
                             canvasPanY = state.canvasPanY,
                             isDrawingMode = state.isDrawingMode,
                             isIkPosingMode = state.isIkPosingMode,
+                            ikFlipBend = state.ikFlipBend,
                             isCameraKeyMode = state.isCameraKeyMode,
                             showGridOverlay = showGridOverlay,
                             brushColorHex = state.brushColorHex,
                             brushWidthRatio = state.brushWidthRatio,
+                            brushStyle = state.brushStyle,
                             sceneRenderer = sceneRenderer,
                             onSelectClip = onSelectClip,
                             onCommitClipTranslation = onCommitClipTranslation,
                             onCommitIkPose = onCommitIkPose,
                             onCommitCameraPan = onCommitCameraPan,
+                            onToggleIkFlipBend = onToggleIkFlipBend,
+                            onMirrorIkPose = onMirrorIkPose,
+                            onStampPoseKey = onStampPoseKey,
+                            onResetPoseAtFrame = onResetPoseAtCurrentFrame,
+                            onExitIkPosingMode = onToggleIkPosingMode,
                             onFinishStroke = onFinishStroke,
                             onBrushStyleChange = onBrushStyleChange,
+                            onUndoStroke = onUndoStroke,
+                            onClearStrokes = onClearStrokes,
                             onExitDrawingMode = onToggleDrawingMode,
                             onZoomBy = onZoomCanvas,
                             onResetViewport = onResetViewport,
@@ -336,17 +370,21 @@ fun EditorScreen(
                             playbackFrameFlow = playbackFrameFlow,
                             isPlaying = state.isPlaying,
                             isLooping = state.isLooping,
+                            playbackSpeed = state.playbackSpeed,
                             selectedClipId = state.selectedClipId,
                             selectedLayerId = state.selectedLayerId,
                             timelineZoom = state.timelineZoom,
                             onSelectScene = onSelectScene,
                             onAddScene = onAddScene,
+                            onDuplicateScene = onDuplicateScene,
                             onTogglePlayback = onTogglePlayback,
                             onSeekFrame = onSeekFrame,
                             onToggleLoop = onToggleLoop,
+                            onCyclePlaybackSpeed = onCyclePlaybackSpeed,
                             onToggleKeyframe = onToggleKeyframe,
                             onSelectKeyframeNode = onSelectKeyframeNode,
                             onCycleSelectedKeyframeEasing = onCycleSelectedKeyframeEasing,
+                            onOpenEasingEditor = { onOpenSheet(ActiveEditorSheet.EASING_CURVE_EDITOR) },
                             onAdjustTimelineZoom = onAdjustTimelineZoom,
                             onSelectClip = { onSelectClip(it) },
                             onToggleLayerVisibility = onToggleLayerVisibility,
@@ -355,6 +393,7 @@ fun EditorScreen(
                             onTrimAudioClip = onTrimAudioClip,
                             waveformSensitivity = state.waveformSensitivity,
                             onWaveformSensitivityChange = onWaveformSensitivityChange,
+                            onDropFacialExpression = onDropFacialExpression,
                             modifier = Modifier
                                 .weight(1f - canvasSplitFraction)
                                 .fillMaxWidth()
@@ -373,6 +412,7 @@ fun EditorScreen(
                 showMotionPaths = state.project.showMotionPaths,
                 showGridOverlay = showGridOverlay,
                 isAudioMuted = isAudioMuted,
+                hasActiveVfx = activeScene.vfxConfig.hasActiveVfx,
                 onDeselectClip = { onSelectClip(null) },
                 onOpenCharacters = onOpenCharacterLibrary,
                 onOpenPresetsForSelectedChar = {
@@ -389,10 +429,13 @@ fun EditorScreen(
                 onOpenCharacterActingProps = { onOpenSheet(ActiveEditorSheet.CHARACTER_ACTING_PROPS) },
                 onToggleCameraKeyMode = onToggleCameraKeyMode,
                 onOpenCameraChroma = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
+                onOpenSceneVfx = { onOpenSheet(ActiveEditorSheet.SCENE_VFX_STUDIO) },
+                onOpenEasingCurve = { onOpenSheet(ActiveEditorSheet.EASING_CURVE_EDITOR) },
                 onOpenMedia = onOpenMediaLibrary,
                 onOpenTemplates = { onOpenSheet(ActiveEditorSheet.TEMPLATES) },
                 onOpenSettings = { onOpenSheet(ActiveEditorSheet.PROJECT_SETTINGS) },
                 onAddScene = onAddScene,
+                onDuplicateScene = onDuplicateScene,
                 onQuickAddImage = {
                     quickImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 },
@@ -499,6 +542,7 @@ fun EditorScreen(
                     onUpdateClip = onUpdateSelectedClip,
                     isIkPosingMode = state.isIkPosingMode,
                     onToggleIkPosingMode = onToggleIkPosingMode,
+                    onOpenEasingCurveEditor = { onOpenSheet(ActiveEditorSheet.EASING_CURVE_EDITOR) },
                     onDismiss = onCloseSheet
                 )
             }
@@ -535,8 +579,30 @@ fun EditorScreen(
                 onUpdateCamera = onUpdateCamera,
                 onDeleteCameraKeyframeAtFrame = onDeleteCameraKeyframeAtFrame,
                 onResetAllCameraKeyframes = onResetAllCameraKeyframes,
+                onApplyCinematicPreset = onApplyCinematicCameraPreset,
                 onDismiss = onCloseSheet
             )
+        }
+        ActiveEditorSheet.SCENE_VFX_STUDIO -> {
+            SceneVfxStudioDialog(
+                vfxConfig = state.project.activeScene.vfxConfig,
+                onUpdateVfx = onUpdateSceneVfx,
+                onDismiss = onCloseSheet
+            )
+        }
+        ActiveEditorSheet.EASING_CURVE_EDITOR -> {
+            val targetClip = state.selectedClip ?: state.project.activeScene.clips.firstOrNull()
+            if (targetClip != null) {
+                EasingCurveEditorDialog(
+                    clip = targetClip,
+                    currentFrame = state.currentFrame,
+                    onApplyEasing = onApplyEasingCurve,
+                    onApplyQuickMotion = onApplyQuickMotion,
+                    onDismiss = onCloseSheet
+                )
+            } else {
+                onCloseSheet()
+            }
         }
         ActiveEditorSheet.SPEED_SETTINGS -> {
             state.selectedClip?.let { clip ->

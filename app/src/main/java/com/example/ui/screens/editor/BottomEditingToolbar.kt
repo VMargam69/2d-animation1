@@ -73,6 +73,7 @@ fun BottomEditingToolbar(
     showMotionPaths: Boolean,
     showGridOverlay: Boolean = false,
     isAudioMuted: Boolean = false,
+    hasActiveVfx: Boolean = false,
     onDeselectClip: () -> Unit,
     onOpenCharacters: () -> Unit,
     onOpenPresetsForSelectedChar: () -> Unit,
@@ -83,10 +84,13 @@ fun BottomEditingToolbar(
     onOpenCharacterActingProps: () -> Unit,
     onToggleCameraKeyMode: () -> Unit,
     onOpenCameraChroma: () -> Unit,
+    onOpenSceneVfx: () -> Unit = {},
+    onOpenEasingCurve: () -> Unit = {},
     onOpenMedia: () -> Unit,
     onOpenTemplates: () -> Unit,
     onOpenSettings: () -> Unit,
     onAddScene: () -> Unit,
+    onDuplicateScene: () -> Unit = {},
     onQuickAddImage: () -> Unit,
     onQuickAddAudio: () -> Unit,
     onToggleAudioMute: () -> Unit,
@@ -134,6 +138,7 @@ fun BottomEditingToolbar(
                 DockToolAction("reset_pose", "Reset", Icons.Rounded.RestartAlt, onClick = onResetPoseAtCurrentFrame)
             )
             DockSubMenu.CHAR_MOTION -> listOf(
+                DockToolAction("curve", "Curve", Icons.Rounded.ShowChart, accentTint = ElectricCyan, onClick = onOpenEasingCurve),
                 DockToolAction("transform", "Transform", Icons.Rounded.OpenWith, onClick = onOpenTransform),
                 DockToolAction("path", "Path", Icons.Rounded.Timeline, isActive = showMotionPaths, onClick = onToggleMotionPath),
                 DockToolAction("speed", "Speed", Icons.Rounded.Speed, onClick = onOpenSpeed),
@@ -176,6 +181,7 @@ fun BottomEditingToolbar(
                 DockToolAction("delete", "Delete", Icons.Rounded.DeleteOutline, accentTint = CoralPlayhead, onClick = onDeleteClip)
             )
             DockSubMenu.CLIP_MOTION -> listOf(
+                DockToolAction("curve", "Curve", Icons.Rounded.ShowChart, accentTint = ElectricCyan, onClick = onOpenEasingCurve),
                 DockToolAction("path", "Path", Icons.Rounded.Timeline, isActive = showMotionPaths, onClick = onToggleMotionPath),
                 DockToolAction("speed", "Speed", Icons.Rounded.Speed, onClick = onOpenSpeed)
             )
@@ -221,6 +227,8 @@ fun BottomEditingToolbar(
             )
             DockSubMenu.SCENES -> listOf(
                 DockToolAction("add_scene", "Add Scene", Icons.Rounded.AddToPhotos, onClick = onAddScene),
+                DockToolAction("dup_scene", "Dup Scene", Icons.Rounded.FileCopy, accentTint = AmberKeyframe, onClick = onDuplicateScene),
+                DockToolAction("vfx_studio", "VFX", Icons.Rounded.AutoAwesome, isActive = hasActiveVfx, accentTint = VioletLayer, onClick = onOpenSceneVfx),
                 DockToolAction("templates", "Templates", Icons.Rounded.DashboardCustomize, onClick = onOpenTemplates),
                 DockToolAction("settings", "Settings", Icons.Rounded.Tune, onClick = onOpenSettings)
             )
@@ -232,6 +240,7 @@ fun BottomEditingToolbar(
             )
             else -> listOf(
                 DockToolAction("group_add", "Add", Icons.Rounded.AddCircleOutline, onClick = { activeSubMenu = DockSubMenu.ADD }),
+                DockToolAction("vfx", "VFX", Icons.Rounded.AutoAwesome, isActive = hasActiveVfx, accentTint = if (hasActiveVfx) VioletLayer else null, onClick = onOpenSceneVfx),
                 DockToolAction("group_camera", "Camera", Icons.Rounded.Videocam, isActive = isCameraKeyMode, onClick = { activeSubMenu = DockSubMenu.CAMERA }),
                 DockToolAction("draw", "Draw", Icons.Rounded.Brush, isActive = isDrawingMode, onClick = onToggleDrawing),
                 DockToolAction("group_audio", "Audio", Icons.Rounded.GraphicEq, onClick = { activeSubMenu = DockSubMenu.AUDIO }),

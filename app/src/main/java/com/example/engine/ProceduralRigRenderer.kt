@@ -5,6 +5,7 @@ import com.example.model.*
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.sin
 
 object ProceduralRigRenderer {
@@ -29,12 +30,18 @@ object ProceduralRigRenderer {
         val wingFlapDeg: Float = 0f,
         val wheelSpinDeg: Float = 0f,
         val facialExpression: FacialExpression = FacialExpression.AUTO,
-        val propSwayDeg: Float = 0f
+        val propSwayDeg: Float = 0f,
+        val propSwayOffsetX: Float = 0f,
+        val propSwayOffsetY: Float = 0f,
+        val accessoryFlutterDeg: Float = 0f
     ) {
         fun withOffsets(
             offsets: PoseKeyframeOffsets,
             expression: FacialExpression = FacialExpression.AUTO,
-            swayDeg: Float = 0f
+            swayDeg: Float = 0f,
+            swayOffsetX: Float = 0f,
+            swayOffsetY: Float = 0f,
+            accessoryFlutterDeg: Float = 0f
         ): PoseAngles {
             val effectiveMouth = when (expression) {
                 FacialExpression.TALKING -> if (mouthOpen > 0.1f) mouthOpen else 0.65f
@@ -68,7 +75,10 @@ object ProceduralRigRenderer {
                 happySmile = effectiveSmile,
                 blinkClosed = effectiveBlink,
                 facialExpression = expression,
-                propSwayDeg = swayDeg
+                propSwayDeg = swayDeg,
+                propSwayOffsetX = swayOffsetX,
+                propSwayOffsetY = swayOffsetY,
+                accessoryFlutterDeg = accessoryFlutterDeg
             )
         }
     }
@@ -93,13 +103,28 @@ object ProceduralRigRenderer {
         handPose: HandPoseType = HandPoseType.OPEN,
         blinkOverride: Boolean? = null,
         mouthSlotOverride: AtlasPartSlot? = null,
-        atlasSlices: Map<AtlasPartSlot, Bitmap>? = null
+        atlasSlices: Map<AtlasPartSlot, Bitmap>? = null,
+        organicFace: OrganicFacialState? = null,
+        propSwayState: PropSwayState? = null
     ) {
         val p = ((phase % 1f) + 1f) % 1f
-        val swayDeg = if (propSwayEnabled) (sin(p * 2.0 * PI) * 11.0).toFloat() else 0f
+        val swayDeg = when {
+            !propSwayEnabled -> 0f
+            propSwayState != null -> propSwayState.angleDeg
+            else -> (sin(p * 2.0 * PI) * 10.0).toFloat()
+        }
+        val swayOffX = if (propSwayEnabled && propSwayState != null) propSwayState.offsetX else 0f
+        val swayOffY = if (propSwayEnabled && propSwayState != null) propSwayState.offsetY else 0f
+        val accFlutter = if (propSwayEnabled && propSwayState != null) propSwayState.accessoryFlutterDeg else 0f
         val basePose = computePose(preset, p)
-        val pose = basePose.withOffsets(poseOffsets, facialExpression, swayDeg)
-            .let { if (blinkOverride != null) it.copy(blinkClosed = blinkOverride) else it }
+        val pose = basePose.withOffsets(
+            offsets = poseOffsets,
+            expression = facialExpression,
+            swayDeg = swayDeg,
+            swayOffsetX = swayOffX,
+            swayOffsetY = swayOffY,
+            accessoryFlutterDeg = accFlutter
+        ).let { if (blinkOverride != null) it.copy(blinkClosed = blinkOverride) else it }
 
         canvas.save()
         canvas.translate(0f, pose.bodyBobY * rigScale)
@@ -129,7 +154,8 @@ object ProceduralRigRenderer {
                 customPropBitmap = customPropBitmap,
                 propScale = propScale,
                 drawGhostFallbackWhenEmpty = resolvedSlices.isEmpty(),
-                skipFaceOverlays = rig.spriteAtlasRig?.faceBakedInHead == true
+                skipFaceOverlays = rig.spriteAtlasRig?.faceBakedInHead == true,
+                organicFace = organicFace
             )
             canvas.restore()
             return
@@ -178,7 +204,8 @@ object ProceduralRigRenderer {
                         PropAttachmentPoint.HEAD -> canvas.translate(0f, -86f * rigScale)
                     }
                     PropAndModularChartRenderer.drawPropAtSocket(
-                        canvas, propType, customPropBitmap, rigScale * propScale, pose.propSwayDeg, alphaInt
+                        canvas, propType, customPropBitmap, rigScale * propScale, pose.propSwayDeg, alphaInt,
+                        pose.propSwayOffsetX * rigScale, pose.propSwayOffsetY * rigScale
                     )
                     canvas.restore()
                 }
@@ -213,6 +240,7 @@ object ProceduralRigRenderer {
                 propAttachment = propAttachment,
                 customPropBitmap = customPropBitmap,
                 propScale = propScale,
+                organicFace = organicFace,
                 drawAccessory = { c, acc, sc, acCol, prCol, st, al ->
                     drawHeadAccessory(c, acc, sc, acCol, prCol, st, al)
                 }
@@ -222,28 +250,28 @@ object ProceduralRigRenderer {
                     canvas, rig, orientation, pose, rigScale, alphaInt,
                     skinColor, primaryColor, secondaryColor, accentColor
                 )
-                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose.propSwayDeg, alphaInt)
+                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose, alphaInt)
             }
             CharacterBodyType.QUADRUPED -> {
                 drawQuadruped(
                     canvas, rig, orientation, pose, rigScale, alphaInt,
                     skinColor, primaryColor, secondaryColor, accentColor
                 )
-                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose.propSwayDeg, alphaInt)
+                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose, alphaInt)
             }
             CharacterBodyType.VEHICLE -> {
                 drawVehicle(
                     canvas, orientation, pose, rigScale, alphaInt,
                     skinColor, primaryColor, secondaryColor, accentColor
                 )
-                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose.propSwayDeg, alphaInt)
+                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose, alphaInt)
             }
             CharacterBodyType.SPIRIT -> {
                 drawSpirit(
                     canvas, rig, orientation, pose, rigScale, alphaInt,
                     skinColor, primaryColor, secondaryColor, accentColor
                 )
-                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose.propSwayDeg, alphaInt)
+                drawNonHumanoidPropIfEquipped(canvas, propType, propAttachment, customPropBitmap, rigScale, propScale, pose, alphaInt)
             }
         }
 
@@ -257,7 +285,7 @@ object ProceduralRigRenderer {
         customPropBitmap: Bitmap?,
         rigScale: Float,
         propScale: Float,
-        swayDeg: Float,
+        pose: PoseAngles,
         alphaInt: Int
     ) {
         if (propType == CharacterPropType.NONE) return
@@ -268,7 +296,8 @@ object ProceduralRigRenderer {
             PropAttachmentPoint.HEAD -> canvas.translate(0f, -56f * rigScale)
         }
         PropAndModularChartRenderer.drawPropAtSocket(
-            canvas, propType, customPropBitmap, rigScale * propScale, swayDeg, alphaInt
+            canvas, propType, customPropBitmap, rigScale * propScale, pose.propSwayDeg, alphaInt,
+            pose.propSwayOffsetX * rigScale, pose.propSwayOffsetY * rigScale
         )
         canvas.restore()
     }
@@ -1135,6 +1164,92 @@ object ProceduralRigRenderer {
                 happySmile = true,
                 wingFlapDeg = 30f + s2 * 30f,
                 wheelSpinDeg = phase * 360f
+            )
+            AnimationPresetType.FIGHTING -> {
+                // Alternating punch-jab combo with athletic guard bounce
+                val jabL = max(0f, s1)
+                val jabR = max(0f, -s1)
+                PoseAngles(
+                    bodyBobY = -abs(s2) * 6f + 6f,
+                    bodyTiltDeg = 10f + (jabR - jabL) * 10f,
+                    headNodDeg = -6f + s2 * 3f,
+                    leftArmDeg = 46f + jabL * 62f,
+                    leftForearmDeg = -78f + jabL * 68f,
+                    rightArmDeg = -52f - jabR * 64f,
+                    rightForearmDeg = 82f - jabR * 70f,
+                    leftLegDeg = -22f - jabR * 8f,
+                    rightLegDeg = 26f + jabL * 8f,
+                    leftKneeDeg = 22f + abs(s1) * 12f,
+                    rightKneeDeg = 24f + abs(c1) * 12f,
+                    mouthOpen = if (jabL > 0.65f || jabR > 0.65f) 0.45f else 0.08f,
+                    wingFlapDeg = 24f + abs(s1) * 32f
+                )
+            }
+            AnimationPresetType.FLYING -> PoseAngles(
+                bodyBobY = -28f + s1 * 12f,
+                bodyTiltDeg = 22f + c1 * 5f,
+                headNodDeg = -14f + s1 * 4f,
+                squashX = 0.96f,
+                squashY = 1.05f,
+                leftArmDeg = 148f + s1 * 10f,
+                leftForearmDeg = -14f + c1 * 8f,
+                rightArmDeg = -42f + c1 * 12f,
+                rightForearmDeg = 18f - s1 * 8f,
+                leftLegDeg = -16f + s1 * 10f,
+                rightLegDeg = -6f - s1 * 8f,
+                leftKneeDeg = 14f + c1 * 8f,
+                rightKneeDeg = 28f - c1 * 8f,
+                happySmile = true,
+                wingFlapDeg = 18f + s2 * 48f
+            )
+            AnimationPresetType.SLEEPING -> PoseAngles(
+                bodyBobY = 16f + s1 * 3.5f,
+                bodyTiltDeg = 7f + s1 * 2.5f,
+                headNodDeg = 22f + s1 * 5f,
+                squashX = 1.03f + s1 * 0.025f,
+                squashY = 0.96f - s1 * 0.025f,
+                leftArmDeg = 12f + s1 * 3f,
+                leftForearmDeg = -28f,
+                rightArmDeg = -12f - s1 * 3f,
+                rightForearmDeg = 28f,
+                leftLegDeg = -12f,
+                rightLegDeg = 12f,
+                leftKneeDeg = 22f,
+                rightKneeDeg = 22f,
+                mouthOpen = (0.14f + max(0f, s1) * 0.22f),
+                blinkClosed = true,
+                wingFlapDeg = -12f + s1 * 3f
+            )
+            AnimationPresetType.CLAPPING -> {
+                val clap = abs(s2)
+                PoseAngles(
+                    bodyBobY = -clap * 7f,
+                    bodyTiltDeg = s1 * 4f,
+                    headNodDeg = -clap * 6f,
+                    leftArmDeg = 46f + (1f - clap) * 18f,
+                    leftForearmDeg = -34f - clap * 44f,
+                    rightArmDeg = -46f - (1f - clap) * 18f,
+                    rightForearmDeg = 34f + clap * 44f,
+                    leftLegDeg = -8f + s1 * 5f,
+                    rightLegDeg = 8f - s1 * 5f,
+                    happySmile = true,
+                    wingFlapDeg = 12f + clap * 26f
+                )
+            }
+            AnimationPresetType.THINKING -> PoseAngles(
+                bodyBobY = s1 * 2.5f,
+                bodyTiltDeg = -5f + s1 * 2.5f,
+                headNodDeg = -9f + c1 * 6f,
+                leftArmDeg = 18f,
+                leftForearmDeg = -48f,
+                rightArmDeg = -64f + s1 * 5f,
+                rightForearmDeg = 118f + c1 * 6f,
+                leftLegDeg = -9f,
+                rightLegDeg = 11f,
+                leftKneeDeg = 4f,
+                rightKneeDeg = 8f,
+                blinkClosed = phase in 0.72f..0.77f,
+                wingFlapDeg = 4f + s1 * 4f
             )
         }
     }
