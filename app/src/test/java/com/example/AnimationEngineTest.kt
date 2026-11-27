@@ -1588,4 +1588,383 @@ class AnimationEngineTest {
         assertEquals(EyeShapeOverride.WINK_RIGHT, restoredClip.eyeShapeOverride)
         assertEquals(EyebrowShapeOverride.FURROWED_ANGRY, restoredClip.eyebrowShapeOverride)
     }
+
+    @Test
+    fun `studio capability registry dynamically introspects all live enums without hardcoding and exports blueprint v3`() {
+        val snapshot = com.example.engine.StudioCapabilityRegistry.introspect()
+        assertEquals(AnimationPresetType.entries.size, snapshot.animationPresets.size)
+        assertEquals(FacialExpression.entries.size, snapshot.facialExpressions.size)
+        assertEquals(MouthShapeOverride.entries.size, snapshot.mouthShapeOverrides.size)
+        assertEquals(EyeShapeOverride.entries.size, snapshot.eyeShapeOverrides.size)
+        assertEquals(EyebrowShapeOverride.entries.size, snapshot.eyebrowShapeOverrides.size)
+        assertEquals(HandPoseType.entries.size, snapshot.handPoses.size)
+        assertEquals(CharacterOrientation.entries.size, snapshot.orientations.size)
+        assertEquals(IkHandleId.entries.size, snapshot.ikJointIds.size)
+        assertEquals(CameraShotType.entries.size, snapshot.cameraShotTypes.size)
+        assertEquals(SceneParticleType.entries.size, snapshot.vfxStyles.size)
+        assertEquals(SceneLightingMood.entries.size, snapshot.colourGradingPresets.size)
+        assertEquals(ClipMaskType.entries.size, snapshot.maskTypes.size)
+        assertEquals(EasingType.entries.size, snapshot.curveAndEasingTypes.size)
+        assertEquals(TransitionType.entries.size, snapshot.transitions.size)
+        assertEquals(LayerBlendMode.entries.size, snapshot.layerBlendModes.size)
+        assertEquals(AspectRatioPreset.entries.size, snapshot.aspectRatios.size)
+        assertTrue(snapshot.aspectRatios.any { it.id == "4:5" })
+        assertTrue(snapshot.clipOperations.map { it.id }.containsAll(listOf("split", "flipX", "flipY", "duplicate", "delete", "speed", "trim")))
+
+        val project = BuiltInCatalog.sceneTemplates.first().buildProject("Blueprint Film")
+        val audioAsset = LocalMediaAsset(
+            id = "aud_voice_1",
+            name = "Hero Dialogue",
+            category = "Audio",
+            type = MediaAssetType.AUDIO,
+            localFilePath = "/tmp/dialogue.wav"
+        )
+        val blueprint = com.example.engine.AIBlueprintExporter.buildBlueprint(
+            project = project,
+            characters = BuiltInCatalog.builtInCharacters.take(2),
+            mediaAssets = listOf(audioAsset),
+            audioDurationResolver = { 4250L }
+        )
+        assertEquals(3, blueprint.schemaVersion)
+        assertEquals(0.82f, blueprint.projectMeta.coordinateSystem.groundY, 0.001f)
+        assertEquals(2, blueprint.projectAssets.characters.size)
+        assertEquals(1, blueprint.projectAssets.audioClips.size)
+        assertEquals(4.25, blueprint.projectAssets.audioClips.first().durationSec, 0.001)
+
+        val json = com.example.engine.AIBlueprintExporter.exportToJson(
+            project = project,
+            characters = BuiltInCatalog.builtInCharacters.take(2),
+            mediaAssets = listOf(audioAsset),
+            prettyPrint = false,
+            audioDurationResolver = { 4250L }
+        )
+        assertTrue(json.contains("\"framecraft.blueprint\""))
+        assertTrue(json.contains("\"universalExtensionSchemas\""))
+        assertTrue(json.contains("\"inlineSvgAssetExample\""))
+        assertTrue(json.contains("\"customAnimationExample\""))
+        assertTrue(json.contains("\"customTransitionExample\""))
+    }
+
+    @Test
+    fun `inline svg asset spawner sanitizes untrusted xml and parses hierarchical sub-group pivots`() {
+        // Reject dangerous constructs
+        assertFalse(com.example.engine.InlineSvgAssetSpawner.sanitizeSvgXml("<svg><script>alert(1)</script></svg>").isValid)
+        assertFalse(com.example.engine.InlineSvgAssetSpawner.sanitizeSvgXml("<svg><foreignObject><div/></foreignObject></svg>").isValid)
+        assertFalse(com.example.engine.InlineSvgAssetSpawner.sanitizeSvgXml("<svg><filter id='f'><feGaussianBlur/></filter></svg>").isValid)
+        assertFalse(com.example.engine.InlineSvgAssetSpawner.sanitizeSvgXml("<!DOCTYPE svg><svg></svg>").isValid)
+        assertFalse(com.example.engine.InlineSvgAssetSpawner.sanitizeSvgXml("<svg><a href='javascript:void(0)'></a></svg>").isValid)
+
+        // Parse clean hierarchical SVG with data-pivot attributes
+        val treeXml = """
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+                <g id="trunk" data-pivot="128,232">
+                    <rect x="112" y="136" width="32" height="104" fill="#7C4A27"/>
+                </g>
+                <g id="tree_canopy" data-pivot="128,140">
+                    <circle cx="128" cy="90" r="60" fill="#2E8B57"/>
+                    <g id="nested_leaf"><circle cx="95" cy="95" r="14" fill="#3CB371"/></g>
+                </g>
+            </svg>
+        """.trimIndent()
+        val def = InlineSvgAssetDef(id = "svg_tree_1", type = InlineSvgAssetType.TREE, viewBox = "0 0 256 256", svgXml = treeXml)
+        val parsed = com.example.engine.InlineSvgAssetSpawner.parseInlineSvgDocument(def)
+        assertNotNull(parsed)
+        assertEquals(256f, parsed!!.viewBox.width, 0.01f)
+        assertEquals(2, parsed.subParts.size)
+        assertEquals("trunk", parsed.subParts[0].nodeId)
+        assertEquals(232f, parsed.subParts[0].pivotY, 0.01f)
+        assertEquals("tree_canopy", parsed.subParts[1].nodeId)
+        assertEquals(140f, parsed.subParts[1].pivotY, 0.01f)
+
+        // Verify CHARACTER inline SVG builds a native CharacterRigDefinition (Atlas Pro for 2048x2048)
+        val charDef = InlineSvgAssetDef(
+            id = "svg_ninja_hero",
+            type = InlineSvgAssetType.CHARACTER,
+            viewBox = "0 0 2048 2048",
+            svgXml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2048 2048'><rect width='2048' height='2048' fill='none'/></svg>"
+        )
+        val rig = com.example.engine.InlineSvgAssetSpawner.buildCharacterRigFromInlineSvg(charDef, "Ninja Hero")
+        assertEquals("Ninja Hero", rig.name)
+        assertEquals(CustomRigMode.ATLAS_RIG_PRO, rig.skeletonRig?.rigMode)
+        assertNotNull(rig.spriteAtlasRig)
+    }
+
+    @Test
+    fun `universal custom animation engine evaluates ONCE, LOOP, PING_PONG, cubicBezier, and blends character bones`() {
+        val anim = CustomAnimationDef(
+            id = "wing_flap",
+            durationSec = 1.0f,
+            loopMode = CustomAnimLoopMode.PING_PONG,
+            tracks = listOf(
+                CustomAnimTrack(
+                    targetNodeId = "RIGHT_ARM",
+                    keyframes = listOf(
+                        CustomAnimKeyframe(t = 0f, rotation = -20f, cubicBezier = listOf(0.42f, 0f, 0.58f, 1f)),
+                        CustomAnimKeyframe(t = 1f, rotation = 40f, cubicBezier = listOf(0.42f, 0f, 0.58f, 1f))
+                    )
+                ),
+                CustomAnimTrack(
+                    targetNodeId = "HEAD",
+                    keyframes = listOf(
+                        CustomAnimKeyframe(t = 0f, rotation = 0f),
+                        CustomAnimKeyframe(t = 1f, rotation = 12f)
+                    )
+                )
+            )
+        )
+
+        // Frame 0 -> start (-20 deg); Frame 24 (1.0s at 24fps) -> peak (+40 deg); Frame 48 (2.0s) -> ping-pong back (-20 deg)
+        val at0 = com.example.engine.UniversalCustomAnimationEngine.evaluateAllTracks(anim, localFrame = 0, fps = 24)
+        val at24 = com.example.engine.UniversalCustomAnimationEngine.evaluateAllTracks(anim, localFrame = 24, fps = 24)
+        val at48 = com.example.engine.UniversalCustomAnimationEngine.evaluateAllTracks(anim, localFrame = 48, fps = 24)
+        assertEquals(-20f, at0["RIGHT_ARM"]!!.rotation, 0.2f)
+        assertEquals(40f, at24["RIGHT_ARM"]!!.rotation, 0.2f)
+        assertEquals(-20f, at48["RIGHT_ARM"]!!.rotation, 0.2f)
+
+        // ONCE clamps at 1.0f
+        assertEquals(
+            1f,
+            com.example.engine.UniversalCustomAnimationEngine.computeNormalizedTime(60, 24, 1.0f, CustomAnimLoopMode.ONCE),
+            0.001f
+        )
+        // LOOP wraps cleanly
+        assertEquals(
+            0.5f,
+            com.example.engine.UniversalCustomAnimationEngine.computeNormalizedTime(36, 24, 1.0f, CustomAnimLoopMode.LOOP),
+            0.001f
+        )
+
+        // Blend bone offsets additively with existing manual IK offsets
+        val manualIk = PoseKeyframeOffsets(rightArmOffset = 10f, headNodOffset = -3f)
+        val blended = com.example.engine.UniversalCustomAnimationEngine.blendIntoPoseOffsets(manualIk, at24)
+        assertEquals(50f, blended.rightArmOffset, 0.2f)
+        assertEquals(9f, blended.headNodOffset, 0.2f)
+    }
+
+    @Test
+    fun `universal custom transition engine evaluates eased transforms, flash bell curve, and svg path tokens`() {
+        val trans = CustomTransitionDef(
+            id = "whip_iris",
+            durationSec = 0.6f,
+            clipPathType = CustomTransitionClipType.IRIS_CIRCLE,
+            angleDeg = 15f,
+            outgoing = CustomTransitionTransform(dx = -0.2f, dy = 0f, scale = 1.2f, rotation = -4f, alpha = 0f),
+            incoming = CustomTransitionTransform(dx = 0.2f, dy = 0f, scale = 0.9f, rotation = 4f, alpha = 1f),
+            flashOverlay = CustomTransitionFlash(colorHex = "#FDE68A", peakAlpha = 0.6f),
+            cubicBezier = listOf(0.22f, 1.0f, 0.36f, 1.0f)
+        )
+        val start = com.example.engine.UniversalCustomTransitionEngine.evaluate(trans, 0f)
+        val mid = com.example.engine.UniversalCustomTransitionEngine.evaluate(trans, 0.5f)
+        val end = com.example.engine.UniversalCustomTransitionEngine.evaluate(trans, 1f)
+
+        assertEquals(0f, start.flashAlpha, 0.001f)
+        assertEquals(0.6f, mid.flashAlpha, 0.01f)
+        assertEquals(0f, end.flashAlpha, 0.001f)
+        assertEquals(-0.2f, end.outgoingDx, 0.01f)
+        assertEquals(0f, end.incomingDx, 0.01f)
+        assertEquals(1f, end.incomingScale, 0.01f)
+
+        val tokens = com.example.engine.UniversalCustomTransitionEngine.tokenizeSvgPath("M 0.5 0 L 1 0.5 L 0.5 1 L 0 0.5 Z")
+        assertTrue(tokens.contains("M") && tokens.contains("Z") && tokens.size == 13)
+    }
+
+    @Test
+    fun `director script receiver validates dry-run, compiles full studio tools, auto-focus camera, lip-sync, and round-trips json`() {
+        val baseProject = BuiltInCatalog.sceneTemplates.first().buildProject("Director Base")
+        val chars = BuiltInCatalog.builtInCharacters.take(2)
+        val heroId = chars[0].id
+        val buddyId = chars[1].id
+
+        val scriptJson = """
+        {
+          "format": "framecraft.director_script",
+          "schemaVersion": 3,
+          "projectName": "Moonlit Forest Film",
+          "ratio": "4:5",
+          "fps": 24,
+          "inlineSvgAssets": [
+            {
+              "id": "svg_pine",
+              "name": "Pine Tree",
+              "type": "TREE",
+              "viewBox": "0 0 256 256",
+              "svgXml": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'><g id='tree_canopy' data-pivot='128,140'><circle cx='128' cy='92' r='60' fill='#2E8B57'/></g></svg>"
+            },
+            {
+              "id": "svg_bad",
+              "type": "PROP",
+              "svgXml": "<svg><script>bad()</script></svg>"
+            }
+          ],
+          "customAnimations": {
+            "canopy_sway": {
+              "durationSec": 2.0,
+              "loopMode": "PING_PONG",
+              "tracks": [
+                {
+                  "targetNodeId": "tree_canopy",
+                  "keyframes": [
+                    { "t": 0.0, "rotation": -6.0 },
+                    { "t": 1.0, "rotation": 6.0 }
+                  ]
+                }
+              ]
+            }
+          },
+          "customTransitions": {
+            "moon_iris": {
+              "durationSec": 0.5,
+              "clipPathType": "IRIS_CIRCLE",
+              "flashOverlay": { "colorHex": "#FFFFFF", "peakAlpha": 0.3 }
+            }
+          },
+          "scenes": [
+            {
+              "name": "Act 1",
+              "durationSec": 4.0,
+              "colourGrading": "MIDNIGHT_BLUE",
+              "vfx": { "particleType": "FIREFLIES", "intensity": 0.8, "vignette": 0.35 },
+              "customTransitionInId": "moon_iris",
+              "layers": [
+                { "id": "l_tree", "name": "Forest", "type": "IMAGE", "zIndex": 0, "blendMode": "SCREEN" },
+                { "id": "l_hero", "name": "Hero", "type": "CHARACTER", "zIndex": 1, "blendMode": "NORMAL" },
+                { "id": "l_buddy", "name": "Buddy", "type": "CHARACTER", "zIndex": 2, "parentLayerId": "l_hero" }
+              ],
+              "clips": [
+                {
+                  "id": "c_tree",
+                  "layerId": "l_tree",
+                  "inlineSvgAssetId": "svg_pine",
+                  "customAnimationId": "canopy_sway",
+                  "mask": { "type": "CIRCLE", "radius": 0.48 },
+                  "startSec": 0.0,
+                  "durationSec": 4.0,
+                  "keyframes": [{ "tSec": 0.0, "x": 0.2, "y": 0.6 }]
+                },
+                {
+                  "id": "c_hero",
+                  "layerId": "l_hero",
+                  "characterId": "$heroId",
+                  "lipSyncAudioId": "aud_mock",
+                  "startSec": 0.0,
+                  "durationSec": 4.0,
+                  "motionPath": [
+                    { "x": 0.25, "y": 0.82 },
+                    { "x": 0.40, "y": 0.72 },
+                    { "x": 0.55, "y": 0.82 }
+                  ],
+                  "keyframes": [
+                    { "tSec": 0.0, "x": 0.25, "y": 0.82, "ikPose": { "headNod": 12.0, "rightArm": -25.0 } },
+                    { "tSec": 3.0, "x": 0.55, "y": 0.82 }
+                  ]
+                },
+                {
+                  "id": "c_buddy",
+                  "layerId": "l_buddy",
+                  "characterId": "$buddyId",
+                  "startSec": 0.0,
+                  "durationSec": 4.0,
+                  "keyframes": [{ "tSec": 0.0, "x": 0.75, "y": 0.82 }]
+                }
+              ],
+              "clipOperations": [
+                { "op": "flipX", "targetClipId": "c_buddy", "enabled": true },
+                { "op": "speed", "targetClipId": "c_buddy", "multiplier": 1.5 },
+                { "op": "split", "targetClipId": "c_buddy", "atSec": 2.0, "newClipId": "c_buddy_p2" },
+                { "op": "duplicate", "targetClipId": "c_tree", "offsetSec": 0.5, "newClipId": "c_tree_dup" },
+                { "op": "delete", "targetClipId": "c_tree_dup" }
+              ],
+              "cameraShots": [
+                { "tSec": 0.0, "shotType": "WIDE_ESTABLISHING" },
+                { "tSec": 1.0, "shotType": "CLOSE_UP_SPEAKER", "focusTargetCharacterId": "$heroId" },
+                { "tSec": 2.5, "shotType": "CAMERA_SHAKE", "focusTargetCharacterId": "$buddyId", "shakeIntensity": 0.5 }
+              ]
+            }
+          ]
+        }
+        """.trimIndent()
+
+        // 1. Dry-run catches rejected malicious SVG as warning while keeping script valid
+        val (_, dryRun) = com.example.engine.DirectorScriptReceiver.validateAndDryRun(scriptJson, chars, emptyList())
+        assertTrue(dryRun.isValid)
+        assertEquals(1, dryRun.inlineSvgCount)
+        assertEquals(1, dryRun.customAnimationCount)
+        assertEquals(1, dryRun.customTransitionCount)
+        assertEquals(3, dryRun.cameraShotCount)
+        assertEquals(5, dryRun.clipOperationCount)
+        assertTrue(dryRun.warnings.any { it.contains("svg_bad") })
+
+        // 2. Compile in REPLACE_TIMELINE mode
+        val compiled = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = scriptJson,
+            currentProject = baseProject,
+            existingCharacters = chars,
+            existingMediaAssets = emptyList(),
+            importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE
+        ).getOrThrow()
+
+        val proj = compiled.project
+        assertEquals("Moonlit Forest Film", proj.name)
+        assertEquals(AspectRatioPreset.RATIO_4_5, proj.aspectRatioPreset)
+        assertEquals(1080, proj.width)
+        assertEquals(1350, proj.height)
+        assertTrue(proj.inlineSvgAssets.containsKey("svg_pine"))
+        assertFalse(proj.inlineSvgAssets.containsKey("svg_bad"))
+        assertTrue(proj.customAnimations.containsKey("canopy_sway"))
+        assertTrue(proj.customTransitions.containsKey("moon_iris"))
+
+        val scene = proj.activeScene
+        assertEquals(SceneLightingMood.MIDNIGHT_BLUE, scene.vfxConfig.lightingMood)
+        assertEquals(SceneParticleType.FIREFLIES, scene.vfxConfig.particleType)
+        assertTrue("CAMERA_SHAKE shot should activate cameraShakeIntensity", scene.vfxConfig.cameraShakeIntensity >= 0.45f)
+        assertEquals("moon_iris", scene.customTransitionInId)
+
+        // Verify blendMode & parentLayerId
+        assertEquals(LayerBlendMode.SCREEN, scene.layers.first { it.id == "l_tree" }.blendMode)
+        assertEquals("l_hero", scene.layers.first { it.id == "l_buddy" }.parentLayerId)
+
+        // Verify clip operations: split created c_buddy_p2, flipX & speed applied, duplicate+delete removed c_tree_dup
+        val buddy1 = scene.clips.first { it.id == "c_buddy" }
+        val buddy2 = scene.clips.firstOrNull { it.id == "c_buddy_p2" }
+        assertNotNull(buddy2)
+        assertTrue(buddy1.flipHorizontal)
+        assertEquals(1.5f, buddy1.speedMultiplier, 0.01f)
+        assertNull(scene.clips.firstOrNull { it.id == "c_tree_dup" })
+
+        // Verify masking, curved Bezier motionPath, IK pose, and auto lip-sync mouth keyframes on hero
+        val treeClip = scene.clips.first { it.id == "c_tree" }
+        assertEquals(ClipMaskType.CIRCLE, treeClip.maskType)
+        val heroClip = scene.clips.first { it.id == "c_hero" }
+        assertEquals(3, heroClip.motionPathControlPoints.size)
+        val midHero = KeyframeEvaluator.evaluate(heroClip, globalFrame = 36)
+        assertTrue("Curved Bezier motionPath should arc above y=0.82 at midpoint, got ${midHero.y}", midHero.y < 0.80f)
+        assertTrue("Auto lip-sync should generate multiple MouthShapeOverride keyframes", heroClip.keyframes.count { it.mouthShapeOverride != null } >= 3)
+        assertEquals(12f, heroClip.keyframes.first().poseOffsets.headNodOffset, 0.1f)
+
+        // Verify cinematic auto-focus camera zoomed into speaker on CLOSE_UP_SPEAKER shot
+        val camAtCloseUp = KeyframeEvaluator.evaluateCamera(scene, globalFrame = 24)
+        assertTrue("CLOSE_UP_SPEAKER should zoom >= 1.7x, got ${camAtCloseUp.zoom}", camAtCloseUp.zoom >= 1.7f)
+
+        // 3. APPEND_SCENES mode preserves existing scenes and appends new ones
+        val appended = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = scriptJson,
+            currentProject = baseProject,
+            existingCharacters = chars,
+            existingMediaAssets = emptyList(),
+            importMode = com.example.engine.DirectorScriptImportMode.APPEND_SCENES
+        ).getOrThrow()
+        assertEquals(baseProject.scenes.size + 1, appended.project.scenes.size)
+
+        // 4. Full ProjectDocument Moshi round-trip preserves inlineSvgAssets, customAnimations, customTransitions
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(proj))
+        assertNotNull(restored)
+        assertEquals(1, restored!!.inlineSvgAssets.size)
+        assertEquals(1, restored.customAnimations.size)
+        assertEquals(1, restored.customTransitions.size)
+        assertEquals("moon_iris", restored.activeScene.customTransitionInId)
+    }
 }

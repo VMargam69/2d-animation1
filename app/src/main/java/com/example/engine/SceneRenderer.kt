@@ -164,7 +164,10 @@ class SceneRenderer(
         isIkPosingMode: Boolean = false,
         isCameraKeyMode: Boolean = false,
         activeIkHandle: IkHandleId? = null,
-        gesturePreview: StageGesturePreview? = null
+        gesturePreview: StageGesturePreview? = null,
+        inlineSvgAssets: Map<String, InlineSvgAssetDef> = emptyMap(),
+        customAnimations: Map<String, CustomAnimationDef> = emptyMap(),
+        customTransitions: Map<String, CustomTransitionDef> = emptyMap()
     ) {
         val w = width.toFloat().coerceAtLeast(1f)
         val h = height.toFloat().coerceAtLeast(1f)
@@ -265,7 +268,9 @@ class SceneRenderer(
             skipBackgroundLayers = isChromaActive,
             gesturePreview = gesturePreview,
             scratch = scratch,
-            fps = fps
+            fps = fps,
+            inlineSvgAssets = inlineSvgAssets,
+            customAnimations = customAnimations
         )
 
         // 5. Editor Overlays (skip heavy dashed gizmo/motion-path overlays while actively playing)
@@ -322,6 +327,41 @@ class SceneRenderer(
                 height = h,
                 config = scene.vfxConfig
             )
+        }
+
+        // 7. Universal Declarative Custom Scene Transitions (in / out wipe, iris, curtain, custom SVG path, flash)
+        if (!isChromaActive && customTransitions.isNotEmpty()) {
+            val transInDef = scene.customTransitionInId?.let { customTransitions[it] }
+            if (transInDef != null) {
+                val transFrames = (transInDef.durationSec * fps.coerceAtLeast(1)).toInt().coerceAtLeast(2)
+                if (frame < transFrames) {
+                    val rawP = (frame.toFloat() / transFrames.toFloat()).coerceIn(0f, 1f)
+                    UniversalCustomTransitionEngine.applySingleSceneMaskAndFlash(
+                        canvas = canvas,
+                        width = width,
+                        height = height,
+                        def = transInDef,
+                        rawProgress = rawP,
+                        isEntering = true
+                    )
+                }
+            }
+            val transOutDef = scene.customTransitionOutId?.let { customTransitions[it] }
+            if (transOutDef != null) {
+                val transFrames = (transOutDef.durationSec * fps.coerceAtLeast(1)).toInt().coerceAtLeast(2)
+                val outStart = (scene.durationFrames - transFrames).coerceAtLeast(0)
+                if (frame >= outStart && scene.durationFrames > 0) {
+                    val rawP = ((frame - outStart).toFloat() / transFrames.toFloat()).coerceIn(0f, 1f)
+                    UniversalCustomTransitionEngine.applySingleSceneMaskAndFlash(
+                        canvas = canvas,
+                        width = width,
+                        height = height,
+                        def = transOutDef,
+                        rawProgress = rawP,
+                        isEntering = false
+                    )
+                }
+            }
         }
 
         if (drawEditorOverlays && !isPlaying && (isCameraKeyMode || camera.trackedClipName != null)) {
@@ -464,9 +504,23 @@ class SceneRenderer(
         skipBackgroundLayers: Boolean,
         gesturePreview: StageGesturePreview?,
         scratch: RenderScratch,
-        fps: Int = 24
+        fps: Int = 24,
+        inlineSvgAssets: Map<String, InlineSvgAssetDef> = emptyMap(),
+        customAnimations: Map<String, CustomAnimationDef> = emptyMap()
     ) {
         val baseScale = min(w, h) / 420f
+        // Precompute parent layer active transform if any layer uses parentLayerId
+        val hasParenting = visibleLayers.any { !it.parentLayerId.isNullOrBlank() }
+        val layerAnchorById: Map<String, EvaluatedTransform> = if (hasParenting) {
+            val map = HashMap<String, EvaluatedTransform>()
+            for (l in visibleLayers) {
+                val firstClip = clips.firstOrNull { it.layerId == l.id && frame in it.startFrame until it.endFrame }
+                if (firstClip != null) {
+                    map[l.id] = applyGesturePreview(KeyframeEvaluator.evaluate(firstClip, frame), firstClip.id, gesturePreview)
+                }
+            }
+            map
+        } else emptyMap()
 
         for (layerIdx in visibleLayers.indices) {
             val layer = visibleLayers[layerIdx]
@@ -489,21 +543,71 @@ class SceneRenderer(
                 activeLayerClips.sortBy { it.depthOrder }
             }
 
+            // Optional Layer Blend Mode compositing
+            val blendSaveCount = if (layer.blendMode != LayerBlendMode.NORMAL) {
+                val blendPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    xfermode = toPorterDuffXfermode(layer.blendMode)
+                }
+                canvas.saveLayer(0f, 0f, w, h, blendPaint)
+            } else -1
+
+            // Optional Parent Layer transform inheritance
+            val parentAnchor = layer.parentLayerId?.let { layerAnchorById[it] }
+
             for (clipIdx in activeLayerClips.indices) {
                 val clip = activeLayerClips[clipIdx]
 
-                val transform = applyGesturePreview(
+                val baseTransform = applyGesturePreview(
                     KeyframeEvaluator.evaluate(clip, frame),
                     clip.id,
                     gesturePreview
                 )
+                val localFrame = (frame - clip.startFrame).coerceAtLeast(0)
+                val customAnimDef = clip.customAnimationId?.let { customAnimations[it] }
+                val customNodeTracks = if (customAnimDef != null) {
+                    UniversalCustomAnimationEngine.evaluateAllTracks(
+                        def = customAnimDef,
+                        localFrame = localFrame,
+                        fps = fps,
+                        speedMultiplier = clip.speedMultiplier
+                    )
+                } else emptyMap()
+                val rootCustom = UniversalCustomAnimationEngine.rootTransformOrNull(customNodeTracks)
+
+                val transform = if (rootCustom != null) {
+                    baseTransform.copy(
+                        x = baseTransform.x + rootCustom.dx,
+                        y = baseTransform.y + rootCustom.dy,
+                        rotation = baseTransform.rotation + rootCustom.rotation,
+                        scaleX = baseTransform.scaleX * rootCustom.scaleX,
+                        scaleY = baseTransform.scaleY * rootCustom.scaleY,
+                        opacity = (baseTransform.opacity * rootCustom.opacity).coerceIn(0f, 1f)
+                    )
+                } else baseTransform
+
                 val effectiveAlpha = (transform.opacity * alphaMultiplier).coerceIn(0f, 1f)
                 if (effectiveAlpha <= 0.01f) continue
 
                 if (layer.type == LayerType.BACKGROUND) {
-                    val bgBmp = bitmapProvider(clip.imagePath, clip.bundledBgKey)
-                    if (bgBmp != null && !bgBmp.isRecycled) {
-                        drawBitmapCenterCropFast(canvas, bgBmp, intW, intH, (effectiveAlpha * 255).toInt(), scratch)
+                    val inlineBg = clip.inlineSvgAssetId?.let { inlineSvgAssets[it] }
+                    if (inlineBg != null) {
+                        canvas.save()
+                        canvas.translate(w * 0.5f, h * 0.5f)
+                        InlineSvgAssetSpawner.drawInlineSvgAsset(
+                            canvas = canvas,
+                            def = inlineBg,
+                            targetMaxDim = kotlin.math.max(w, h),
+                            alpha = effectiveAlpha,
+                            tintOverlay = tintOverlay,
+                            nodeTransforms = customNodeTracks,
+                            paint = scratch.bitmapPaint
+                        )
+                        canvas.restore()
+                    } else {
+                        val bgBmp = bitmapProvider(clip.imagePath, clip.bundledBgKey)
+                        if (bgBmp != null && !bgBmp.isRecycled) {
+                            drawBitmapCenterCropFast(canvas, bgBmp, intW, intH, (effectiveAlpha * 255).toInt(), scratch)
+                        }
                     }
                     continue
                 }
@@ -514,17 +618,28 @@ class SceneRenderer(
                 }
 
                 canvas.save()
+                if (parentAnchor != null) {
+                    canvas.translate((parentAnchor.x - 0.5f) * w, (parentAnchor.y - 0.5f) * h)
+                }
                 canvas.translate(transform.x * w, transform.y * h)
-                canvas.rotate(transform.rotation)
-                val sx = transform.scaleX * if (clip.flipHorizontal) -1f else 1f
-                val sy = transform.scaleY * if (clip.flipVertical) -1f else 1f
+                canvas.rotate(transform.rotation + (parentAnchor?.rotation ?: 0f))
+                val sx = transform.scaleX * (parentAnchor?.scaleX ?: 1f) * if (clip.flipHorizontal) -1f else 1f
+                val sy = transform.scaleY * (parentAnchor?.scaleY ?: 1f) * if (clip.flipVertical) -1f else 1f
                 canvas.scale(sx, sy)
+
+                // Apply Clip Masking if enabled
+                if (clip.maskType != ClipMaskType.NONE) {
+                    val maskDim = min(w, h) * clip.maskRadius.coerceIn(0.08f, 0.95f)
+                    val maskPath = buildClipMaskPath(clip.maskType, maskDim, scratch.path)
+                    if (maskPath != null) {
+                        canvas.clipPath(maskPath)
+                    }
+                }
 
                 when (layer.type) {
                     LayerType.CHARACTER -> {
                         val rig = clip.characterId?.let { charactersById[it] }
                         if (rig != null) {
-                            val localFrame = (frame - clip.startFrame).coerceAtLeast(0)
                             val cycleFrames = clip.animationPresetType.defaultDurationFrames.coerceAtLeast(8).toFloat()
                             val rawPhase = (localFrame * clip.speedMultiplier) / cycleFrames
                             val phase = if (clip.loopAnimation) rawPhase % 1f else rawPhase.coerceIn(0f, 0.999f)
@@ -567,6 +682,11 @@ class SceneRenderer(
                             } else {
                                 PropSwayState.ZERO
                             }
+                            val blendedPoseOffsets = if (customNodeTracks.isNotEmpty()) {
+                                UniversalCustomAnimationEngine.blendIntoPoseOffsets(transform.poseOffsets, customNodeTracks)
+                            } else {
+                                transform.poseOffsets
+                            }
                             ProceduralRigRenderer.drawCharacter(
                                 canvas = canvas,
                                 rig = rig,
@@ -577,7 +697,7 @@ class SceneRenderer(
                                 alpha = effectiveAlpha,
                                 customBitmap = customBmp,
                                 tintOverlayColor = effectiveTint,
-                                poseOffsets = transform.poseOffsets,
+                                poseOffsets = blendedPoseOffsets,
                                 facialExpression = effectiveExpression,
                                 propType = clip.propType,
                                 propAttachment = clip.propAttachment,
@@ -593,20 +713,34 @@ class SceneRenderer(
                         }
                     }
                     LayerType.IMAGE -> {
-                        val bmp = bitmapProvider(clip.imagePath, clip.bundledBgKey)
-                        if (bmp != null && !bmp.isRecycled) {
-                            val maxDim = min(w, h) * 0.42f
-                            val ratio = bmp.width.toFloat() / bmp.height.coerceAtLeast(1).toFloat()
-                            val dw = if (ratio >= 1f) maxDim else maxDim * ratio
-                            val dh = if (ratio >= 1f) maxDim / ratio else maxDim
-                            val paint = scratch.bitmapPaint
-                            paint.alpha = (effectiveAlpha * 255).toInt()
-                            paint.colorFilter = if (tintOverlay != null) {
-                                PorterDuffColorFilter(tintOverlay, PorterDuff.Mode.SRC_ATOP)
-                            } else null
-                            scratch.rect.set(-dw / 2f, -dh / 2f, dw / 2f, dh / 2f)
-                            canvas.drawBitmap(bmp, null, scratch.rect, paint)
-                            paint.colorFilter = null
+                        val inlineSvg = clip.inlineSvgAssetId?.let { inlineSvgAssets[it] }
+                        if (inlineSvg != null) {
+                            val maxDim = min(w, h) * 0.44f
+                            InlineSvgAssetSpawner.drawInlineSvgAsset(
+                                canvas = canvas,
+                                def = inlineSvg,
+                                targetMaxDim = maxDim,
+                                alpha = effectiveAlpha,
+                                tintOverlay = tintOverlay,
+                                nodeTransforms = customNodeTracks,
+                                paint = scratch.bitmapPaint
+                            )
+                        } else {
+                            val bmp = bitmapProvider(clip.imagePath, clip.bundledBgKey)
+                            if (bmp != null && !bmp.isRecycled) {
+                                val maxDim = min(w, h) * 0.42f
+                                val ratio = bmp.width.toFloat() / bmp.height.coerceAtLeast(1).toFloat()
+                                val dw = if (ratio >= 1f) maxDim else maxDim * ratio
+                                val dh = if (ratio >= 1f) maxDim / ratio else maxDim
+                                val paint = scratch.bitmapPaint
+                                paint.alpha = (effectiveAlpha * 255).toInt()
+                                paint.colorFilter = if (tintOverlay != null) {
+                                    PorterDuffColorFilter(tintOverlay, PorterDuff.Mode.SRC_ATOP)
+                                } else null
+                                scratch.rect.set(-dw / 2f, -dh / 2f, dw / 2f, dh / 2f)
+                                canvas.drawBitmap(bmp, null, scratch.rect, paint)
+                                paint.colorFilter = null
+                            }
                         }
                     }
                     LayerType.SHAPE -> {
@@ -619,7 +753,64 @@ class SceneRenderer(
                 }
                 canvas.restore()
             }
+
+            if (blendSaveCount >= 0) {
+                canvas.restoreToCount(blendSaveCount)
+            }
         }
+    }
+
+    private fun toPorterDuffXfermode(mode: LayerBlendMode): PorterDuffXfermode? = when (mode) {
+        LayerBlendMode.NORMAL -> null
+        LayerBlendMode.MULTIPLY -> PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
+        LayerBlendMode.SCREEN -> PorterDuffXfermode(PorterDuff.Mode.SCREEN)
+        LayerBlendMode.OVERLAY -> PorterDuffXfermode(PorterDuff.Mode.OVERLAY)
+        LayerBlendMode.ADD -> PorterDuffXfermode(PorterDuff.Mode.ADD)
+        LayerBlendMode.DARKEN -> PorterDuffXfermode(PorterDuff.Mode.DARKEN)
+        LayerBlendMode.LIGHTEN -> PorterDuffXfermode(PorterDuff.Mode.LIGHTEN)
+    }
+
+    private fun buildClipMaskPath(type: ClipMaskType, radius: Float, outPath: Path): Path? {
+        if (type == ClipMaskType.NONE) return null
+        outPath.reset()
+        when (type) {
+            ClipMaskType.NONE -> return null
+            ClipMaskType.CIRCLE -> outPath.addCircle(0f, 0f, radius, Path.Direction.CW)
+            ClipMaskType.ROUNDED_RECT -> outPath.addRoundRect(
+                -radius, -radius, radius, radius,
+                radius * 0.28f, radius * 0.28f,
+                Path.Direction.CW
+            )
+            ClipMaskType.OVAL -> outPath.addOval(-radius * 0.85f, -radius * 1.1f, radius * 0.85f, radius * 1.1f, Path.Direction.CW)
+            ClipMaskType.STAR -> {
+                val points = 5
+                val outerR = radius
+                val innerR = radius * 0.45f
+                for (i in 0 until points * 2) {
+                    val r = if (i % 2 == 0) outerR else innerR
+                    val angle = (-PI / 2.0) + (i * PI / points)
+                    val px = (cos(angle) * r).toFloat()
+                    val py = (sin(angle) * r).toFloat()
+                    if (i == 0) outPath.moveTo(px, py) else outPath.lineTo(px, py)
+                }
+                outPath.close()
+            }
+            ClipMaskType.ARCH -> {
+                outPath.moveTo(-radius * 0.8f, radius)
+                outPath.lineTo(-radius * 0.8f, -radius * 0.1f)
+                outPath.arcTo(-radius * 0.8f, -radius, radius * 0.8f, radius * 0.6f, 180f, 180f, false)
+                outPath.lineTo(radius * 0.8f, radius)
+                outPath.close()
+            }
+            ClipMaskType.DIAGONAL_SPLIT -> {
+                outPath.moveTo(-radius * 1.1f, -radius * 1.1f)
+                outPath.lineTo(radius * 1.1f, -radius * 0.55f)
+                outPath.lineTo(radius * 1.1f, radius * 1.1f)
+                outPath.lineTo(-radius * 1.1f, radius * 0.55f)
+                outPath.close()
+            }
+        }
+        return outPath
     }
 
     private fun drawShapeClip(

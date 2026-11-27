@@ -7,6 +7,7 @@ enum class AspectRatioPreset(val label: String, val defaultWidth: Int, val defau
     RATIO_16_9("16:9", 1280, 720),
     RATIO_9_16("9:16", 720, 1280),
     RATIO_1_1("1:1", 960, 960),
+    RATIO_4_5("4:5", 1080, 1350),
     RATIO_4_3("4:3", 1024, 768),
     CUSTOM("Custom", 1280, 720)
 }
@@ -372,6 +373,128 @@ enum class TransitionType(val displayName: String) {
     ZOOM_POP("Zoom Pop")
 }
 
+enum class ClipMaskType(val displayName: String) {
+    NONE("None"),
+    CIRCLE("Circle"),
+    ROUNDED_RECT("Rounded Rect"),
+    OVAL("Oval"),
+    STAR("Star"),
+    ARCH("Arch"),
+    DIAGONAL_SPLIT("Diagonal Split")
+}
+
+enum class LayerBlendMode(val displayName: String) {
+    NORMAL("Normal"),
+    MULTIPLY("Multiply"),
+    SCREEN("Screen"),
+    OVERLAY("Overlay"),
+    ADD("Add"),
+    DARKEN("Darken"),
+    LIGHTEN("Lighten")
+}
+
+enum class CameraShotType(
+    val displayName: String,
+    val defaultZoom: Float,
+    val defaultRollDeg: Float = 0f,
+    val focusHeadBiasY: Float = 0f
+) {
+    WIDE_ESTABLISHING("Wide Establishing", 1.0f, 0f, 0f),
+    MEDIUM_TWO_SHOT("Medium Two-Shot", 1.28f, 0f, -0.04f),
+    CLOSE_UP_SPEAKER("Close-Up Speaker", 1.85f, 0f, -0.14f),
+    EXTREME_CLOSE_UP_REACTION("Extreme Close-Up Reaction", 2.45f, 0f, -0.18f),
+    OVER_THE_SHOULDER("Over The Shoulder", 1.65f, 0f, -0.10f),
+    SLOW_PUSH_IN("Slow Push-In", 1.15f, 0f, -0.06f),
+    WHIP_PAN("Whip Pan", 1.35f, 0f, -0.04f),
+    DUTCH_TILT("Dutch Tilt", 1.30f, -10f, -0.04f),
+    CAMERA_SHAKE("Camera Shake", 1.25f, 0f, -0.05f)
+}
+
+enum class InlineSvgAssetType(val displayName: String) {
+    CHARACTER("Character"),
+    TREE("Tree"),
+    ANIMAL("Animal"),
+    PROP("Prop"),
+    BG("Background")
+}
+
+data class SvgSubPartPivot(
+    val nodeId: String,
+    val pivotX: Float,
+    val pivotY: Float
+)
+
+data class InlineSvgAssetDef(
+    val id: String,
+    val type: InlineSvgAssetType = InlineSvgAssetType.PROP,
+    val viewBox: String = "0 0 256 256",
+    val svgXml: String,
+    val localSvgPath: String? = null,
+    val subPartPivots: List<SvgSubPartPivot> = emptyList()
+)
+
+enum class CustomAnimLoopMode(val displayName: String) {
+    ONCE("Once"),
+    LOOP("Loop"),
+    PING_PONG("Ping-Pong")
+}
+
+data class CustomAnimKeyframe(
+    val t: Float = 0f,
+    val dx: Float = 0f,
+    val dy: Float = 0f,
+    val rotation: Float = 0f,
+    val scaleX: Float = 1f,
+    val scaleY: Float = 1f,
+    val opacity: Float = 1f,
+    val cubicBezier: List<Float> = listOf(0.42f, 0f, 0.58f, 1f)
+)
+
+data class CustomAnimTrack(
+    val targetNodeId: String,
+    val keyframes: List<CustomAnimKeyframe> = emptyList()
+)
+
+data class CustomAnimationDef(
+    val id: String,
+    val durationSec: Float = 1.0f,
+    val loopMode: CustomAnimLoopMode = CustomAnimLoopMode.LOOP,
+    val tracks: List<CustomAnimTrack> = emptyList()
+)
+
+enum class CustomTransitionClipType(val displayName: String) {
+    NONE("None"),
+    WIPE_ANGLE("Wipe Angle"),
+    IRIS_CIRCLE("Iris Circle"),
+    SPLIT_CURTAIN("Split Curtain"),
+    CUSTOM_SVG_PATH("Custom SVG Path")
+}
+
+data class CustomTransitionTransform(
+    val dx: Float = 0f,
+    val dy: Float = 0f,
+    val scale: Float = 1f,
+    val rotation: Float = 0f,
+    val alpha: Float = 1f
+)
+
+data class CustomTransitionFlash(
+    val colorHex: String = "#FFFFFF",
+    val peakAlpha: Float = 0f
+)
+
+data class CustomTransitionDef(
+    val id: String,
+    val durationSec: Float = 0.6f,
+    val clipPathType: CustomTransitionClipType = CustomTransitionClipType.WIPE_ANGLE,
+    val angleDeg: Float = 0f,
+    val customSvgPath: String? = null,
+    val outgoing: CustomTransitionTransform = CustomTransitionTransform(),
+    val incoming: CustomTransitionTransform = CustomTransitionTransform(),
+    val flashOverlay: CustomTransitionFlash? = null,
+    val cubicBezier: List<Float> = listOf(0.42f, 0f, 0.58f, 1f)
+)
+
 enum class LayerType(val displayName: String, val defaultColorHex: String) {
     BACKGROUND("Background", "#10B981"),
     CHARACTER("Character", "#38BDF8"),
@@ -471,7 +594,13 @@ data class TimelineClip(
     val flipHorizontal: Boolean = false,
     val flipVertical: Boolean = false,
     val blackShade: Float = 0f,
-    val depthOrder: Int = 0
+    val depthOrder: Int = 0,
+    val inlineSvgAssetId: String? = null,
+    val customAnimationId: String? = null,
+    val maskType: ClipMaskType = ClipMaskType.NONE,
+    val maskRadius: Float = 0.46f,
+    val motionPathControlPoints: List<NormalizedPoint> = emptyList(),
+    val lipSyncAudioClipId: String? = null
 ) {
     val endFrame: Int get() = startFrame + durationFrames
 }
@@ -483,7 +612,9 @@ data class AnimationLayer(
     val isVisible: Boolean = true,
     val isLocked: Boolean = false,
     val colorHex: String = type.defaultColorHex,
-    val orderIndex: Int = 0
+    val orderIndex: Int = 0,
+    val blendMode: LayerBlendMode = LayerBlendMode.NORMAL,
+    val parentLayerId: String? = null
 )
 
 data class AnimationScene(
@@ -501,7 +632,9 @@ data class AnimationScene(
     val vfxConfig: SceneVfxConfig = SceneVfxConfig(),
     val durationFrames: Int = 144,
     val layers: List<AnimationLayer> = emptyList(),
-    val clips: List<TimelineClip> = emptyList()
+    val clips: List<TimelineClip> = emptyList(),
+    val customTransitionInId: String? = null,
+    val customTransitionOutId: String? = null
 )
 
 /**
@@ -554,6 +687,9 @@ data class ProjectDocument(
     val activeSceneIndex: Int = 0,
     val scenes: List<AnimationScene> = listOf(AnimationScene()),
     val audioSyncTracks: List<AudioSyncMetadata> = emptyList(),
+    val inlineSvgAssets: Map<String, InlineSvgAssetDef> = emptyMap(),
+    val customAnimations: Map<String, CustomAnimationDef> = emptyMap(),
+    val customTransitions: Map<String, CustomTransitionDef> = emptyMap(),
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {

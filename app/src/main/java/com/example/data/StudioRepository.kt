@@ -219,6 +219,20 @@ class StudioRepository(
         entity.toModel()
     }
 
+    suspend fun saveMediaAsset(asset: LocalMediaAsset) = withContext(Dispatchers.IO) {
+        val filePath = asset.localFilePath ?: return@withContext
+        val entity = MediaAssetEntity(
+            id = asset.id,
+            name = asset.name,
+            category = asset.category,
+            typeName = asset.type.name,
+            localFilePath = filePath,
+            mimeType = asset.mimeType,
+            createdAt = asset.createdAt
+        )
+        mediaAssetDao.upsertMediaAsset(entity)
+    }
+
     suspend fun deleteMediaAsset(asset: LocalMediaAsset) = withContext(Dispatchers.IO) {
         if (!asset.isBundled) {
             assetStorage.deleteOfflineFile(asset.localFilePath)

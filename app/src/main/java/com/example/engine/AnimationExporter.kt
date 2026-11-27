@@ -73,13 +73,13 @@ class AnimationExporter(
         try {
             when (request.format) {
                 ExportFormat.PNG_SEQUENCE -> exportPngSequence(
-                    exportRenderer, scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, throttledProgress
+                    exportRenderer, project, scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, throttledProgress
                 )
                 ExportFormat.GIF -> exportAnimatedGif(
-                    exportRenderer, scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, throttledProgress
+                    exportRenderer, project, scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, throttledProgress
                 )
                 ExportFormat.MP4 -> exportMp4Video(
-                    exportRenderer, scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, throttledProgress
+                    exportRenderer, project, scene, charactersById, totalFrames, request.fps, outW, outH, baseFileName, throttledProgress
                 )
             }
         } finally {
@@ -89,6 +89,7 @@ class AnimationExporter(
 
     private suspend fun exportPngSequence(
         renderer: SceneRenderer,
+        project: ProjectDocument,
         scene: AnimationScene,
         charactersById: Map<String, CharacterRigDefinition>,
         totalFrames: Int,
@@ -120,7 +121,10 @@ class AnimationExporter(
                     showMotionPaths = false,
                     selectedClipId = null,
                     drawEditorOverlays = false,
-                    isPlaying = true
+                    isPlaying = true,
+                    inlineSvgAssets = project.inlineSvgAssets,
+                    customAnimations = project.customAnimations,
+                    customTransitions = project.customTransitions
                 )
                 val frameFile = File(rootDir, String.format(Locale.US, "frame_%04d.png", frame + 1))
                 BufferedOutputStream(FileOutputStream(frameFile), 32 * 1024).use { bos ->
@@ -144,6 +148,7 @@ class AnimationExporter(
 
     private suspend fun exportAnimatedGif(
         renderer: SceneRenderer,
+        project: ProjectDocument,
         scene: AnimationScene,
         charactersById: Map<String, CharacterRigDefinition>,
         totalFrames: Int,
@@ -176,7 +181,10 @@ class AnimationExporter(
                     showMotionPaths = false,
                     selectedClipId = null,
                     drawEditorOverlays = false,
-                    isPlaying = true
+                    isPlaying = true,
+                    inlineSvgAssets = project.inlineSvgAssets,
+                    customAnimations = project.customAnimations,
+                    customTransitions = project.customTransitions
                 )
                 encoder.addFrame(bitmap)
                 onProgress(frame + 1, totalFrames)
@@ -214,6 +222,7 @@ class AnimationExporter(
 
     private suspend fun exportMp4Video(
         renderer: SceneRenderer,
+        project: ProjectDocument,
         scene: AnimationScene,
         charactersById: Map<String, CharacterRigDefinition>,
         totalFrames: Int,
@@ -319,7 +328,10 @@ class AnimationExporter(
                         showMotionPaths = false,
                         selectedClipId = null,
                         drawEditorOverlays = false,
-                        isPlaying = true
+                        isPlaying = true,
+                        inlineSvgAssets = project.inlineSvgAssets,
+                        customAnimations = project.customAnimations,
+                        customTransitions = project.customTransitions
                     )
                 } finally {
                     inputSurface.unlockCanvasAndPost(canvas)

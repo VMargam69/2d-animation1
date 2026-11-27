@@ -57,8 +57,40 @@ object KeyframeEvaluator {
     fun evaluate(clip: TimelineClip, globalFrame: Int): EvaluatedTransform {
         val localFrame = (globalFrame - clip.startFrame).coerceAtLeast(0)
         val sorted = ensureSortedTransformKeyframes(clip.keyframes)
-        val base = evaluateKeyframes(sorted, localFrame)
+        var base = evaluateKeyframes(sorted, localFrame)
+        if (clip.motionPathControlPoints.size >= 3) {
+            val pathSpan = (sorted.lastOrNull()?.frame?.takeIf { it > 0 } ?: clip.durationFrames).coerceAtLeast(1)
+            val rawU = (localFrame.toFloat() / pathSpan.toFloat()).coerceIn(0f, 1f)
+            val firstEasing = sorted.firstOrNull()?.easing ?: EasingType.EASE_IN_OUT
+            val easedU = evaluateEasing(firstEasing, rawU)
+            val pt = evaluateBezierPath(clip.motionPathControlPoints, easedU)
+            base = base.copy(x = pt.x, y = pt.y)
+        }
         return applyTransitions(base, clip, localFrame)
+    }
+
+    /**
+     * Evaluates a curved Bezier motion path of arbitrary degree using de Casteljau's algorithm.
+     */
+    fun evaluateBezierPath(controlPoints: List<NormalizedPoint>, t: Float): NormalizedPoint {
+        if (controlPoints.isEmpty()) return NormalizedPoint(0.5f, 0.5f)
+        if (controlPoints.size == 1) return controlPoints[0]
+        val u = t.coerceIn(0f, 1f)
+        val inv = 1f - u
+        var pts = controlPoints
+        while (pts.size > 1) {
+            val next = ArrayList<NormalizedPoint>(pts.size - 1)
+            for (i in 0 until pts.size - 1) {
+                next.add(
+                    NormalizedPoint(
+                        x = inv * pts[i].x + u * pts[i + 1].x,
+                        y = inv * pts[i].y + u * pts[i + 1].y
+                    )
+                )
+            }
+            pts = next
+        }
+        return pts[0]
     }
 
     fun evaluateKeyframes(sortedKeyframes: List<TransformKeyframe>, localFrame: Int): EvaluatedTransform {
@@ -286,6 +318,14 @@ object KeyframeEvaluator {
     }
 
     fun sampleMotionPath(clip: TimelineClip, steps: Int = 24): List<NormalizedPoint> {
+        if (clip.motionPathControlPoints.size >= 3) {
+            val result = ArrayList<NormalizedPoint>(steps + 1)
+            for (i in 0..steps) {
+                val u = i.toFloat() / steps.coerceAtLeast(1).toFloat()
+                result.add(evaluateBezierPath(clip.motionPathControlPoints, u))
+            }
+            return result
+        }
         val sorted = ensureSortedTransformKeyframes(clip.keyframes)
         if (sorted.size < 2) return sorted.map { NormalizedPoint(it.x, it.y) }
         val startF = sorted.first().frame

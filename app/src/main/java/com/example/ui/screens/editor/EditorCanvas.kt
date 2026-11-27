@@ -371,7 +371,10 @@ fun EditorCanvas(
                 isIkPosingMode = isIkPosingMode,
                 isCameraKeyMode = isCameraKeyMode,
                 activeIkHandle = activeHandle,
-                gesturePreview = if (preview.isActive) preview else null
+                gesturePreview = if (preview.isActive) preview else null,
+                inlineSvgAssets = project.inlineSvgAssets,
+                customAnimations = project.customAnimations,
+                customTransitions = project.customTransitions
             )
         }
 

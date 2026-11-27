@@ -125,7 +125,9 @@ fun EditorScreen(
     onWriteWaveformJsonToSafUri: (uri: Uri, json: String, onResult: (String) -> Unit) -> Unit = { _, _, _ -> },
     onDropFacialExpression: (layerId: String, clipId: String?, globalFrame: Int, presetId: String) -> Unit = { _, _, _, _ -> },
     onSetFacialShapeOverride: (mouth: MouthShapeOverride?, eye: EyeShapeOverride?, eyebrow: EyebrowShapeOverride?) -> Unit = { _, _, _ -> },
-    onClearFacialShapeOverrides: () -> Unit = {}
+    onClearFacialShapeOverrides: () -> Unit = {},
+    onApplyDirectorScript: (scriptJson: String, mode: com.example.engine.DirectorScriptImportMode) -> Unit = { _, _ -> },
+    onExportBlueprintToSaf: (Uri, String) -> Unit = { _, _ -> }
 ) {
     // Non-exported stage composition grid toggle & resizable canvas/timeline split
     var showGridOverlay by remember { mutableStateOf(false) }
@@ -200,7 +202,8 @@ fun EditorScreen(
                 onSave = onSave,
                 onOpenExport = { onOpenSheet(ActiveEditorSheet.EXPORT_DIALOG) },
                 onResetProject = onResetProject,
-                onOpenGuide = { onOpenSheet(ActiveEditorSheet.TUTORIAL_GUIDE) }
+                onOpenGuide = { onOpenSheet(ActiveEditorSheet.TUTORIAL_GUIDE) },
+                onOpenDirectorScript = { onOpenSheet(ActiveEditorSheet.DIRECTOR_SCRIPT_STUDIO) }
             )
 
             // B. Adaptive Portrait (Resizable Split) vs Landscape Workspace
@@ -708,6 +711,16 @@ fun EditorScreen(
             } else {
                 onCloseSheet()
             }
+        }
+        ActiveEditorSheet.DIRECTOR_SCRIPT_STUDIO -> {
+            DirectorScriptDialog(
+                project = state.project,
+                characters = state.characters,
+                mediaAssets = state.mediaAssets,
+                onApplyDirectorScript = onApplyDirectorScript,
+                onExportBlueprintToSaf = onExportBlueprintToSaf,
+                onDismiss = onCloseSheet
+            )
         }
         ActiveEditorSheet.TUTORIAL_GUIDE -> {
             StudioGuideDialog(onDismiss = onCloseSheet)

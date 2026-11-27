@@ -42,7 +42,8 @@ fun EditorTopToolbar(
     onSave: () -> Unit,
     onOpenExport: () -> Unit,
     onResetProject: () -> Unit,
-    onOpenGuide: () -> Unit
+    onOpenGuide: () -> Unit,
+    onOpenDirectorScript: () -> Unit = {}
 ) {
     var overflowOpen by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
@@ -203,6 +204,11 @@ fun EditorTopToolbar(
                     onDismissRequest = { overflowOpen = false },
                     containerColor = StudioPanel
                 ) {
+                    DropdownMenuItem(
+                        text = { Text("Director Script Studio (.fcscript)", color = StudioTextPrimary, fontWeight = FontWeight.SemiBold) },
+                        leadingIcon = { Icon(Icons.Rounded.MovieFilter, null, tint = EmeraldLayer) },
+                        onClick = { overflowOpen = false; onOpenDirectorScript() }
+                    )
                     DropdownMenuItem(
                         text = { Text("Project Settings (${project.fps} FPS)", color = StudioTextPrimary) },
                         leadingIcon = { Icon(Icons.Rounded.Tune, null, tint = ElectricCyan) },

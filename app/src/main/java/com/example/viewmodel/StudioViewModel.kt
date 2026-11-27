@@ -17,11 +17,13 @@ import com.example.engine.SceneRenderer
 import com.example.model.*
 import com.example.navigation.HashRoute
 import com.example.navigation.HashRouter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
@@ -52,6 +54,7 @@ enum class ActiveEditorSheet {
     TEMPLATES,
     EXPORT_DIALOG,
     WAVEFORM_EXPORT,
+    DIRECTOR_SCRIPT_STUDIO,
     TUTORIAL_GUIDE
 }
 
@@ -1696,6 +1699,80 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 onResult("Exported .waveform.json successfully")
             } else {
                 onResult("Could not write selected file")
+            }
+        }
+    }
+
+    fun exportBlueprintToSafUri(uri: Uri, blueprintJson: String) {
+        viewModelScope.launch {
+            val ok = assetStorage.writeTextToSafUri(uri, blueprintJson)
+            if (ok) {
+                showStatus("Exported .fcblueprint.json (v3)")
+            } else {
+                showStatus("Could not write .fcblueprint.json file")
+            }
+        }
+    }
+
+    fun applyDirectorScript(scriptJson: String, mode: com.example.engine.DirectorScriptImportMode) {
+        stopPlayback()
+        val stateSnapshot = _uiState.value
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                com.example.engine.DirectorScriptReceiver.compileIntoProject(
+                    context = getApplication(),
+                    scriptJson = scriptJson,
+                    currentProject = stateSnapshot.project,
+                    existingCharacters = stateSnapshot.characters,
+                    existingMediaAssets = stateSnapshot.mediaAssets,
+                    importMode = mode
+                )
+            }
+            result.onSuccess { compiled ->
+                // Persist newly spawned inline SVG characters & media assets to local offline repository
+                for (charRig in compiled.spawnedCharacters) {
+                    repository.saveCharacter(charRig)
+                }
+                for (asset in compiled.spawnedMediaAssets) {
+                    repository.saveMediaAsset(asset)
+                }
+
+                val mergedCharacters = if (compiled.spawnedCharacters.isNotEmpty()) {
+                    val existingIds = stateSnapshot.characters.map { it.id }.toSet()
+                    stateSnapshot.characters + compiled.spawnedCharacters.filter { it.id !in existingIds }
+                } else {
+                    stateSnapshot.characters
+                }
+                val mergedMedia = if (compiled.spawnedMediaAssets.isNotEmpty()) {
+                    val existingIds = stateSnapshot.mediaAssets.map { it.id }.toSet()
+                    stateSnapshot.mediaAssets + compiled.spawnedMediaAssets.filter { it.id !in existingIds }
+                } else {
+                    stateSnapshot.mediaAssets
+                }
+
+                // Automatic Undo snapshot before committing compiled director script
+                commitProjectChange(compiled.project)
+                _playbackFrame.value = 0
+                _uiState.update { cur ->
+                    cur.copy(
+                        characters = mergedCharacters,
+                        mediaAssets = mergedMedia,
+                        currentFrame = 0,
+                        selectedClipId = compiled.project.activeScene.clips.firstOrNull()?.id,
+                        activeSheet = ActiveEditorSheet.NONE
+                    )
+                }
+                assetStorage.prefetchSceneAssets(
+                    compiled.project.activeScene,
+                    mergedCharacters.associateBy { it.id }
+                )
+                saveCurrentProject(silent = true)
+                val r = compiled.report
+                showStatus(
+                    "Script applied: ${r.sceneCount} scene(s), ${r.clipCount} clip(s), ${r.inlineSvgCount} SVG(s), ${r.cameraShotCount} cam shot(s)"
+                )
+            }.onFailure { err ->
+                showStatus("Director script error: ${err.message ?: "invalid JSON"}")
             }
         }
     }

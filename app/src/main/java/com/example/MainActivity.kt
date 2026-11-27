@@ -258,7 +258,13 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onSetFacialShapeOverride = { mouth, eye, eyebrow ->
                     viewModel.setFacialShapeOverride(mouth, eye, eyebrow)
                 },
-                onClearFacialShapeOverrides = { viewModel.clearFacialShapeOverrides() }
+                onClearFacialShapeOverrides = { viewModel.clearFacialShapeOverrides() },
+                onApplyDirectorScript = { scriptJson, mode ->
+                    viewModel.applyDirectorScript(scriptJson, mode)
+                },
+                onExportBlueprintToSaf = { uri, json ->
+                    viewModel.exportBlueprintToSafUri(uri, json)
+                }
             )
         }
     }
