@@ -78,6 +78,7 @@ fun BottomEditingToolbar(
     onOpenCharacters: () -> Unit,
     onOpenPresetsForSelectedChar: () -> Unit,
     onToggleIkPosing: () -> Unit,
+    onOpenIkStudio: (initialTab: Int) -> Unit = {},
     onStampPoseKey: () -> Unit,
     onStepAdjacentKeyframe: (Boolean) -> Unit,
     onResetPoseAtCurrentFrame: () -> Unit,
@@ -132,6 +133,8 @@ fun BottomEditingToolbar(
         selectedClip != null && isCharSelected -> when (activeSubMenu) {
             DockSubMenu.CHAR_POSE -> listOf(
                 DockToolAction("ik_pose", "IK Pose", Icons.Rounded.Hub, isActive = isIkPosingMode, onClick = onToggleIkPosing),
+                DockToolAction("ik_poses_lib", "Poses", Icons.Rounded.Bookmarks, accentTint = ElectricCyan, onClick = { onOpenIkStudio(2) }),
+                DockToolAction("ik_actions", "Actions", Icons.Rounded.AutoAwesomeMotion, accentTint = AmberKeyframe, onClick = { onOpenIkStudio(1) }),
                 DockToolAction("pose_key", "Pose Key", Icons.Rounded.Diamond, accentTint = AmberKeyframe, onClick = onStampPoseKey),
                 DockToolAction("prev_kf", "Prev KF", Icons.Rounded.SkipPrevious, onClick = { onStepAdjacentKeyframe(false) }),
                 DockToolAction("next_kf", "Next KF", Icons.Rounded.SkipNext, onClick = { onStepAdjacentKeyframe(true) }),

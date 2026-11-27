@@ -7,12 +7,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.BuiltInCatalog
 import com.example.data.LocalAssetStorage
+import com.example.data.PoseLibraryStorage
 import com.example.data.StudioRepository
 import com.example.data.db.FrameCraftDatabase
 import com.example.data.db.ProjectSummary
 import com.example.engine.AnimationExporter
 import com.example.engine.ExportOutput
 import com.example.engine.ExportRequest
+import com.example.engine.ModularActionDef
+import com.example.engine.ModularActionEngine
 import com.example.engine.SceneRenderer
 import com.example.model.*
 import com.example.navigation.HashRoute
@@ -55,6 +58,7 @@ enum class ActiveEditorSheet {
     EXPORT_DIALOG,
     WAVEFORM_EXPORT,
     DIRECTOR_SCRIPT_STUDIO,
+    IK_STUDIO,
     TUTORIAL_GUIDE
 }
 
@@ -94,6 +98,8 @@ data class StudioUiState(
     val brushWidthRatio: Float = 0.009f,
     val brushStyle: BrushStyle = BrushStyle.SOLID,
     val activeSheet: ActiveEditorSheet = ActiveEditorSheet.NONE,
+    val ikStudioInitialTab: Int = 1,
+    val savedPoses: List<SavedPose> = emptyList(),
     val exportState: ExportUiState = ExportUiState.Idle,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
@@ -111,6 +117,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private val db = FrameCraftDatabase.getInstance(application)
     val assetStorage = LocalAssetStorage(application)
+    val poseLibraryStorage = PoseLibraryStorage(application)
     val repository = StudioRepository(
         projectDao = db.projectDao(),
         characterDao = db.characterDao(),
@@ -211,6 +218,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             repository.mediaAssets.collect { assets ->
                 _uiState.update { it.copy(mediaAssets = assets) }
             }
+        }
+        viewModelScope.launch {
+            val loadedPoses = poseLibraryStorage.loadPoses()
+            _uiState.update { it.copy(savedPoses = loadedPoses) }
         }
     }
 
@@ -690,6 +701,132 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             kf.copy(poseOffsets = finalOffsets)
         }
         commitProjectChange(updated)
+    }
+
+    /** Opens the IK Studio modal (Tab 0 = Timeline, Tab 1 = Actions Preview, Tab 2 = Pose Library). */
+    fun openIkStudio(initialTab: Int = 1) {
+        stopPlayback()
+        val state = _uiState.value
+        val targetClip = state.selectedClip?.takeIf { it.characterId != null }
+            ?: state.project.activeScene.clips.firstOrNull { it.characterId != null }
+        if (targetClip == null) {
+            showStatus("Add or select a character first to open IK Studio")
+            return
+        }
+        _uiState.update {
+            it.copy(
+                selectedClipId = targetClip.id,
+                selectedLayerId = targetClip.layerId,
+                ikStudioInitialTab = initialTab.coerceIn(0, 2),
+                activeSheet = ActiveEditorSheet.IK_STUDIO,
+                isDrawingMode = false
+            )
+        }
+    }
+
+    /** Commits an IK Studio pose (with expression & hand pose) at the current playhead frame with Undo. */
+    fun commitIkStudioPose(
+        clipId: String,
+        offsets: PoseKeyframeOffsets,
+        expression: FacialExpression,
+        handPose: HandPoseType
+    ) {
+        val state = _uiState.value
+        val frame = _playbackFrame.value
+        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clipId, frame) { kf ->
+            kf.copy(
+                poseOffsets = offsets,
+                expressionOverride = expression,
+                handPoseOverride = handPose
+            )
+        }
+        commitProjectChange(updated)
+        showStatus("IK Pose saved at frame $frame")
+    }
+
+    /** Saves the current IK rig pose into local JSON (`filesDir/pose_library.json`) with offline thumbnail. */
+    fun saveCurrentPoseToLibrary(
+        name: String,
+        category: PoseCategory,
+        offsets: PoseKeyframeOffsets,
+        gaze: GazeTarget,
+        headTilt: Float,
+        expression: FacialExpression,
+        handPose: HandPoseType
+    ) {
+        val state = _uiState.value
+        val clip = state.selectedClip?.takeIf { it.characterId != null }
+            ?: state.project.activeScene.clips.firstOrNull { it.characterId != null }
+        val rig = clip?.characterId?.let { state.charactersById[it] } ?: state.characters.firstOrNull()
+        val orientation = clip?.orientation ?: CharacterOrientation.FRONT
+        val newPose = SavedPose(
+            id = "pose_${UUID.randomUUID().toString().take(8)}",
+            name = name.trim().ifBlank { "Custom Pose" },
+            category = category,
+            ikJointOffsets = offsets,
+            gazeTarget = gaze,
+            headTilt = headTilt,
+            expression = expression,
+            handPose = handPose,
+            createdAt = System.currentTimeMillis()
+        )
+        viewModelScope.launch {
+            val updatedList = poseLibraryStorage.savePose(newPose, rig = rig, orientation = orientation)
+            _uiState.update { it.copy(savedPoses = updatedList) }
+            showStatus("Saved pose \"${newPose.name}\" to library")
+        }
+    }
+
+    fun renameSavedPose(poseId: String, newName: String, newCategory: PoseCategory) {
+        viewModelScope.launch {
+            val updatedList = poseLibraryStorage.renamePose(poseId, newName, newCategory)
+            _uiState.update { it.copy(savedPoses = updatedList) }
+            showStatus("Updated pose \"$newName\"")
+        }
+    }
+
+    fun deleteSavedPose(poseId: String) {
+        viewModelScope.launch {
+            val updatedList = poseLibraryStorage.deletePose(poseId)
+            _uiState.update { it.copy(savedPoses = updatedList) }
+            showStatus("Deleted pose from library")
+        }
+    }
+
+    /** 1-Tap Apply Saved Pose with automatic Undo snapshot at the current playhead frame. */
+    fun applySavedPoseToSelectedClip(pose: SavedPose) {
+        val state = _uiState.value
+        val clip = state.selectedClip?.takeIf { it.characterId != null }
+            ?: state.project.activeScene.clips.firstOrNull { it.characterId != null }
+            ?: return
+        val frame = _playbackFrame.value
+        val mergedOffsets = pose.ikJointOffsets.copy(
+            headNodOffset = (pose.ikJointOffsets.headNodOffset + pose.headTilt).coerceIn(-65f, 65f)
+        )
+        val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clip.id, frame) { kf ->
+            kf.copy(
+                easing = EasingType.EASE_IN_OUT,
+                poseOffsets = mergedOffsets,
+                expressionOverride = pose.expression,
+                handPoseOverride = pose.handPose
+            )
+        }
+        commitProjectChange(updated)
+        showStatus("Applied pose \"${pose.name}\" at frame $frame")
+    }
+
+    /** Commits a previewed modular action onto its isolated track (`Expression`, `Hands`, or `Legs`) with Undo. */
+    fun insertModularActionAtPlayhead(clipId: String, action: ModularActionDef) {
+        val state = _uiState.value
+        val frame = _playbackFrame.value
+        val updated = ModularActionEngine.insertModularActionIntoProject(
+            project = state.project,
+            clipId = clipId,
+            startGlobalFrame = frame,
+            action = action
+        )
+        commitProjectChange(updated)
+        showStatus("Inserted ${action.name} on ${action.track.timelineTrackLabel} track (F$frame)")
     }
 
     /** Commits a completed stage camera pan drag once on finger lift. */

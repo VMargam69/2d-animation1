@@ -68,11 +68,20 @@ object AIBlueprintExporter {
         val hasWaveformLipSync: Boolean = false
     )
 
+    data class BlueprintSavedPoseAsset(
+        val id: String,
+        val name: String,
+        val category: String,
+        val expression: String,
+        val handPose: String
+    )
+
     data class ProjectAssetsPayload(
         val characters: List<BlueprintCharacterAsset>,
         val backgrounds: List<BlueprintVisualAsset>,
         val propsAndImages: List<BlueprintVisualAsset>,
         val audioClips: List<BlueprintAudioAsset>,
+        val savedPoses: List<BlueprintSavedPoseAsset>,
         val existingInlineSvgIds: List<String>,
         val existingCustomAnimationIds: List<String>,
         val existingCustomTransitionIds: List<String>
@@ -102,6 +111,8 @@ object AIBlueprintExporter {
         val aspectRatios: List<String>,
         val builtInProps: List<String>,
         val textBubbleStyles: List<String>,
+        val modularActions: List<String>,
+        val savedPoseIds: List<String>,
         val clipOperations: List<String>
     )
 
@@ -237,11 +248,22 @@ object AIBlueprintExporter {
             )
         }
 
+        val savedPoseAssets = StudioCapabilityRegistry.currentSavedPoses().map { pose ->
+            BlueprintSavedPoseAsset(
+                id = pose.id,
+                name = pose.name,
+                category = pose.category.name,
+                expression = pose.expression.name,
+                handPose = pose.handPose.name
+            )
+        }
+
         val assetsPayload = ProjectAssetsPayload(
             characters = charAssets,
             backgrounds = bgAssets,
             propsAndImages = propAssets,
             audioClips = audioById.values.toList(),
+            savedPoses = savedPoseAssets,
             existingInlineSvgIds = project.inlineSvgAssets.keys.toList(),
             existingCustomAnimationIds = project.customAnimations.keys.toList(),
             existingCustomTransitionIds = project.customTransitions.keys.toList()
@@ -271,6 +293,8 @@ object AIBlueprintExporter {
             aspectRatios = caps.aspectRatios.map { it.id },
             builtInProps = caps.builtInProps.map { it.id },
             textBubbleStyles = caps.textBubbleStyles.map { it.id },
+            modularActions = caps.modularActions.map { it.id },
+            savedPoseIds = caps.savedPoses.map { it.id },
             clipOperations = caps.clipOperations.map { it.id }
         )
 

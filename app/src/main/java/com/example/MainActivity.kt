@@ -264,6 +264,28 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 },
                 onExportBlueprintToSaf = { uri, json ->
                     viewModel.exportBlueprintToSafUri(uri, json)
+                },
+                onOpenIkStudio = { tab -> viewModel.openIkStudio(tab) },
+                onCommitIkStudioPose = { clipId, offsets, expr, hand ->
+                    viewModel.commitIkStudioPose(clipId, offsets, expr, hand)
+                },
+                onSavePoseToLibrary = { name, cat, offsets, gaze, headTilt, expr, hand ->
+                    viewModel.saveCurrentPoseToLibrary(name, cat, offsets, gaze, headTilt, expr, hand)
+                },
+                onRenameSavedPose = { id, newName, newCat ->
+                    viewModel.renameSavedPose(id, newName, newCat)
+                },
+                onDeleteSavedPose = { id -> viewModel.deleteSavedPose(id) },
+                onApplySavedPose = { pose -> viewModel.applySavedPoseToSelectedClip(pose) },
+                onInsertModularAction = { clipId, action ->
+                    viewModel.insertModularActionAtPlayhead(clipId, action)
+                },
+                loadPoseThumbnail = { path -> viewModel.poseLibraryStorage.loadCachedThumbnail(path) },
+                loadCharacterBitmap = { path ->
+                    if (!path.isNullOrBlank()) viewModel.assetStorage.getCachedOrRequestBitmap(path, null) else null
+                },
+                loadAtlasSlices = { path ->
+                    if (!path.isNullOrBlank()) viewModel.assetStorage.getCachedOrSliceAtlas(path) else null
                 }
             )
         }

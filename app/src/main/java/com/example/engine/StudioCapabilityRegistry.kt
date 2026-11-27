@@ -1,16 +1,35 @@
 package com.example.engine
 
 import com.example.model.*
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Dynamic, zero-hardcoding runtime capability introspection registry.
  *
  * Reads every live FrameCraft enum, preset catalog, VFX engine, colour grading list,
- * mask shape, easing curve, transition, IK handle, camera shot type, blend mode, and
- * aspect ratio directly at runtime. Any enum entry or preset added in future releases
- * automatically appears in exported `.fcblueprint.json` files without touching this registry.
+ * mask shape, easing curve, transition, IK handle, camera shot type, blend mode,
+ * saved IK poses, modular actions, and aspect ratio directly at runtime.
  */
 object StudioCapabilityRegistry {
+
+    private val registeredSavedPoses = CopyOnWriteArrayList<SavedPose>()
+
+    /** Updates the live registered custom IK poses so `.fcblueprint.json` exports include them automatically. */
+    fun registerSavedPoses(poses: List<SavedPose>) {
+        registeredSavedPoses.clear()
+        registeredSavedPoses.addAll(poses)
+    }
+
+    /** Returns the currently registered custom saved IK poses. */
+    fun currentSavedPoses(): List<SavedPose> = registeredSavedPoses.toList()
+
+    /** Finds a registered saved pose by exact ID or case-insensitive name. */
+    fun findSavedPose(idOrName: String?): SavedPose? {
+        if (idOrName.isNullOrBlank()) return null
+        val q = idOrName.trim()
+        return registeredSavedPoses.firstOrNull { it.id == q }
+            ?: registeredSavedPoses.firstOrNull { it.name.equals(q, ignoreCase = true) }
+    }
 
     data class CapabilityItem(
         val id: String,
@@ -51,6 +70,8 @@ object StudioCapabilityRegistry {
         val textBubbleStyles: List<CapabilityItem>,
         val brushStyles: List<CapabilityItem>,
         val shapeKinds: List<CapabilityItem>,
+        val modularActions: List<CapabilityItem>,
+        val savedPoses: List<CapabilityItem>,
         val clipOperations: List<ClipOperationCapability>
     )
 
@@ -207,6 +228,29 @@ object StudioCapabilityRegistry {
             CapabilityItem(id = it.name, label = it.displayName)
         }
 
+        val modularActions = ModularActionEngine.catalog.map { act ->
+            CapabilityItem(
+                id = act.id,
+                label = act.name,
+                meta = mapOf(
+                    "track" to act.track.name,
+                    "durationFrames" to act.durationFrames
+                )
+            )
+        }
+
+        val savedPoses = registeredSavedPoses.map { pose ->
+            CapabilityItem(
+                id = pose.id,
+                label = pose.name,
+                meta = mapOf(
+                    "category" to pose.category.name,
+                    "expression" to pose.expression.name,
+                    "handPose" to pose.handPose.name
+                )
+            )
+        }
+
         val clipOperations = listOf(
             ClipOperationCapability("split", "Split a clip cleanly at a frame or timestamp into two clips", listOf("atSec", "atFrame")),
             ClipOperationCapability("flipX", "Mirror clip horizontally", listOf("enabled")),
@@ -244,6 +288,8 @@ object StudioCapabilityRegistry {
             textBubbleStyles = textBubbleStyles,
             brushStyles = brushStyles,
             shapeKinds = shapeKinds,
+            modularActions = modularActions,
+            savedPoses = savedPoses,
             clipOperations = clipOperations
         )
     }
@@ -281,5 +327,7 @@ object StudioCapabilityRegistry {
             snapshot.layerBlendModes.size +
             snapshot.aspectRatios.size +
             snapshot.builtInProps.size +
+            snapshot.modularActions.size +
+            snapshot.savedPoses.size +
             snapshot.clipOperations.size
 }

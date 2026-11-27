@@ -187,7 +187,8 @@ object DirectorScriptReceiver {
         val eyebrowShape: String? = null,
         val handPose: String? = null,
         val blink: Boolean? = null,
-        val ikPose: ScriptIkPoseDto? = null
+        val ikPose: ScriptIkPoseDto? = null,
+        val savedPoseId: String? = null
     )
 
     data class ScriptClipOperationDto(
@@ -846,6 +847,7 @@ object DirectorScriptReceiver {
                 bez != null && bez.size >= 4 -> EasingType.CUSTOM_CUBIC
                 else -> parseEnumIgnoreCase<EasingType>(dto.easing) ?: EasingType.EASE_IN_OUT
             }
+            val resolvedSavedPose = dto.savedPoseId?.let { StudioCapabilityRegistry.findSavedPose(it) }
             val poseOffsets = dto.ikPose?.let { ik ->
                 PoseKeyframeOffsets(
                     headNodOffset = ik.headNod,
@@ -858,6 +860,10 @@ object DirectorScriptReceiver {
                     leftKneeOffset = ik.leftKnee,
                     rightLegOffset = ik.rightLeg,
                     rightKneeOffset = ik.rightKnee
+                )
+            } ?: resolvedSavedPose?.let { sp ->
+                sp.ikJointOffsets.copy(
+                    headNodOffset = (sp.ikJointOffsets.headNodOffset + sp.headTilt).coerceIn(-65f, 65f)
                 )
             } ?: PoseKeyframeOffsets()
 
@@ -875,12 +881,14 @@ object DirectorScriptReceiver {
                 easingP2X = bez?.getOrNull(2) ?: 0.58f,
                 easingP2Y = bez?.getOrNull(3) ?: 1f,
                 poseOffsets = poseOffsets,
-                expressionOverride = parseEnumIgnoreCase<FacialExpression>(dto.expression),
+                expressionOverride = parseEnumIgnoreCase<FacialExpression>(dto.expression)
+                    ?: resolvedSavedPose?.expression?.takeIf { it != FacialExpression.AUTO },
                 facialPresetId = dto.facialPresetId,
                 mouthShapeOverride = parseEnumIgnoreCase<MouthShapeOverride>(dto.mouthShape),
                 eyeShapeOverride = parseEnumIgnoreCase<EyeShapeOverride>(dto.eyeShape),
                 eyebrowShapeOverride = parseEnumIgnoreCase<EyebrowShapeOverride>(dto.eyebrowShape),
-                handPoseOverride = parseEnumIgnoreCase<HandPoseType>(dto.handPose),
+                handPoseOverride = parseEnumIgnoreCase<HandPoseType>(dto.handPose)
+                    ?: resolvedSavedPose?.handPose,
                 blinkOverride = dto.blink
             )
         }.sortedBy { it.frame }

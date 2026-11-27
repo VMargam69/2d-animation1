@@ -1967,4 +1967,221 @@ class AnimationEngineTest {
         assertEquals(1, restored.customTransitions.size)
         assertEquals("moon_iris", restored.activeScene.customTransitionInId)
     }
+
+    @Test
+    fun `IK Pose Library persists locally in JSON across restarts, registers in StudioCapabilityRegistry, exports in AI Blueprint, and resolves in DirectorScriptReceiver`() {
+        val tempDir = java.nio.file.Files.createTempDirectory("framecraft_pose_lib_test").toFile()
+        try {
+            val storageFile = java.io.File(tempDir, com.example.data.PoseLibraryStorage.POSE_LIBRARY_FILENAME)
+            val thumbsDir = java.io.File(tempDir, com.example.data.PoseLibraryStorage.POSE_THUMBNAILS_DIR)
+            val storage1 = com.example.data.PoseLibraryStorage(storageFile, thumbsDir)
+
+            val heroPose = SavedPose(
+                id = "pose_hero_landing",
+                name = "Hero Landing",
+                category = PoseCategory.ACTION,
+                ikJointOffsets = PoseKeyframeOffsets(
+                    headNodOffset = -12f,
+                    torsoTiltOffset = 18f,
+                    leftArmOffset = 45f,
+                    rightArmOffset = -75f,
+                    leftLegOffset = -40f,
+                    leftKneeOffset = 75f,
+                    rightLegOffset = 22f,
+                    rightKneeOffset = 35f
+                ),
+                gazeTarget = GazeTarget(0.35f, -0.25f),
+                headTilt = 8f,
+                expression = FacialExpression.ANGRY,
+                handPose = HandPoseType.FIST,
+                createdAt = 1700000000000L
+            )
+
+            // 1. Write & simulate full app restart with a brand-new PoseLibraryStorage instance
+            storage1.writePosesBlocking(listOf(heroPose))
+            assertTrue("pose_library.json must be created on disk", storageFile.exists())
+
+            val storageAfterRestart = com.example.data.PoseLibraryStorage(storageFile, thumbsDir)
+            val reloaded = storageAfterRestart.loadPosesBlocking()
+            assertEquals(1, reloaded.size)
+            val restoredPose = reloaded.first()
+            assertEquals("pose_hero_landing", restoredPose.id)
+            assertEquals("Hero Landing", restoredPose.name)
+            assertEquals(PoseCategory.ACTION, restoredPose.category)
+            assertEquals(-75f, restoredPose.ikJointOffsets.rightArmOffset, 0.01f)
+            assertEquals(0.35f, restoredPose.gazeTarget.x, 0.01f)
+            assertEquals(8f, restoredPose.headTilt, 0.01f)
+            assertEquals(FacialExpression.ANGRY, restoredPose.expression)
+            assertEquals(HandPoseType.FIST, restoredPose.handPose)
+
+            // 2. Verify StudioCapabilityRegistry & AIBlueprintExporter automatically include saved poses
+            val caps = com.example.engine.StudioCapabilityRegistry.introspect()
+            assertTrue(caps.savedPoses.any { it.id == "pose_hero_landing" })
+            assertTrue(caps.modularActions.size >= 24)
+
+            val baseProject = BuiltInCatalog.sceneTemplates.first().buildProject("Pose Blueprint Test")
+            val blueprintJson = com.example.engine.AIBlueprintExporter.exportToJson(
+                project = baseProject,
+                characters = BuiltInCatalog.builtInCharacters,
+                mediaAssets = emptyList()
+            )
+            assertTrue("Blueprint JSON must include saved pose ID", blueprintJson.contains("pose_hero_landing"))
+            assertTrue("Blueprint JSON must include saved pose name", blueprintJson.contains("Hero Landing"))
+
+            // 3. Verify DirectorScriptReceiver resolves `savedPoseId` onto character keyframes
+            val charId = BuiltInCatalog.builtInCharacters.first().id
+            val scriptWithSavedPose = """
+                {
+                  "format": "framecraft.director_script",
+                  "schemaVersion": 3,
+                  "projectName": "Saved Pose Script",
+                  "fps": 24,
+                  "scenes": [
+                    {
+                      "name": "Act 1",
+                      "durationSec": 2.0,
+                      "layers": [
+                        { "id": "l_hero", "name": "Hero", "type": "CHARACTER" }
+                      ],
+                      "clips": [
+                        {
+                          "id": "c_hero",
+                          "layerId": "l_hero",
+                          "characterId": "$charId",
+                          "startSec": 0.0,
+                          "durationSec": 2.0,
+                          "keyframes": [
+                            { "tSec": 0.5, "x": 0.5, "y": 0.82, "savedPoseId": "pose_hero_landing" }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+            """.trimIndent()
+            val compiled = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+                context = null,
+                scriptJson = scriptWithSavedPose,
+                currentProject = baseProject,
+                existingCharacters = BuiltInCatalog.builtInCharacters,
+                existingMediaAssets = emptyList(),
+                importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE
+            ).getOrThrow()
+            val kf12 = compiled.project.activeScene.clips.first { it.id == "c_hero" }.keyframes.first { it.frame == 12 }
+            assertEquals(-75f, kf12.poseOffsets.rightArmOffset, 0.1f)
+            assertEquals(-4f, kf12.poseOffsets.headNodOffset, 0.1f) // -12f + headTilt 8f
+            assertEquals(FacialExpression.ANGRY, kf12.expressionOverride)
+            assertEquals(HandPoseType.FIST, kf12.handPoseOverride)
+
+            // Clean up static registry after test
+            com.example.engine.StudioCapabilityRegistry.registerSavedPoses(emptyList())
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Modular Action Preview Mode is strictly non-destructive and track-isolated for Facial, Hands, and Legs`() {
+        val baseOffsets = PoseKeyframeOffsets(
+            headNodOffset = 5f,
+            torsoTiltOffset = 10f,
+            leftArmOffset = 25f,
+            leftForearmOffset = 15f,
+            rightArmOffset = -30f,
+            rightForearmOffset = -20f,
+            leftLegOffset = 18f,
+            leftKneeOffset = 22f,
+            rightLegOffset = -16f,
+            rightKneeOffset = 14f
+        )
+
+        // 1. FACIAL preview ONLY changes face/head; arms & legs stay 100% identical to baseOffsets
+        val facialAction = com.example.engine.ModularActionEngine.findById("act_face_gasp")!!
+        val facialPreview = com.example.engine.ModularActionEngine.blendPreviewOntoBase(
+            basePose = baseOffsets,
+            baseExpression = FacialExpression.NEUTRAL,
+            baseMouthOverride = MouthShapeOverride.AUTO,
+            baseEyeOverride = EyeShapeOverride.AUTO,
+            baseEyebrowOverride = EyebrowShapeOverride.AUTO,
+            baseHandPose = HandPoseType.POINT,
+            baseGaze = GazeTarget(0.2f, -0.1f),
+            baseHeadTilt = 3f,
+            action = facialAction,
+            progress = 0.5f
+        )
+        assertEquals(FacialExpression.SHOCKED, facialPreview.expression)
+        assertEquals(MouthShapeOverride.SHOCK_O, facialPreview.mouthOverride)
+        assertEquals(HandPoseType.POINT, facialPreview.handPose)
+        assertEquals(baseOffsets.rightArmOffset, facialPreview.poseOffsets.rightArmOffset, 0.001f)
+        assertEquals(baseOffsets.leftLegOffset, facialPreview.poseOffsets.leftLegOffset, 0.001f)
+        assertEquals(baseOffsets.torsoTiltOffset, facialPreview.poseOffsets.torsoTiltOffset, 0.001f)
+
+        // 2. HANDS preview ONLY changes arms/handPose; face & legs stay 100% identical
+        val handsAction = com.example.engine.ModularActionEngine.findById("act_hand_wave")!!
+        val handsPreview = com.example.engine.ModularActionEngine.blendPreviewOntoBase(
+            basePose = baseOffsets,
+            baseExpression = FacialExpression.SAD,
+            baseMouthOverride = MouthShapeOverride.FROWN,
+            baseEyeOverride = EyeShapeOverride.SAD_DROOP,
+            baseEyebrowOverride = EyebrowShapeOverride.WORRIED_SAD,
+            baseHandPose = HandPoseType.FIST,
+            baseGaze = GazeTarget(0f, 0f),
+            baseHeadTilt = 0f,
+            action = handsAction,
+            progress = 0.5f
+        )
+        assertEquals(HandPoseType.OPEN, handsPreview.handPose)
+        assertNotEquals(baseOffsets.rightArmOffset, handsPreview.poseOffsets.rightArmOffset)
+        assertEquals(FacialExpression.SAD, handsPreview.expression)
+        assertEquals(MouthShapeOverride.FROWN, handsPreview.mouthOverride)
+        assertEquals(baseOffsets.leftLegOffset, handsPreview.poseOffsets.leftLegOffset, 0.001f)
+        assertEquals(baseOffsets.rightKneeOffset, handsPreview.poseOffsets.rightKneeOffset, 0.001f)
+
+        // 3. LEGS preview ONLY changes legs/torso; face & arms stay 100% identical
+        val legsAction = com.example.engine.ModularActionEngine.findById("act_leg_kick")!!
+        val legsPreview = com.example.engine.ModularActionEngine.blendPreviewOntoBase(
+            basePose = baseOffsets,
+            baseExpression = FacialExpression.HAPPY,
+            baseMouthOverride = MouthShapeOverride.SMILE,
+            baseEyeOverride = EyeShapeOverride.HAPPY_ARC,
+            baseEyebrowOverride = EyebrowShapeOverride.ARCHED_HAPPY,
+            baseHandPose = HandPoseType.PROP_GRIP,
+            baseGaze = GazeTarget(0f, 0f),
+            baseHeadTilt = 0f,
+            action = legsAction,
+            progress = 0.5f
+        )
+        assertNotEquals(baseOffsets.rightLegOffset, legsPreview.poseOffsets.rightLegOffset)
+        assertEquals(FacialExpression.HAPPY, legsPreview.expression)
+        assertEquals(HandPoseType.PROP_GRIP, legsPreview.handPose)
+        assertEquals(baseOffsets.leftArmOffset, legsPreview.poseOffsets.leftArmOffset, 0.001f)
+        assertEquals(baseOffsets.rightForearmOffset, legsPreview.poseOffsets.rightForearmOffset, 0.001f)
+
+        // 4. Insert at Playhead stamps track-isolated keyframes onto clip without disturbing other tracks
+        val baseProject = BuiltInCatalog.sceneTemplates.first().buildProject("Modular Insert Test")
+        val charClip = baseProject.activeScene.clips.first { it.characterId != null }
+        val seededProject = ProjectMutator.upsertKeyframeAtFrame(baseProject, charClip.id, 10) { kf ->
+            kf.copy(
+                poseOffsets = baseOffsets,
+                expressionOverride = FacialExpression.HAPPY,
+                handPoseOverride = HandPoseType.POINT
+            )
+        }
+        val seededClip = seededProject.activeScene.clips.first { it.id == charClip.id }
+        val midFrame = 10 + (legsAction.durationFrames * 0.5f).toInt()
+        val beforeMid = KeyframeEvaluator.evaluate(seededClip, midFrame)
+        val afterLegsInsert = com.example.engine.ModularActionEngine.insertModularActionIntoProject(
+            project = seededProject,
+            clipId = charClip.id,
+            startGlobalFrame = 10,
+            action = legsAction
+        )
+        val updatedClip = afterLegsInsert.activeScene.clips.first { it.id == charClip.id }
+        val evalMid = KeyframeEvaluator.evaluate(updatedClip, midFrame)
+        assertNotEquals(beforeMid.poseOffsets.rightLegOffset, evalMid.poseOffsets.rightLegOffset)
+        assertEquals(beforeMid.poseOffsets.leftArmOffset, evalMid.poseOffsets.leftArmOffset, 0.05f)
+        assertEquals(FacialExpression.HAPPY, evalMid.expressionOverride)
+        assertEquals(HandPoseType.POINT, evalMid.handPoseOverride)
+    }
 }
+

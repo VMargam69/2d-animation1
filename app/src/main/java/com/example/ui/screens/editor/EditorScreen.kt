@@ -127,7 +127,17 @@ fun EditorScreen(
     onSetFacialShapeOverride: (mouth: MouthShapeOverride?, eye: EyeShapeOverride?, eyebrow: EyebrowShapeOverride?) -> Unit = { _, _, _ -> },
     onClearFacialShapeOverrides: () -> Unit = {},
     onApplyDirectorScript: (scriptJson: String, mode: com.example.engine.DirectorScriptImportMode) -> Unit = { _, _ -> },
-    onExportBlueprintToSaf: (Uri, String) -> Unit = { _, _ -> }
+    onExportBlueprintToSaf: (Uri, String) -> Unit = { _, _ -> },
+    onOpenIkStudio: (initialTab: Int) -> Unit = {},
+    onCommitIkStudioPose: (clipId: String, offsets: PoseKeyframeOffsets, expression: FacialExpression, handPose: HandPoseType) -> Unit = { _, _, _, _ -> },
+    onSavePoseToLibrary: (String, PoseCategory, PoseKeyframeOffsets, GazeTarget, Float, FacialExpression, HandPoseType) -> Unit = { _, _, _, _, _, _, _ -> },
+    onRenameSavedPose: (poseId: String, newName: String, newCategory: PoseCategory) -> Unit = { _, _, _ -> },
+    onDeleteSavedPose: (poseId: String) -> Unit = {},
+    onApplySavedPose: (SavedPose) -> Unit = {},
+    onInsertModularAction: (clipId: String, action: com.example.engine.ModularActionDef) -> Unit = { _, _ -> },
+    loadPoseThumbnail: (String?) -> android.graphics.Bitmap? = { null },
+    loadCharacterBitmap: (String?) -> android.graphics.Bitmap? = { null },
+    loadAtlasSlices: (String?) -> Map<AtlasPartSlot, android.graphics.Bitmap>? = { null }
 ) {
     // Non-exported stage composition grid toggle & resizable canvas/timeline split
     var showGridOverlay by remember { mutableStateOf(false) }
@@ -249,6 +259,7 @@ fun EditorScreen(
                             onMirrorIkPose = onMirrorIkPose,
                             onStampPoseKey = onStampPoseKey,
                             onResetPoseAtFrame = onResetPoseAtCurrentFrame,
+                            onOpenIkStudio = onOpenIkStudio,
                             onExitIkPosingMode = onToggleIkPosingMode,
                             onFinishStroke = onFinishStroke,
                             onBrushStyleChange = onBrushStyleChange,
@@ -341,6 +352,7 @@ fun EditorScreen(
                             onMirrorIkPose = onMirrorIkPose,
                             onStampPoseKey = onStampPoseKey,
                             onResetPoseAtFrame = onResetPoseAtCurrentFrame,
+                            onOpenIkStudio = onOpenIkStudio,
                             onExitIkPosingMode = onToggleIkPosingMode,
                             onFinishStroke = onFinishStroke,
                             onBrushStyleChange = onBrushStyleChange,
@@ -456,6 +468,7 @@ fun EditorScreen(
                     }
                 },
                 onToggleIkPosing = onToggleIkPosingMode,
+                onOpenIkStudio = onOpenIkStudio,
                 onStampPoseKey = onStampPoseKey,
                 onStepAdjacentKeyframe = onStepAdjacentKeyframe,
                 onResetPoseAtCurrentFrame = onResetPoseAtCurrentFrame,
@@ -721,6 +734,42 @@ fun EditorScreen(
                 onExportBlueprintToSaf = onExportBlueprintToSaf,
                 onDismiss = onCloseSheet
             )
+        }
+        ActiveEditorSheet.IK_STUDIO -> {
+            val charClip = state.selectedClip?.takeIf { it.characterId != null }
+                ?: state.project.activeScene.clips.firstOrNull { it.characterId != null }
+            val charRig = charClip?.characterId?.let { state.charactersById[it] } ?: state.characters.firstOrNull()
+            if (charClip != null && charRig != null) {
+                val bmpVer by bitmapVersionFlow.collectAsState()
+                val customBmp = remember(charRig.customImagePath, bmpVer) {
+                    loadCharacterBitmap(charRig.customImagePath)
+                }
+                val atlasPath = charRig.spriteAtlasRig?.importedFullSheetPath ?: charRig.customImagePath
+                val atlasSlices = remember(atlasPath, bmpVer) {
+                    loadAtlasSlices(atlasPath)
+                }
+                IkStudioModal(
+                    clip = charClip,
+                    rig = charRig,
+                    currentFrame = state.currentFrame,
+                    fps = state.project.fps,
+                    initialTab = state.ikStudioInitialTab,
+                    savedPoses = state.savedPoses,
+                    customBitmap = customBmp,
+                    atlasSlices = atlasSlices,
+                    thumbnailLoader = loadPoseThumbnail,
+                    onStepFrame = onStepFrame,
+                    onSavePoseToLibrary = onSavePoseToLibrary,
+                    onRenameSavedPose = onRenameSavedPose,
+                    onDeleteSavedPose = onDeleteSavedPose,
+                    onApplySavedPose = onApplySavedPose,
+                    onInsertModularAction = onInsertModularAction,
+                    onCommitIkPose = onCommitIkStudioPose,
+                    onDismiss = onCloseSheet
+                )
+            } else {
+                onCloseSheet()
+            }
         }
         ActiveEditorSheet.TUTORIAL_GUIDE -> {
             StudioGuideDialog(onDismiss = onCloseSheet)

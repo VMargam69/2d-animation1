@@ -75,6 +75,7 @@ fun EditorCanvasPane(
     onMirrorIkPose: () -> Unit = {},
     onStampPoseKey: () -> Unit = {},
     onResetPoseAtFrame: () -> Unit = {},
+    onOpenIkStudio: (initialTab: Int) -> Unit = {},
     onExitIkPosingMode: () -> Unit = {},
     onFinishStroke: (List<NormalizedPoint>) -> Unit,
     onBrushStyleChange: (String, Float, BrushStyle) -> Unit,
@@ -462,6 +463,36 @@ fun EditorCanvasPane(
                             )
                             Text(
                                 text = "Key",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ElectricCyan
+                            )
+                        }
+                    }
+
+                    // Open IK Pose Library / Actions Studio directly from on-stage IK HUD
+                    Surface(
+                        color = StudioPanel,
+                        shape = RoundedCornerShape(7.dp),
+                        border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.7f)),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable { onOpenIkStudio(2) }
+                            .testTag("ik_hud_poses_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Bookmarks,
+                                contentDescription = "Open IK Pose Library",
+                                tint = ElectricCyan,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "Poses",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = ElectricCyan
