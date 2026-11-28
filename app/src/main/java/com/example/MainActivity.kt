@@ -234,6 +234,19 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onToggleIkJointLimits = { viewModel.toggleIkJointLimits() },
                 onMirrorIkPose = { viewModel.mirrorSelectedClipPoseAtCurrentFrame() },
                 onToggleCameraKeyMode = { viewModel.toggleCameraKeyMode() },
+                onToggleCameraViewportMode = { viewModel.toggleCameraViewportMode() },
+                onAddCameraBox = { viewModel.addCameraBox() },
+                onSelectCameraBox = { boxId -> viewModel.selectCameraBox(boxId) },
+                onCommitCameraBoxTransform = { id, cx, cy, z, r ->
+                    viewModel.commitCameraBoxTransform(id, cx, cy, z, r)
+                },
+                onTrimOrMoveCameraBox = { id, startF, endF ->
+                    viewModel.trimOrMoveCameraBox(id, startF, endF)
+                },
+                onDuplicateCameraBox = { id -> viewModel.duplicateCameraBox(id) },
+                onSplitCameraBox = { id -> viewModel.splitCameraBox(id) },
+                onDeleteCameraBox = { id -> viewModel.deleteCameraBox(id) },
+                onCycleCameraBoxEasing = { id -> viewModel.cycleCameraBoxEasing(id) },
                 onStepAdjacentKeyframe = { forward -> viewModel.stepToAdjacentKeyframe(forward) },
                 onStampPoseKey = { viewModel.stampPoseAndCameraKeyframe() },
                 onResetPoseAtCurrentFrame = { viewModel.resetSelectedClipPoseAtCurrentFrame() },

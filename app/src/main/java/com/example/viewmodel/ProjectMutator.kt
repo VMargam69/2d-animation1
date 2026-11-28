@@ -1,6 +1,8 @@
 package com.example.viewmodel
 
+import com.example.engine.CameraBoxEngine
 import com.example.engine.CameraPresetEngine
+import com.example.engine.EvaluatedCamera
 import com.example.engine.FacialExpressionEngine
 import com.example.engine.KeyframeEvaluator
 import com.example.model.*
@@ -652,7 +654,240 @@ object ProjectMutator {
 
     fun resetCameraKeyframes(project: ProjectDocument): ProjectDocument = updateActiveScene(project) { scene ->
         if (scene.cameraLayerLocked) return@updateActiveScene scene
-        scene.copy(cameraKeyframes = emptyList())
+        scene.copy(cameraKeyframes = emptyList(), cameraBoxes = emptyList())
+    }
+
+    // --- Visual On-Canvas Multi-Camera Boxes (A, B, C...) ---
+
+    fun addCameraBox(
+        project: ProjectDocument,
+        atFrame: Int
+    ): Pair<ProjectDocument, String?> {
+        val currentScene = project.activeScene
+        if (currentScene.cameraLayerLocked) return project to null
+        val newId = UUID.randomUUID().toString()
+        val updated = updateActiveScene(project) { scene ->
+            if (scene.cameraLayerLocked) return@updateActiveScene scene
+            val dur = scene.durationFrames.coerceAtLeast(CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
+            val existingBoxes = if (scene.cameraBoxes.isNotEmpty()) {
+                scene.cameraBoxes
+            } else if (scene.cameraKeyframes.isNotEmpty()) {
+                CameraBoxEngine.fromCameraKeyframes(scene.cameraKeyframes, dur)
+            } else {
+                emptyList()
+            }
+
+            val defaultSpan = (dur / 3).coerceIn(24, 48).coerceAtMost(dur)
+            val sortedExisting = existingBoxes.sortedBy { it.startFrame }
+
+            // Place new box neatly after the last box if playhead is already inside/at start of existing boxes,
+            // or at playhead if playhead is past existing boxes.
+            val startFrame = when {
+                sortedExisting.isEmpty() -> 0
+                atFrame >= sortedExisting.last().endFrame -> atFrame.coerceIn(0, (dur - CameraBoxEngine.MIN_BOX_DURATION_FRAMES).coerceAtLeast(0))
+                sortedExisting.last().endFrame + CameraBoxEngine.MIN_BOX_DURATION_FRAMES <= dur -> sortedExisting.last().endFrame
+                else -> atFrame.coerceIn(0, (dur - CameraBoxEngine.MIN_BOX_DURATION_FRAMES).coerceAtLeast(0))
+            }
+            val endFrame = (startFrame + defaultSpan).coerceIn(
+                (startFrame + CameraBoxEngine.MIN_BOX_DURATION_FRAMES).coerceAtMost(dur),
+                dur.coerceAtLeast(startFrame + CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
+            )
+
+            // Default framing: first box is wide 100%, subsequent boxes nudge slightly so A/B/C are visually distinct on stage
+            val idx = sortedExisting.size
+            val baseEval = if (sortedExisting.isEmpty()) {
+                EvaluatedCamera(x = 0.5f, y = 0.5f, zoom = 1.0f, rotation = 0f)
+            } else {
+                val prev = sortedExisting.last()
+                val offsetSign = if (idx % 2 == 1) 1f else -1f
+                EvaluatedCamera(
+                    x = (prev.centerX + 0.14f * offsetSign).coerceIn(0.18f, 0.82f),
+                    y = (prev.centerY - 0.04f).coerceIn(0.20f, 0.78f),
+                    zoom = if (prev.zoom < 1.25f) 1.55f else 1.15f,
+                    rotation = 0f
+                )
+            }
+
+            val newBox = CameraBoxClip(
+                id = newId,
+                label = CameraBoxEngine.indexToLabel(idx),
+                startFrame = startFrame,
+                endFrame = endFrame,
+                centerX = baseEval.x,
+                centerY = baseEval.y,
+                zoom = baseEval.zoom,
+                rotation = baseEval.rotation,
+                easing = EasingType.EASE_IN_OUT
+            )
+            val relabeled = CameraBoxEngine.relabelChronologically(existingBoxes + newBox)
+            scene.copy(
+                cameraLayerEnabled = true,
+                cameraBoxes = relabeled,
+                cameraKeyframes = CameraBoxEngine.toCameraKeyframes(relabeled)
+            )
+        }
+        return updated to newId
+    }
+
+    fun updateCameraBox(
+        project: ProjectDocument,
+        boxId: String,
+        updater: (CameraBoxClip) -> CameraBoxClip
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        if (scene.cameraLayerLocked) return@updateActiveScene scene
+        if (scene.cameraBoxes.none { it.id == boxId }) return@updateActiveScene scene
+        val updatedBoxes = scene.cameraBoxes.map { box ->
+            if (box.id == boxId) {
+                updater(box).let { next ->
+                    next.copy(
+                        centerX = next.centerX.coerceIn(CameraBoxEngine.MIN_CENTER_NORM, CameraBoxEngine.MAX_CENTER_NORM),
+                        centerY = next.centerY.coerceIn(CameraBoxEngine.MIN_CENTER_NORM, CameraBoxEngine.MAX_CENTER_NORM),
+                        zoom = next.zoom.coerceIn(CameraBoxEngine.MIN_ZOOM, CameraBoxEngine.MAX_ZOOM),
+                        rotation = next.rotation.coerceIn(-180f, 180f)
+                    )
+                }
+            } else box
+        }
+        val relabeled = CameraBoxEngine.relabelChronologically(updatedBoxes)
+        scene.copy(
+            cameraLayerEnabled = true,
+            cameraBoxes = relabeled,
+            cameraKeyframes = CameraBoxEngine.toCameraKeyframes(relabeled)
+        )
+    }
+
+    fun trimOrMoveCameraBox(
+        project: ProjectDocument,
+        boxId: String,
+        newStartFrame: Int,
+        newEndFrame: Int
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        if (scene.cameraLayerLocked) return@updateActiveScene scene
+        if (scene.cameraBoxes.none { it.id == boxId }) return@updateActiveScene scene
+        val maxFrame = scene.durationFrames.coerceAtLeast(CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
+        val clampedStart = newStartFrame.coerceIn(0, (maxFrame - CameraBoxEngine.MIN_BOX_DURATION_FRAMES).coerceAtLeast(0))
+        val clampedEnd = newEndFrame.coerceIn(
+            (clampedStart + CameraBoxEngine.MIN_BOX_DURATION_FRAMES).coerceAtMost(maxFrame),
+            maxFrame.coerceAtLeast(clampedStart + CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
+        )
+        val updatedBoxes = scene.cameraBoxes.map { box ->
+            if (box.id == boxId) box.copy(startFrame = clampedStart, endFrame = clampedEnd) else box
+        }
+        val relabeled = CameraBoxEngine.relabelChronologically(updatedBoxes)
+        scene.copy(
+            cameraLayerEnabled = true,
+            cameraBoxes = relabeled,
+            cameraKeyframes = CameraBoxEngine.toCameraKeyframes(relabeled)
+        )
+    }
+
+    fun duplicateCameraBox(
+        project: ProjectDocument,
+        boxId: String
+    ): Pair<ProjectDocument, String?> {
+        val scene = project.activeScene
+        if (scene.cameraLayerLocked) return project to null
+        val orig = scene.cameraBoxes.firstOrNull { it.id == boxId } ?: return project to null
+        val newId = UUID.randomUUID().toString()
+        val updated = updateActiveScene(project) { sc ->
+            val maxF = sc.durationFrames.coerceAtLeast(CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
+            val span = orig.durationFrames.coerceAtLeast(CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
+            val nextStart = if (orig.endFrame + CameraBoxEngine.MIN_BOX_DURATION_FRAMES <= maxF) {
+                orig.endFrame
+            } else {
+                (orig.startFrame + (span / 2).coerceAtLeast(4)).coerceAtMost((maxF - CameraBoxEngine.MIN_BOX_DURATION_FRAMES).coerceAtLeast(0))
+            }
+            val nextEnd = (nextStart + span).coerceAtMost(maxF).coerceAtLeast(nextStart + CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
+            val dup = orig.copy(
+                id = newId,
+                startFrame = nextStart,
+                endFrame = nextEnd,
+                centerX = (orig.centerX + 0.08f).coerceIn(CameraBoxEngine.MIN_CENTER_NORM, CameraBoxEngine.MAX_CENTER_NORM),
+                centerY = (orig.centerY - 0.03f).coerceIn(CameraBoxEngine.MIN_CENTER_NORM, CameraBoxEngine.MAX_CENTER_NORM)
+            )
+            val relabeled = CameraBoxEngine.relabelChronologically(sc.cameraBoxes + dup)
+            sc.copy(
+                cameraLayerEnabled = true,
+                cameraBoxes = relabeled,
+                cameraKeyframes = CameraBoxEngine.toCameraKeyframes(relabeled)
+            )
+        }
+        return updated to newId
+    }
+
+    fun splitCameraBoxAtFrame(
+        project: ProjectDocument,
+        boxId: String,
+        splitFrame: Int
+    ): Pair<ProjectDocument, String?> {
+        val scene = project.activeScene
+        if (scene.cameraLayerLocked) return project to null
+        val orig = scene.cameraBoxes.firstOrNull { it.id == boxId } ?: return project to null
+        val minSeg = CameraBoxEngine.MIN_BOX_DURATION_FRAMES
+        val resolvedSplit = if (splitFrame in (orig.startFrame + minSeg)..(orig.endFrame - minSeg)) {
+            splitFrame
+        } else {
+            // Fallback to midpoint split when playhead isn't inside the selected clip
+            val mid = (orig.startFrame + orig.endFrame) / 2
+            if (mid - orig.startFrame < minSeg || orig.endFrame - mid < minSeg) return project to null
+            mid
+        }
+        val secondId = UUID.randomUUID().toString()
+        val updated = updateActiveScene(project) { sc ->
+            val evalAtSplit = CameraBoxEngine.evaluateCameraBoxes(sc.cameraBoxes, resolvedSplit)
+            val firstHalf = orig.copy(endFrame = resolvedSplit)
+            val secondHalf = orig.copy(
+                id = secondId,
+                startFrame = resolvedSplit,
+                endFrame = orig.endFrame,
+                centerX = evalAtSplit.x,
+                centerY = evalAtSplit.y,
+                zoom = evalAtSplit.zoom,
+                rotation = evalAtSplit.rotation
+            )
+            val replaced = sc.cameraBoxes.flatMap { if (it.id == boxId) listOf(firstHalf, secondHalf) else listOf(it) }
+            val relabeled = CameraBoxEngine.relabelChronologically(replaced)
+            sc.copy(
+                cameraLayerEnabled = true,
+                cameraBoxes = relabeled,
+                cameraKeyframes = CameraBoxEngine.toCameraKeyframes(relabeled)
+            )
+        }
+        return updated to secondId
+    }
+
+    fun deleteCameraBox(
+        project: ProjectDocument,
+        boxId: String
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        if (scene.cameraLayerLocked) return@updateActiveScene scene
+        if (scene.cameraBoxes.none { it.id == boxId }) return@updateActiveScene scene
+        val remaining = CameraBoxEngine.relabelChronologically(scene.cameraBoxes.filterNot { it.id == boxId })
+        scene.copy(
+            cameraBoxes = remaining,
+            cameraKeyframes = CameraBoxEngine.toCameraKeyframes(remaining)
+        )
+    }
+
+    fun cycleCameraBoxEasing(
+        project: ProjectDocument,
+        boxId: String,
+        explicitEasing: EasingType? = null
+    ): ProjectDocument = updateCameraBox(project, boxId) { box ->
+        val nextEasing = explicitEasing ?: when (box.easing) {
+            EasingType.EASE_IN_OUT -> EasingType.LINEAR
+            EasingType.LINEAR -> EasingType.HOLD
+            EasingType.HOLD -> EasingType.CUSTOM_CUBIC
+            else -> EasingType.EASE_IN_OUT
+        }
+        val handles = KeyframeEvaluator.defaultBezierHandles(nextEasing)
+        box.copy(
+            easing = nextEasing,
+            easingP1X = handles[0],
+            easingP1Y = handles[1],
+            easingP2X = handles[2],
+            easingP2Y = handles[3]
+        )
     }
 
     fun splitClipAtFrame(
@@ -969,7 +1204,8 @@ object ProjectMutator {
 
         val replacedFrames = keys.map { it.frame }.toSet()
         val merged = (scene.cameraKeyframes.filterNot { it.frame in replacedFrames } + keys).sortedBy { it.frame }
-        scene.copy(cameraLayerEnabled = true, cameraKeyframes = merged)
+        val boxes = CameraBoxEngine.fromCameraKeyframes(merged, scene.durationFrames)
+        scene.copy(cameraLayerEnabled = true, cameraKeyframes = merged, cameraBoxes = boxes)
     }
 
     /**

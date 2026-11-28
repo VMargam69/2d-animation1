@@ -3455,7 +3455,396 @@ class AnimationEngineTest {
         )
         assertEquals(singleLayerProject, ProjectMutator.deleteLayer(singleLayerProject, "l_bg"))
     }
+
+    @Test
+    fun `camera box aspect ratio stays locked across all 4 corners, 4 edges, and project ratios`() {
+        val ratios = listOf(
+            "16:9" to (1280f to 720f),
+            "9:16" to (720f to 1280f),
+            "1:1" to (1080f to 1080f),
+            "4:5" to (1080f to 1350f)
+        )
+        val resizeHandles = listOf(
+            com.example.engine.CameraBoxHandle.TOP_LEFT,
+            com.example.engine.CameraBoxHandle.TOP_RIGHT,
+            com.example.engine.CameraBoxHandle.BOTTOM_LEFT,
+            com.example.engine.CameraBoxHandle.BOTTOM_RIGHT,
+            com.example.engine.CameraBoxHandle.EDGE_TOP,
+            com.example.engine.CameraBoxHandle.EDGE_BOTTOM,
+            com.example.engine.CameraBoxHandle.EDGE_LEFT,
+            com.example.engine.CameraBoxHandle.EDGE_RIGHT
+        )
+
+        val baseBox = CameraBoxClip(
+            id = "cam_a",
+            label = "A",
+            startFrame = 0,
+            endFrame = 48,
+            centerX = 0.5f,
+            centerY = 0.5f,
+            zoom = 1.25f,
+            rotation = 12f
+        )
+
+        for ((ratioLabel, dims) in ratios) {
+            val (w, h) = dims
+            val expectedAspect = w / h
+            val initialGeom = com.example.engine.CameraBoxEngine.computeBoxGeometry(baseBox, w, h)
+            assertEquals("Initial aspect mismatch for $ratioLabel", expectedAspect, initialGeom.aspectRatio, 0.002f)
+
+            for (handle in resizeHandles) {
+                // Drag inward (zoom in) and outward (zoom out) along arbitrary off-axis vectors
+                val zoomedIn = com.example.engine.CameraBoxEngine.applyAspectLockedResize(
+                    box = baseBox,
+                    handle = handle,
+                    pointerX = initialGeom.centerX + 42f,
+                    pointerY = initialGeom.centerY - 28f,
+                    stageW = w,
+                    stageH = h
+                )
+                val geomIn = com.example.engine.CameraBoxEngine.computeBoxGeometry(zoomedIn, w, h)
+                assertEquals(
+                    "Zoom-in aspect lock broken on $ratioLabel handle=$handle",
+                    expectedAspect,
+                    geomIn.aspectRatio,
+                    0.002f
+                )
+                assertTrue(zoomedIn.zoom in com.example.engine.CameraBoxEngine.MIN_ZOOM..com.example.engine.CameraBoxEngine.MAX_ZOOM)
+
+                val zoomedOut = com.example.engine.CameraBoxEngine.applyAspectLockedResize(
+                    box = baseBox,
+                    handle = handle,
+                    pointerX = initialGeom.centerX + w * 0.45f,
+                    pointerY = initialGeom.centerY + h * 0.45f,
+                    stageW = w,
+                    stageH = h
+                )
+                val geomOut = com.example.engine.CameraBoxEngine.computeBoxGeometry(zoomedOut, w, h)
+                assertEquals(
+                    "Zoom-out aspect lock broken on $ratioLabel handle=$handle",
+                    expectedAspect,
+                    geomOut.aspectRatio,
+                    0.002f
+                )
+                assertTrue(zoomedOut.zoom in com.example.engine.CameraBoxEngine.MIN_ZOOM..com.example.engine.CameraBoxEngine.MAX_ZOOM)
+            }
+        }
+
+        // Pan drag + Dutch tilt rotation + cardinal 0-degree snap + handle hit-testing
+        val stageW = 1280f
+        val stageH = 720f
+        val panned = com.example.engine.CameraBoxEngine.applyPanDrag(
+            box = baseBox,
+            deltaPxX = 128f * com.example.engine.CameraBoxEngine.DIRECTOR_STAGE_ZOOM,
+            deltaPxY = -72f * com.example.engine.CameraBoxEngine.DIRECTOR_STAGE_ZOOM,
+            stageW = stageW,
+            stageH = stageH
+        )
+        assertEquals(0.6f, panned.centerX, 0.005f)
+        assertEquals(0.4f, panned.centerY, 0.005f)
+
+        val geomBase = com.example.engine.CameraBoxEngine.computeBoxGeometry(baseBox, stageW, stageH)
+        // Pointer straight above center -> snaps cleanly to 0 degrees
+        val snappedRot = com.example.engine.CameraBoxEngine.applyRotationDrag(
+            box = baseBox,
+            pointerX = geomBase.centerX + 2f,
+            pointerY = geomBase.centerY - 220f,
+            stageW = stageW,
+            stageH = stageH
+        )
+        assertEquals(0f, snappedRot.rotation, 0.01f)
+
+        // Pointer to the right of center -> ~90 degrees clockwise
+        val tiltedRot = com.example.engine.CameraBoxEngine.applyRotationDrag(
+            box = baseBox,
+            pointerX = geomBase.centerX + 220f,
+            pointerY = geomBase.centerY,
+            stageW = stageW,
+            stageH = stageH
+        )
+        assertEquals(90f, tiltedRot.rotation, 1.0f)
+
+        // Hit-testing rotation stem & corner on active box
+        val rotHit = com.example.engine.CameraBoxEngine.hitTestBoxes(
+            boxes = listOf(baseBox),
+            selectedBoxId = baseBox.id,
+            pointerX = geomBase.rotHandleX,
+            pointerY = geomBase.rotHandleY,
+            stageW = stageW,
+            stageH = stageH
+        )
+        assertEquals(com.example.engine.CameraBoxHandle.ROTATE, rotHit?.handle)
+    }
+
+    @Test
+    fun `camera boxes A to B to C interpolate smoothly and execute exact Hold instant cuts`() {
+        val boxA = CameraBoxClip(
+            id = "box_a",
+            label = "A",
+            startFrame = 0,
+            endFrame = 24,
+            centerX = 0.25f,
+            centerY = 0.50f,
+            zoom = 1.0f,
+            rotation = -10f,
+            easing = EasingType.LINEAR
+        )
+        val boxB = CameraBoxClip(
+            id = "box_b",
+            label = "B",
+            startFrame = 24,
+            endFrame = 48,
+            centerX = 0.75f,
+            centerY = 0.30f,
+            zoom = 2.0f,
+            rotation = 10f,
+            easing = EasingType.HOLD // Instant cut from B -> C at frame 48
+        )
+        val boxC = CameraBoxClip(
+            id = "box_c",
+            label = "C",
+            startFrame = 48,
+            endFrame = 72,
+            centerX = 0.50f,
+            centerY = 0.60f,
+            zoom = 1.4f,
+            rotation = 0f,
+            easing = EasingType.CUSTOM_CUBIC,
+            easingP1X = 0.22f,
+            easingP1Y = 1.0f,
+            easingP2X = 0.36f,
+            easingP2Y = 1.0f
+        )
+        val scene = AnimationScene(
+            id = "scene_cam_abc",
+            durationFrames = 96,
+            cameraLayerEnabled = true,
+            cameraBoxes = listOf(boxA, boxB, boxC)
+        )
+
+        // Start of A
+        val f0 = KeyframeEvaluator.evaluateCamera(scene, 0)
+        assertEquals(0.25f, f0.x, 0.001f)
+        assertEquals(1.0f, f0.zoom, 0.001f)
+        assertEquals(-10f, f0.rotation, 0.001f)
+
+        // Exact midpoint of A -> B (LINEAR at frame 12)
+        val f12 = KeyframeEvaluator.evaluateCamera(scene, 12)
+        assertEquals(0.50f, f12.x, 0.001f)
+        assertEquals(0.40f, f12.y, 0.001f)
+        assertEquals(1.50f, f12.zoom, 0.001f)
+        assertEquals(0f, f12.rotation, 0.001f)
+
+        // Inside B (HOLD): must stay locked strictly on B up through frame 47 (zero drift)
+        val f36 = KeyframeEvaluator.evaluateCamera(scene, 36)
+        val f47 = KeyframeEvaluator.evaluateCamera(scene, 47)
+        assertEquals(0.75f, f36.x, 0.0001f)
+        assertEquals(2.0f, f36.zoom, 0.0001f)
+        assertEquals(0.75f, f47.x, 0.0001f)
+        assertEquals(2.0f, f47.zoom, 0.0001f)
+        assertEquals(10f, f47.rotation, 0.0001f)
+
+        // Exact frame 48: instant cut to C!
+        val f48 = KeyframeEvaluator.evaluateCamera(scene, 48)
+        assertEquals(0.50f, f48.x, 0.0001f)
+        assertEquals(0.60f, f48.y, 0.0001f)
+        assertEquals(1.40f, f48.zoom, 0.0001f)
+        assertEquals(0f, f48.rotation, 0.0001f)
+
+        // Verify disabled camera layer returns neutral identity camera
+        val disabledScene = scene.copy(cameraLayerEnabled = false)
+        val fDisabled = KeyframeEvaluator.evaluateCamera(disabledScene, 12)
+        assertEquals(0.5f, fDisabled.x, 0.0001f)
+        assertEquals(1.0f, fDisabled.zoom, 0.0001f)
+    }
+
+    @Test
+    fun `camera box CRUD supports auto-labeling A B C D, trim, split, duplicate, delete, and lock guard`() {
+        var project = ProjectDocument(
+            name = "MultiCam CRUD",
+            scenes = listOf(AnimationScene(durationFrames = 144))
+        )
+
+        // Add A, B, C
+        val (p1, idA) = ProjectMutator.addCameraBox(project, atFrame = 0)
+        assertNotNull(idA)
+        val (p2, idB) = ProjectMutator.addCameraBox(p1, atFrame = 48)
+        assertNotNull(idB)
+        val (p3, idC) = ProjectMutator.addCameraBox(p2, atFrame = 96)
+        assertNotNull(idC)
+        project = p3
+        assertEquals(listOf("A", "B", "C"), project.activeScene.cameraBoxes.map { it.label })
+
+        // Split A in the middle -> produces 4 chronological boxes A, B, C, D
+        val boxA = project.activeScene.cameraBoxes.first { it.id == idA }
+        val midFrame = (boxA.startFrame + boxA.endFrame) / 2
+        val (pSplit, splitRightId) = ProjectMutator.splitCameraBoxAtFrame(project, idA!!, midFrame)
+        assertNotNull(splitRightId)
+        assertEquals(listOf("A", "B", "C", "D"), pSplit.activeScene.cameraBoxes.map { it.label })
+
+        // Cycle easing on A -> switches through EASE_IN_OUT -> HOLD -> LINEAR -> CUSTOM_CUBIC
+        val pHold = ProjectMutator.cycleCameraBoxEasing(pSplit, idA)
+        assertEquals(EasingType.HOLD, pHold.activeScene.cameraBoxes.first { it.id == idA }.easing)
+
+        // Duplicate C -> adds 5th box E
+        val (pDup, dupId) = ProjectMutator.duplicateCameraBox(pHold, idC!!)
+        assertNotNull(dupId)
+        assertEquals(listOf("A", "B", "C", "D", "E"), pDup.activeScene.cameraBoxes.map { it.label })
+
+        // Trim B to new bounds
+        val pTrim = ProjectMutator.trimOrMoveCameraBox(pDup, splitRightId!!, newStartFrame = 20, newEndFrame = 44)
+        val trimmed = pTrim.activeScene.cameraBoxes.first { it.id == splitRightId }
+        assertEquals(20, trimmed.startFrame)
+        assertEquals(44, trimmed.endFrame)
+
+        // Delete box -> remaining boxes cleanly relabel A, B, C, D
+        val pDel = ProjectMutator.deleteCameraBox(pTrim, dupId!!)
+        assertEquals(listOf("A", "B", "C", "D"), pDel.activeScene.cameraBoxes.map { it.label })
+
+        // Locked camera layer blocks mutations
+        val lockedProject = ProjectMutator.toggleCameraLayerLock(pDel)
+        assertTrue(lockedProject.activeScene.cameraLayerLocked)
+        val (afterLockedAdd, lockedNewId) = ProjectMutator.addCameraBox(lockedProject, atFrame = 10)
+        assertNull(lockedNewId)
+        assertEquals(lockedProject, afterLockedAdd)
+        assertEquals(lockedProject, ProjectMutator.deleteCameraBox(lockedProject, idA))
+    }
+
+    @Test
+    fun `camera boxes sync cleanly with fcblueprint, fcscript cameraBoxes and cameraShots, and Moshi persistence`() {
+        val baseScene = AnimationScene(
+            id = "scene_cam_sync",
+            name = "Camera Sync",
+            fps = 24,
+            durationFrames = 96,
+            cameraLayerEnabled = true,
+            cameraBoxes = listOf(
+                CameraBoxClip(
+                    id = "box_a",
+                    label = "A",
+                    startFrame = 0,
+                    endFrame = 48,
+                    centerX = 0.35f,
+                    centerY = 0.50f,
+                    zoom = 1.1f,
+                    rotation = 0f,
+                    easing = EasingType.EASE_IN_OUT
+                ),
+                CameraBoxClip(
+                    id = "box_b",
+                    label = "B",
+                    startFrame = 48,
+                    endFrame = 96,
+                    centerX = 0.65f,
+                    centerY = 0.42f,
+                    zoom = 1.85f,
+                    rotation = -6f,
+                    easing = EasingType.HOLD
+                )
+            )
+        )
+        val baseProject = ProjectDocument(name = "CamSyncProject", fps = 24, scenes = listOf(baseScene))
+
+        // 1. Export .fcblueprint.json and verify cameraBoxes payload
+        val blueprint = com.example.engine.AIBlueprintExporter.buildBlueprint(
+            project = baseProject,
+            characters = BuiltInCatalog.builtInCharacters,
+            mediaAssets = emptyList()
+        )
+        assertEquals(2, blueprint.projectAssets.cameraBoxes.size)
+        assertEquals("A", blueprint.projectAssets.cameraBoxes[0].id)
+        assertEquals(0.0f, blueprint.projectAssets.cameraBoxes[0].startSec, 0.01f)
+        assertEquals(2.0f, blueprint.projectAssets.cameraBoxes[0].endSec, 0.01f)
+        assertEquals("B", blueprint.projectAssets.cameraBoxes[1].id)
+        assertEquals(1.85f, blueprint.projectAssets.cameraBoxes[1].zoom, 0.01f)
+        assertEquals("HOLD", blueprint.projectAssets.cameraBoxes[1].easing)
+
+        // 2. Import .fcscript.json with explicit cameraBoxes[] AND verify dry-run + compiled boxes
+        val explicitScript = """
+            {
+              "schemaVersion": "3.0",
+              "projectName": "MultiCam Film",
+              "fps": 24,
+              "scenes": [
+                {
+                  "name": "Act 1",
+                  "durationSec": 4.0,
+                  "cameraBoxes": [
+                    { "id": "A", "startSec": 0.0, "endSec": 1.5, "centerX": 0.3, "centerY": 0.5, "zoom": 1.0, "rotation": 0.0, "easing": "EASE_IN_OUT" },
+                    { "id": "B", "startSec": 1.5, "endSec": 3.0, "centerX": 0.7, "centerY": 0.4, "zoom": 1.9, "rotation": 8.0, "easing": "HOLD" },
+                    { "id": "C", "startSec": 3.0, "endSec": 4.0, "centerX": 0.5, "centerY": 0.5, "zoom": 1.25, "rotation": -4.0, "easing": "LINEAR" }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val dryRun = com.example.engine.DirectorScriptReceiver.dryRunInspect(explicitScript).getOrThrow()
+        assertEquals(3, dryRun.cameraBoxCount)
+
+        val compiledExplicit = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = explicitScript,
+            currentProject = baseProject,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = emptyList(),
+            importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE
+        ).getOrThrow()
+
+        val importedBoxes = compiledExplicit.project.activeScene.cameraBoxes
+        assertEquals(listOf("A", "B", "C"), importedBoxes.map { it.label })
+        assertEquals(0, importedBoxes[0].startFrame)
+        assertEquals(36, importedBoxes[1].startFrame)
+        assertEquals(EasingType.HOLD, importedBoxes[1].easing)
+        assertEquals(72, importedBoxes[2].startFrame)
+        assertEquals(1.9f, importedBoxes[1].zoom, 0.01f)
+
+        // 3. Import .fcscript.json using cameraShots[] -> must auto-populate editable visual A/B boxes!
+        val shotsScript = """
+            {
+              "schemaVersion": "3.0",
+              "projectName": "Shots To Boxes",
+              "fps": 24,
+              "scenes": [
+                {
+                  "name": "Dialog",
+                  "durationSec": 4.0,
+                  "cameraShots": [
+                    { "atSec": 0.0, "shotType": "WIDE", "x": 0.5, "y": 0.5, "zoom": 1.0, "easing": "EASE_IN_OUT" },
+                    { "atSec": 2.0, "shotType": "CLOSE_UP", "x": 0.62, "y": 0.38, "zoom": 1.8, "easing": "HOLD" }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val compiledShots = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = shotsScript,
+            currentProject = baseProject,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = emptyList(),
+            importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE
+        ).getOrThrow()
+
+        val shotBoxes = compiledShots.project.activeScene.cameraBoxes
+        assertEquals(listOf("A", "B"), shotBoxes.map { it.label })
+        assertEquals(0, shotBoxes[0].startFrame)
+        assertEquals(48, shotBoxes[0].endFrame)
+        assertEquals(48, shotBoxes[1].startFrame)
+        assertEquals(1.8f, shotBoxes[1].zoom, 0.01f)
+
+        // 4. Moshi JSON round-trip persistence
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(compiledExplicit.project))
+        assertNotNull(restored)
+        assertEquals(3, restored!!.activeScene.cameraBoxes.size)
+        assertEquals(listOf("A", "B", "C"), restored.activeScene.cameraBoxes.map { it.label })
+        assertEquals(EasingType.HOLD, restored.activeScene.cameraBoxes[1].easing)
+    }
 }
+
 
 
 

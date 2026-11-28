@@ -481,7 +481,11 @@ object KeyframeEvaluator {
         clipDeltaY: Float = 0f
     ): EvaluatedCamera {
         if (!scene.cameraLayerEnabled) return EvaluatedCamera()
-        val base = evaluateCamera(scene.cameraKeyframes, globalFrame)
+        val base = if (scene.cameraBoxes.isNotEmpty()) {
+            CameraBoxEngine.evaluateCameraBoxes(scene.cameraBoxes, globalFrame)
+        } else {
+            evaluateCamera(scene.cameraKeyframes, globalFrame)
+        }
         val focusId = scene.cameraFocusClipId ?: return base
         val targetClip = scene.clips.firstOrNull { it.id == focusId } ?: return base
         val eval = evaluate(targetClip, globalFrame)

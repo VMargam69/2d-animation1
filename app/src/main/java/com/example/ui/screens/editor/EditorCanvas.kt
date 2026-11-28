@@ -15,7 +15,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import com.example.engine.CameraBoxEngine
+import com.example.engine.CameraBoxHandle
 import com.example.engine.IkRigSolver
 import com.example.engine.KeyframeEvaluator
 import com.example.engine.ProceduralRigRenderer
@@ -49,6 +52,8 @@ fun EditorCanvas(
     ikFlipBend: Boolean = false,
     ikJointLimitsEnabled: Boolean = true,
     isCameraKeyMode: Boolean = false,
+    selectedCameraBoxId: String? = null,
+    isCameraPreviewMode: Boolean = false,
     brushColorHex: String,
     brushWidthRatio: Float,
     brushStyle: BrushStyle = BrushStyle.SOLID,
@@ -57,6 +62,8 @@ fun EditorCanvas(
     onCommitClipTranslation: (clipId: String, totalDxNormalized: Float, totalDyNormalized: Float) -> Unit,
     onCommitIkPose: (clipId: String, finalOffsets: PoseKeyframeOffsets) -> Unit = { _, _ -> },
     onCommitCameraPan: (totalDxNormalized: Float, totalDyNormalized: Float) -> Unit = { _, _ -> },
+    onSelectCameraBox: (String?) -> Unit = {},
+    onCommitCameraBoxTransform: (boxId: String, centerX: Float, centerY: Float, zoom: Float, rotation: Float) -> Unit = { _, _, _, _, _ -> },
     onDragStateChanged: (isDragging: Boolean) -> Unit,
     onActiveIkHandleChanged: (IkHandleId?) -> Unit = {},
     onFinishStroke: (List<NormalizedPoint>) -> Unit,
@@ -75,6 +82,10 @@ fun EditorCanvas(
     // Local gesture preview read ONLY inside Canvas draw scope -> 0 Compose recompositions during drag!
     val gesturePreviewState = remember { mutableStateOf(StageGesturePreview()) }
     val activeIkHandleState = remember { mutableStateOf<IkHandleId?>(null) }
+    val liveCameraBoxPreview = remember { mutableStateOf<CameraBoxClip?>(null) }
+    val activeCameraBoxHandle = remember { mutableStateOf<CameraBoxHandle?>(null) }
+    val cameraBoxPaints = remember { CameraBoxOverlayPaints() }
+    val densityPx = LocalDensity.current.density
 
     val latestScene by rememberUpdatedState(scene)
     val latestCharactersById by rememberUpdatedState(charactersById)
@@ -84,21 +95,46 @@ fun EditorCanvas(
     val latestIkFlipBend by rememberUpdatedState(ikFlipBend)
     val latestIkJointLimits by rememberUpdatedState(ikJointLimitsEnabled)
     val latestCameraKeyMode by rememberUpdatedState(isCameraKeyMode)
+    val latestSelectedCamBoxId by rememberUpdatedState(selectedCameraBoxId)
+    val latestCameraPreviewMode by rememberUpdatedState(isCameraPreviewMode)
     val latestIsPlaying by rememberUpdatedState(isPlaying)
     val latestOnActiveIkHandleChanged by rememberUpdatedState(onActiveIkHandleChanged)
+    val latestOnSelectCameraBox by rememberUpdatedState(onSelectCameraBox)
+    val latestOnCommitCameraBoxTransform by rememberUpdatedState(onCommitCameraBoxTransform)
     val liveFrameState = playbackFrameFlow.collectAsState()
     val bitmapVersionState = bitmapVersionFlow.collectAsState()
+
+    val isDirectorStageActive = !isPlaying && isCameraKeyMode && !isCameraPreviewMode && scene.cameraBoxes.isNotEmpty()
 
     Canvas(
         modifier = modifier
             .fillMaxSize()
             .testTag("editor_canvas")
-            // Tap gesture: hit-test objects in camera-world normalized stage coordinates
+            // Tap gesture: hit-test camera boxes in Director Mode, or objects in camera-world space
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
                     if (latestDrawingMode || latestIsPlaying) return@detectTapGestures
                     val w = size.width.coerceAtLeast(1).toFloat()
                     val h = size.height.coerceAtLeast(1).toFloat()
+
+                    val directorModeNow = latestCameraKeyMode && !latestCameraPreviewMode && latestScene.cameraBoxes.isNotEmpty()
+                    if (directorModeNow) {
+                        val hit = CameraBoxEngine.hitTestBoxes(
+                            boxes = latestScene.cameraBoxes,
+                            selectedBoxId = latestSelectedCamBoxId,
+                            touchPxX = offset.x,
+                            touchPxY = offset.y,
+                            canvasWidth = w,
+                            canvasHeight = h,
+                            handleRadiusPx = 22f * densityPx,
+                            stemLengthPx = 24f * densityPx
+                        )
+                        if (hit != null) {
+                            latestOnSelectCameraBox(hit.first.id)
+                            return@detectTapGestures
+                        }
+                    }
+
                     val frame = liveFrameState.value
                     val camera = KeyframeEvaluator.evaluateCamera(latestScene, frame)
                     val (wx, wy) = IkRigSolver.screenNormToWorldNorm(
@@ -112,10 +148,14 @@ fun EditorCanvas(
                     onSelectClip(hitClip?.id)
                 }
             }
-            // Drag gesture: freehand draw, IK limb/head handle drag, camera pan, or object translation
+            // Drag gesture: freehand draw, Camera Box handles (A/B/C), IK limb handles, camera pan, or object translation
             .pointerInput(Unit) {
                 var activeDragClipId: String? = null
                 var draggingCamera = false
+                var camBoxDragBase: CameraBoxClip? = null
+                var camBoxDragHandle: CameraBoxHandle? = null
+                var camBoxTotalDxPx = 0f
+                var camBoxTotalDyPx = 0f
                 var ikDragClip: TimelineClip? = null
                 var ikDragRig: CharacterRigDefinition? = null
                 var ikBaseEval: com.example.engine.EvaluatedTransform? = null
@@ -147,6 +187,37 @@ fun EditorCanvas(
                             lastStrokePxX = startOffset.x
                             lastStrokePxY = startOffset.y
                             strokeDrawVersion.intValue++
+                            return@detectDragGestures
+                        }
+
+                        // Director / Stage Mode: direct manipulation of Camera Boxes A, B, C...
+                        val directorModeNow = latestCameraKeyMode && !latestCameraPreviewMode && latestScene.cameraBoxes.isNotEmpty()
+                        if (directorModeNow) {
+                            if (latestScene.cameraLayerLocked) return@detectDragGestures
+                            val hit = CameraBoxEngine.hitTestBoxes(
+                                boxes = latestScene.cameraBoxes,
+                                selectedBoxId = latestSelectedCamBoxId,
+                                touchPxX = startOffset.x,
+                                touchPxY = startOffset.y,
+                                canvasWidth = w,
+                                canvasHeight = h,
+                                handleRadiusPx = 24f * densityPx,
+                                stemLengthPx = 24f * densityPx
+                            )
+                            if (hit != null) {
+                                val (hitBox, hitHandle) = hit
+                                if (hitBox.id != latestSelectedCamBoxId) {
+                                    latestOnSelectCameraBox(hitBox.id)
+                                }
+                                camBoxDragBase = hitBox
+                                camBoxDragHandle = hitHandle
+                                camBoxTotalDxPx = 0f
+                                camBoxTotalDyPx = 0f
+                                activeCameraBoxHandle.value = hitHandle
+                                liveCameraBoxPreview.value = hitBox
+                                onDragStateChanged(true)
+                                return@detectDragGestures
+                            }
                             return@detectDragGestures
                         }
 
@@ -223,6 +294,36 @@ fun EditorCanvas(
                                 lastStrokePxY = py
                                 strokeDrawVersion.intValue++
                             }
+                        } else if (camBoxDragBase != null && camBoxDragHandle != null) {
+                            val base = camBoxDragBase!!
+                            val handle = camBoxDragHandle!!
+                            camBoxTotalDxPx += dragAmount.x
+                            camBoxTotalDyPx += dragAmount.y
+                            val updatedBox = when (handle) {
+                                CameraBoxHandle.CENTER -> CameraBoxEngine.applyPanDrag(
+                                    baseBox = base,
+                                    totalDeltaPxX = camBoxTotalDxPx,
+                                    totalDeltaPxY = camBoxTotalDyPx,
+                                    canvasWidth = w,
+                                    canvasHeight = h
+                                )
+                                CameraBoxHandle.ROTATE_STEM -> CameraBoxEngine.applyRotationDrag(
+                                    box = base,
+                                    pointerPxX = change.position.x,
+                                    pointerPxY = change.position.y,
+                                    canvasWidth = w,
+                                    canvasHeight = h
+                                )
+                                else -> CameraBoxEngine.applyAspectLockedResize(
+                                    box = base,
+                                    handle = handle,
+                                    pointerPxX = change.position.x,
+                                    pointerPxY = change.position.y,
+                                    canvasWidth = w,
+                                    canvasHeight = h
+                                )
+                            }
+                            liveCameraBoxPreview.value = updatedBox
                         } else if (draggingCamera) {
                             // Canvas already receives unscaled local coordinates inside graphicsLayer;
                             // apply only the scene camera zoom/rotation inverse transform.
@@ -299,11 +400,18 @@ fun EditorCanvas(
                             strokeDrawVersion.intValue++
                         } else {
                             val preview = gesturePreviewState.value
+                            val finishedCamBox = liveCameraBoxPreview.value
                             val finishedCam = draggingCamera
                             val finishedIkClipId = ikDragClip?.id
                             val finishedIkOffsets = preview.ikPoseOffsets
                             val finishedDragClipId = activeDragClipId
 
+                            camBoxDragBase = null
+                            camBoxDragHandle = null
+                            camBoxTotalDxPx = 0f
+                            camBoxTotalDyPx = 0f
+                            activeCameraBoxHandle.value = null
+                            liveCameraBoxPreview.value = null
                             draggingCamera = false
                             activeIkHandleState.value = null
                             latestOnActiveIkHandleChanged(null)
@@ -316,7 +424,16 @@ fun EditorCanvas(
                             smoothVelY = 0f
                             gesturePreviewState.value = StageGesturePreview()
 
-                            if (finishedCam) {
+                            if (finishedCamBox != null) {
+                                onDragStateChanged(false)
+                                latestOnCommitCameraBoxTransform(
+                                    finishedCamBox.id,
+                                    finishedCamBox.centerX,
+                                    finishedCamBox.centerY,
+                                    finishedCamBox.zoom,
+                                    finishedCamBox.rotation
+                                )
+                            } else if (finishedCam) {
                                 onDragStateChanged(false)
                                 onCommitCameraPan(preview.cameraDeltaX, preview.cameraDeltaY)
                             } else if (finishedIkClipId != null && finishedIkOffsets != null) {
@@ -332,6 +449,12 @@ fun EditorCanvas(
                         liveStrokePoints.clear()
                         liveStrokePath.reset()
                         strokeDrawVersion.intValue++
+                        camBoxDragBase = null
+                        camBoxDragHandle = null
+                        camBoxTotalDxPx = 0f
+                        camBoxTotalDyPx = 0f
+                        activeCameraBoxHandle.value = null
+                        liveCameraBoxPreview.value = null
                         draggingCamera = false
                         activeIkHandleState.value = null
                         latestOnActiveIkHandleChanged(null)
@@ -355,6 +478,8 @@ fun EditorCanvas(
         val bmpTick = bitmapVersionState.value
         val preview = gesturePreviewState.value
         val activeHandle = activeIkHandleState.value
+        val camBoxPreview = liveCameraBoxPreview.value
+        val camBoxHandle = activeCameraBoxHandle.value
         val strokeTick = strokeDrawVersion.intValue
 
         drawIntoCanvas { composeCanvas ->
@@ -378,7 +503,20 @@ fun EditorCanvas(
                 inlineSvgAssets = project.inlineSvgAssets,
                 customAnimations = project.customAnimations,
                 customTransitions = project.customTransitions,
-                audioSyncTracks = project.audioSyncTracks
+                audioSyncTracks = project.audioSyncTracks,
+                directorStagePreview = isDirectorStageActive
+            )
+        }
+
+        // Visual On-Canvas Multi-Camera Boxes (A, B, C...) in Director / Stage Mode only (hidden during Play & Export)
+        if (isDirectorStageActive) {
+            drawDirectorCameraBoxesOverlay(
+                boxes = scene.cameraBoxes,
+                selectedBoxId = selectedCameraBoxId,
+                livePreviewBox = camBoxPreview,
+                activeHandle = camBoxHandle,
+                paints = cameraBoxPaints,
+                densityPx = densityPx
             )
         }
 

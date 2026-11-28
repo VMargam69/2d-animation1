@@ -215,6 +215,29 @@ data class CameraKeyframe(
     val easingP2Y: Float = 1f
 )
 
+/**
+ * Visual On-Canvas Camera Box ("A", "B", "C"...) rendered as an aspect-ratio-locked frame
+ * over the wide Director stage and represented as a trimmable orange clip on the Camera Track.
+ */
+data class CameraBoxClip(
+    val id: String = UUID.randomUUID().toString(),
+    val label: String = "A",
+    val startFrame: Int = 0,
+    val endFrame: Int = 48,
+    val centerX: Float = 0.5f,
+    val centerY: Float = 0.5f,
+    val zoom: Float = 1.0f,
+    val rotation: Float = 0f,
+    val easing: EasingType = EasingType.EASE_IN_OUT,
+    val easingP1X: Float = 0.42f,
+    val easingP1Y: Float = 0f,
+    val easingP2X: Float = 0.58f,
+    val easingP2Y: Float = 1f
+) {
+    val durationFrames: Int
+        get() = (endFrame - startFrame).coerceAtLeast(1)
+}
+
 data class SkeletonRigConfig(
     val enabled: Boolean = false,
     val rigMode: CustomRigMode = CustomRigMode.SINGLE_PNG_MESH,
@@ -742,6 +765,7 @@ data class AnimationScene(
     val backgroundImagePath: String? = null,
     val chromaKeyMode: ChromaKeyMode = ChromaKeyMode.NONE,
     val cameraKeyframes: List<CameraKeyframe> = emptyList(),
+    val cameraBoxes: List<CameraBoxClip> = emptyList(),
     val cameraFocusClipId: String? = null,
     val cameraLayerEnabled: Boolean = true,
     val cameraLayerLocked: Boolean = false,

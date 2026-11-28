@@ -97,6 +97,8 @@ data class StudioUiState(
     val ikFlipBend: Boolean = false,
     val ikJointLimitsEnabled: Boolean = true,
     val isCameraKeyMode: Boolean = false,
+    val selectedCameraBoxId: String? = null,
+    val isCameraPreviewMode: Boolean = false,
     val brushColorHex: String = "#38BDF8",
     val brushWidthRatio: Float = 0.009f,
     val brushStyle: BrushStyle = BrushStyle.SOLID,
@@ -1147,19 +1149,205 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleCameraKeyMode() {
         stopPlayback()
-        val next = !_uiState.value.isCameraKeyMode
+        val state = _uiState.value
+        val next = !state.isCameraKeyMode
+        val scene = state.project.activeScene
+        val autoBoxId = if (next && scene.cameraBoxes.isNotEmpty()) {
+            state.selectedCameraBoxId?.takeIf { id -> scene.cameraBoxes.any { it.id == id } }
+                ?: com.example.engine.CameraBoxEngine.activeCameraBoxAtFrame(scene.cameraBoxes, _playbackFrame.value)?.id
+                ?: scene.cameraBoxes.first().id
+        } else if (!next) {
+            null
+        } else {
+            state.selectedCameraBoxId
+        }
         _uiState.update {
             it.copy(
                 isCameraKeyMode = next,
+                isCameraPreviewMode = false,
+                selectedCameraBoxId = autoBoxId,
+                selectedClipId = if (next) null else it.selectedClipId,
                 isIkPosingMode = false,
                 isDrawingMode = false,
                 activeSheet = ActiveEditorSheet.NONE
             )
         }
         if (next) {
-            showStatus("Camera Key Mode ON: Drag stage to pan camera")
+            showStatus("Director Mode: Drag boxes A/B/C to pan, zoom & rotate")
         } else {
-            showStatus("Camera Key Mode OFF")
+            showStatus("Camera Mode OFF")
+        }
+    }
+
+    fun toggleCameraViewportMode() {
+        val state = _uiState.value
+        val scene = state.project.activeScene
+        val currentlyDirectorStage = state.isCameraKeyMode && !state.isCameraPreviewMode
+        val nextPreview = currentlyDirectorStage
+        if (!nextPreview) {
+            stopPlayback()
+        }
+        val autoBoxId = if (!nextPreview && scene.cameraBoxes.isNotEmpty()) {
+            state.selectedCameraBoxId?.takeIf { id -> scene.cameraBoxes.any { it.id == id } }
+                ?: com.example.engine.CameraBoxEngine.activeCameraBoxAtFrame(scene.cameraBoxes, _playbackFrame.value)?.id
+                ?: scene.cameraBoxes.first().id
+        } else {
+            state.selectedCameraBoxId
+        }
+        _uiState.update {
+            it.copy(
+                isCameraKeyMode = if (!nextPreview) true else it.isCameraKeyMode,
+                isCameraPreviewMode = nextPreview,
+                selectedCameraBoxId = autoBoxId,
+                selectedClipId = if (!nextPreview) null else it.selectedClipId,
+                isIkPosingMode = if (!nextPreview) false else it.isIkPosingMode,
+                isDrawingMode = if (!nextPreview) false else it.isDrawingMode
+            )
+        }
+        showStatus(if (nextPreview) "Camera Preview Mode (Cropped Shot)" else "Director / Stage Mode (Wide View)")
+    }
+
+    fun addCameraBox() {
+        stopPlayback()
+        val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
+        val (updated, newId) = ProjectMutator.addCameraBox(state.project, _playbackFrame.value)
+        if (newId == null) return
+        commitProjectChange(updated)
+        val newBox = updated.activeScene.cameraBoxes.firstOrNull { it.id == newId }
+        _uiState.update {
+            it.copy(
+                isCameraKeyMode = true,
+                isCameraPreviewMode = false,
+                selectedCameraBoxId = newId,
+                selectedClipId = null,
+                isIkPosingMode = false,
+                isDrawingMode = false,
+                activeSheet = ActiveEditorSheet.NONE
+            )
+        }
+        if (newBox != null) {
+            seekToFrame(newBox.startFrame)
+            showStatus("Added Camera ${newBox.label}")
+        }
+    }
+
+    fun selectCameraBox(boxId: String?, seekToStart: Boolean = true) {
+        stopPlayback()
+        val scene = _uiState.value.project.activeScene
+        val box = boxId?.let { id -> scene.cameraBoxes.firstOrNull { it.id == id } }
+        _uiState.update {
+            it.copy(
+                selectedCameraBoxId = box?.id,
+                isCameraKeyMode = if (box != null) true else it.isCameraKeyMode,
+                selectedClipId = if (box != null) null else it.selectedClipId,
+                isIkPosingMode = if (box != null) false else it.isIkPosingMode,
+                isDrawingMode = if (box != null) false else it.isDrawingMode
+            )
+        }
+        if (box != null && seekToStart) {
+            seekToFrame(box.startFrame)
+        }
+    }
+
+    fun commitCameraBoxTransform(
+        boxId: String,
+        centerX: Float,
+        centerY: Float,
+        zoom: Float,
+        rotation: Float
+    ) {
+        val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
+        val updated = ProjectMutator.updateCameraBox(state.project, boxId) { box ->
+            box.copy(centerX = centerX, centerY = centerY, zoom = zoom, rotation = rotation)
+        }
+        commitProjectChange(updated, coalesceUndoTag = "cam_box_$boxId")
+    }
+
+    fun trimOrMoveCameraBox(boxId: String, newStartFrame: Int, newEndFrame: Int) {
+        val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
+        val updated = ProjectMutator.trimOrMoveCameraBox(state.project, boxId, newStartFrame, newEndFrame)
+        commitProjectChange(updated, coalesceUndoTag = "cam_trim_$boxId")
+    }
+
+    fun duplicateCameraBox(boxId: String) {
+        stopPlayback()
+        val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
+        val (updated, newId) = ProjectMutator.duplicateCameraBox(state.project, boxId)
+        if (newId == null) return
+        commitProjectChange(updated)
+        val newBox = updated.activeScene.cameraBoxes.firstOrNull { it.id == newId }
+        _uiState.update { it.copy(selectedCameraBoxId = newId, isCameraKeyMode = true) }
+        if (newBox != null) {
+            seekToFrame(newBox.startFrame)
+            showStatus("Duplicated Camera ${newBox.label}")
+        }
+    }
+
+    fun splitCameraBox(boxId: String) {
+        stopPlayback()
+        val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
+        val (updated, secondId) = ProjectMutator.splitCameraBoxAtFrame(state.project, boxId, _playbackFrame.value)
+        if (secondId == null) {
+            showStatus("Clip too short to split")
+            return
+        }
+        commitProjectChange(updated)
+        val secondBox = updated.activeScene.cameraBoxes.firstOrNull { it.id == secondId }
+        _uiState.update { it.copy(selectedCameraBoxId = secondId, isCameraKeyMode = true) }
+        if (secondBox != null) {
+            seekToFrame(secondBox.startFrame)
+            showStatus("Split Camera -> ${secondBox.label}")
+        }
+    }
+
+    fun deleteCameraBox(boxId: String) {
+        stopPlayback()
+        val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
+        val updated = ProjectMutator.deleteCameraBox(state.project, boxId)
+        commitProjectChange(updated)
+        val nextSel = updated.activeScene.cameraBoxes.firstOrNull()?.id
+        _uiState.update {
+            it.copy(selectedCameraBoxId = if (it.selectedCameraBoxId == boxId) nextSel else it.selectedCameraBoxId)
+        }
+        showStatus("Deleted Camera Box")
+    }
+
+    fun cycleCameraBoxEasing(boxId: String, explicitEasing: EasingType? = null) {
+        val state = _uiState.value
+        if (state.project.activeScene.cameraLayerLocked) {
+            showStatus("Camera Control layer is locked")
+            return
+        }
+        val updated = ProjectMutator.cycleCameraBoxEasing(state.project, boxId, explicitEasing)
+        commitProjectChange(updated)
+        val box = updated.activeScene.cameraBoxes.firstOrNull { it.id == boxId }
+        if (box != null) {
+            val modeLabel = if (box.easing == EasingType.HOLD) "Hold (Instant Cut)" else box.easing.displayName
+            showStatus("Camera ${box.label}: $modeLabel")
         }
     }
 
@@ -1407,6 +1595,41 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val state = _uiState.value
         if (state.project.activeScene.cameraLayerLocked) {
             showStatus("Camera Control layer is locked")
+            return
+        }
+        val scene = state.project.activeScene
+        val activeBoxId = state.selectedCameraBoxId?.takeIf { id -> scene.cameraBoxes.any { it.id == id } }
+            ?: if (scene.cameraBoxes.isNotEmpty()) {
+                com.example.engine.CameraBoxEngine.activeCameraBoxAtFrame(scene.cameraBoxes, _playbackFrame.value)?.id
+            } else null
+        if (activeBoxId != null) {
+            val updated = ProjectMutator.updateCameraBox(state.project, activeBoxId) { box ->
+                val asKf = CameraKeyframe(
+                    frame = box.startFrame,
+                    x = box.centerX,
+                    y = box.centerY,
+                    zoom = box.zoom,
+                    rotation = box.rotation,
+                    easing = box.easing,
+                    easingP1X = box.easingP1X,
+                    easingP1Y = box.easingP1Y,
+                    easingP2X = box.easingP2X,
+                    easingP2Y = box.easingP2Y
+                )
+                val nextKf = updater(asKf)
+                box.copy(
+                    centerX = nextKf.x,
+                    centerY = nextKf.y,
+                    zoom = nextKf.zoom,
+                    rotation = nextKf.rotation,
+                    easing = nextKf.easing,
+                    easingP1X = nextKf.easingP1X,
+                    easingP1Y = nextKf.easingP1Y,
+                    easingP2X = nextKf.easingP2X,
+                    easingP2Y = nextKf.easingP2Y
+                )
+            }
+            commitProjectChange(updated, coalesceUndoTag = "cam_box_$activeBoxId")
             return
         }
         val frame = _playbackFrame.value

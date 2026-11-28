@@ -368,6 +368,23 @@ object DirectorScriptReceiver {
         val shakeIntensity: Float? = null
     )
 
+    data class ScriptCameraBoxDto(
+        val id: String? = null,
+        val label: String? = null,
+        val startSec: Float? = null,
+        val endSec: Float? = null,
+        val startFrame: Int? = null,
+        val endFrame: Int? = null,
+        val centerX: Float? = null,
+        val centerY: Float? = null,
+        val x: Float? = null,
+        val y: Float? = null,
+        val zoom: Float? = null,
+        val rotation: Float? = null,
+        val easing: String? = null,
+        val cubicBezier: List<Float>? = null
+    )
+
     data class ScriptSceneDto(
         val name: String? = null,
         val durationSec: Float? = null,
@@ -385,6 +402,7 @@ object DirectorScriptReceiver {
         val clips: List<ScriptClipDto>? = null,
         val clipOperations: List<ScriptClipOperationDto>? = null,
         val cameraShots: List<ScriptCameraShotDto>? = null,
+        val cameraBoxes: List<ScriptCameraBoxDto>? = null,
         val keyframeTracks: List<ScriptUniversalKeyframeTrackDto>? = null
     )
 
@@ -490,7 +508,7 @@ object DirectorScriptReceiver {
             val clips = scene.clips.orEmpty()
             totalClips += clips.size
             totalOps += scene.clipOperations.orEmpty().size
-            totalCameraShots += scene.cameraShots.orEmpty().size
+            totalCameraShots += scene.cameraShots.orEmpty().size + scene.cameraBoxes.orEmpty().size
             totalWeatherLayers += scene.weatherLayers.orEmpty().size
             totalDialogueOverlays += scene.dialogueOverlays.orEmpty().size
             validateUniversalTracks(scene.keyframeTracks.orEmpty(), "Scene ${sIdx + 1}")
@@ -900,13 +918,32 @@ object DirectorScriptReceiver {
                 sceneDurationFrames = sceneDurationFrames
             )
 
-            // Compile Dialogue-Driven Cinematic Auto-Focus Camera Shots
-            val (cameraKeyframes, requestedShake) = compileCinematicCameraShots(
+            // Compile Visual Multi-Camera Boxes (cameraBoxes[]) and/or Dialogue-Driven Auto-Focus Shots (cameraShots[])
+            val (shotCameraKeyframes, requestedShake) = compileCinematicCameraShots(
                 shots = sceneDto.cameraShots.orEmpty(),
                 clips = clips,
                 fps = fps,
                 sceneDurationFrames = sceneDurationFrames
             )
+            val explicitCameraBoxes = compileCameraBoxes(
+                rawBoxes = sceneDto.cameraBoxes.orEmpty(),
+                fps = fps,
+                sceneDurationFrames = sceneDurationFrames
+            )
+            val compiledCameraBoxes = if (explicitCameraBoxes.isNotEmpty()) {
+                explicitCameraBoxes
+            } else if (shotCameraKeyframes.isNotEmpty()) {
+                CameraBoxEngine.fromCameraKeyframes(shotCameraKeyframes, sceneDurationFrames)
+            } else {
+                emptyList()
+            }
+            val cameraKeyframes = if (shotCameraKeyframes.isNotEmpty()) {
+                shotCameraKeyframes
+            } else if (compiledCameraBoxes.isNotEmpty()) {
+                CameraBoxEngine.toCameraKeyframes(compiledCameraBoxes)
+            } else {
+                emptyList()
+            }
             if (requestedShake > sceneVfx.cameraShakeIntensity) {
                 sceneVfx = sceneVfx.copy(cameraShakeIntensity = requestedShake.coerceIn(0f, 1f))
             }
@@ -985,6 +1022,7 @@ object DirectorScriptReceiver {
                     backgroundBundledKey = bgAsset?.bundledResKey,
                     backgroundImagePath = bgAsset?.localFilePath ?: bgInline?.localSvgPath,
                     cameraKeyframes = cameraKeyframes,
+                    cameraBoxes = compiledCameraBoxes,
                     cameraLayerEnabled = true,
                     vfxConfig = sceneVfx,
                     weatherLayers = compiledWeatherLayers,
@@ -1460,6 +1498,60 @@ object DirectorScriptReceiver {
         }
 
         return byFrame.values.sortedBy { it.frame } to peakCameraShake
+    }
+
+    /**
+     * Compiles explicit `scenes[].cameraBoxes[]` (`id: "A"|"B"|"C"`, `startSec`, `endSec`,
+     * `centerX`, `centerY`, `zoom`, `rotation`, `easing`, `cubicBezier`) into visual [CameraBoxClip]s
+     * directly editable on the Director stage and orange Camera Track.
+     */
+    private fun compileCameraBoxes(
+        rawBoxes: List<ScriptCameraBoxDto>,
+        fps: Int,
+        sceneDurationFrames: Int
+    ): List<CameraBoxClip> {
+        if (rawBoxes.isEmpty()) return emptyList()
+        val maxF = sceneDurationFrames.coerceAtLeast(CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
+        val parsed = rawBoxes.mapIndexed { idx, dto ->
+            val startF = (dto.startFrame
+                ?: dto.startSec?.let { (it * fps).roundToInt() }
+                ?: (idx * (maxF / rawBoxes.size.coerceAtLeast(1)))).coerceIn(0, (maxF - CameraBoxEngine.MIN_BOX_DURATION_FRAMES).coerceAtLeast(0))
+            val defaultEnd = (startF + (maxF / rawBoxes.size.coerceAtLeast(1)).coerceAtLeast(CameraBoxEngine.MIN_BOX_DURATION_FRAMES))
+                .coerceAtMost(maxF)
+            val endF = (dto.endFrame
+                ?: dto.endSec?.let { (it * fps).roundToInt() }
+                ?: defaultEnd).coerceIn(
+                (startF + CameraBoxEngine.MIN_BOX_DURATION_FRAMES).coerceAtMost(maxF),
+                maxF.coerceAtLeast(startF + CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
+            )
+            val bez = dto.cubicBezier
+            val easing = when {
+                bez != null && bez.size >= 4 -> EasingType.CUSTOM_CUBIC
+                else -> parseEnumIgnoreCase<EasingType>(dto.easing) ?: EasingType.EASE_IN_OUT
+            }
+            val handles = if (bez != null && bez.size >= 4) {
+                floatArrayOf(bez[0], bez[1], bez[2], bez[3])
+            } else {
+                KeyframeEvaluator.defaultBezierHandles(easing)
+            }
+            val rawLabel = (dto.label ?: dto.id)?.trim()?.takeIf { it.isNotEmpty() && it.length <= 3 }
+            CameraBoxClip(
+                id = dto.id?.trim()?.takeIf { it.isNotEmpty() } ?: "cam_box_${CameraBoxEngine.indexToLabel(idx).lowercase()}_$startF",
+                label = rawLabel ?: CameraBoxEngine.indexToLabel(idx),
+                startFrame = startF,
+                endFrame = endF,
+                centerX = (dto.centerX ?: dto.x ?: 0.5f).coerceIn(CameraBoxEngine.MIN_CENTER_NORM, CameraBoxEngine.MAX_CENTER_NORM),
+                centerY = (dto.centerY ?: dto.y ?: 0.5f).coerceIn(CameraBoxEngine.MIN_CENTER_NORM, CameraBoxEngine.MAX_CENTER_NORM),
+                zoom = (dto.zoom ?: 1.0f).coerceIn(CameraBoxEngine.MIN_ZOOM, CameraBoxEngine.MAX_ZOOM),
+                rotation = (dto.rotation ?: 0f).coerceIn(-180f, 180f),
+                easing = easing,
+                easingP1X = handles[0],
+                easingP1Y = handles[1],
+                easingP2X = handles[2],
+                easingP2Y = handles[3]
+            )
+        }
+        return CameraBoxEngine.relabelChronologically(parsed)
     }
 
     private fun compileUniversalKeyframeTracks(

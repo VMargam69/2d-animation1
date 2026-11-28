@@ -88,6 +88,18 @@ object AIBlueprintExporter {
         val parallaxDepth: Float = 1.0f
     )
 
+    data class BlueprintCameraBox(
+        val id: String,
+        val startSec: Double,
+        val endSec: Double,
+        val centerX: Float,
+        val centerY: Float,
+        val zoom: Float,
+        val rotation: Float,
+        val easing: String,
+        val cubicBezier: List<Float>? = null
+    )
+
     data class ProjectAssetsPayload(
         val characters: List<BlueprintCharacterAsset>,
         val backgrounds: List<BlueprintVisualAsset>,
@@ -97,7 +109,8 @@ object AIBlueprintExporter {
         val existingInlineSvgIds: List<String>,
         val existingCustomAnimationIds: List<String>,
         val existingCustomTransitionIds: List<String>,
-        val activeSceneLayers: List<BlueprintSceneLayer> = emptyList()
+        val activeSceneLayers: List<BlueprintSceneLayer> = emptyList(),
+        val cameraBoxes: List<BlueprintCameraBox> = emptyList()
     )
 
     data class BlueprintCapabilitiesPayload(
@@ -301,6 +314,32 @@ object AIBlueprintExporter {
                 )
             }
 
+        val effectiveBoxes = if (project.activeScene.cameraBoxes.isNotEmpty()) {
+            project.activeScene.cameraBoxes
+        } else {
+            CameraBoxEngine.fromCameraKeyframes(project.activeScene.cameraKeyframes, project.activeScene.durationFrames)
+        }
+        val fpsD = project.fps.coerceAtLeast(1).toDouble()
+        val blueprintCameraBoxes = effectiveBoxes
+            .sortedBy { it.startFrame }
+            .mapIndexed { idx, box ->
+                val startS = ((box.startFrame / fpsD) * 1000.0).roundToInt() / 1000.0
+                val endS = ((box.endFrame / fpsD) * 1000.0).roundToInt() / 1000.0
+                BlueprintCameraBox(
+                    id = box.label.ifBlank { CameraBoxEngine.indexToLabel(idx) },
+                    startSec = startS,
+                    endSec = endS,
+                    centerX = box.centerX,
+                    centerY = box.centerY,
+                    zoom = box.zoom,
+                    rotation = box.rotation,
+                    easing = box.easing.name,
+                    cubicBezier = if (box.easing == EasingType.CUSTOM_CUBIC) {
+                        listOf(box.easingP1X, box.easingP1Y, box.easingP2X, box.easingP2Y)
+                    } else null
+                )
+            }
+
         val assetsPayload = ProjectAssetsPayload(
             characters = charAssets,
             backgrounds = bgAssets,
@@ -310,7 +349,8 @@ object AIBlueprintExporter {
             existingInlineSvgIds = project.inlineSvgAssets.keys.toList(),
             existingCustomAnimationIds = project.customAnimations.keys.toList(),
             existingCustomTransitionIds = project.customTransitions.keys.toList(),
-            activeSceneLayers = activeSceneLayers
+            activeSceneLayers = activeSceneLayers,
+            cameraBoxes = blueprintCameraBoxes
         )
 
         val capabilitiesPayload = BlueprintCapabilitiesPayload(
@@ -374,7 +414,7 @@ object AIBlueprintExporter {
                 "Invent any custom motion via customAnimations{} targeting character bone IDs (HEAD, TORSO, LEFT_ARM, LEFT_FOREARM, RIGHT_ARM, RIGHT_FOREARM, LEFT_LEG, LEFT_KNEE, RIGHT_LEG, RIGHT_KNEE) OR any SVG sub-group id.",
                 "Invent any custom scene transition via customTransitions{} with clipPathType, outgoing/incoming transforms, flashOverlay, and cubicBezier.",
                 "Universal Advance Keyframe Engine: use scenes[].keyframeTracks[] (or top-level keyframeTracks[]) to animate ANY studio property (Characters, IK joints, Gaze, PropSway, 2.5D Parallax Depth, Seamless Background Scroll/Blur, Colour Grading, Day/Night Blend, Camera, Transitions, Masking, VFX/Weather, or Inline SVG <g id='...'> sub-parts) with LINEAR/EASE_IN/EASE_OUT/EASE_IN_OUT/HOLD/BOUNCE/ELASTIC/SPRING/CUSTOM_CUBIC curves, ONCE/LOOP/PING_PONG/OFFSET_REPEAT loop modes, and curved Bezier motionPath + autoOrientToPath.",
-                "Use cameraShots[] with focusTargetCharacterId + shotType for automatic cinematic speaker tracking and reaction cuts.",
+                "Use cameraShots[] with focusTargetCharacterId + shotType for automatic cinematic speaker tracking and reaction cuts, OR use scenes[].cameraBoxes[] ({id:'A'|'B'|'C', startSec, endSec, centerX, centerY, zoom, rotation, easing:'LINEAR'|'EASE_IN_OUT'|'HOLD'|'CUSTOM_CUBIC', cubicBezier}) for editable visual on-canvas multi-camera boxes.",
                 "Simultaneous character layering: combine animationPreset + armGesturePreset + ikPose (clamped by enforceJointLimits=true by default) + facialOverridesEnabled (mouth/eye/eyebrow overrides) + lipSyncAudioId without overwriting tracks.",
                 "2.5D Parallax Depth: set layers[].parallaxDepth (0.2=Far, 0.6=Mid, 1.0=Stage, 1.35=Near). Deterministic Weather: set scenes[].weatherLayers[] (RAIN/FOG/FALLING_LEAVES/FIRE_SPARKS/SMOKE/DUST_MOTES/SNOW).",
                 "Opt-in Dialogue Overlays: scenes[].dialogueOverlays[] supports English ('en'), Hindi ('hi'), and Odia ('or'). Both showSpeechBubble and showSubtitle default to false and render ONLY when explicitly set true.",

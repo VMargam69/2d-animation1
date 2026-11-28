@@ -168,7 +168,8 @@ class SceneRenderer(
         inlineSvgAssets: Map<String, InlineSvgAssetDef> = emptyMap(),
         customAnimations: Map<String, CustomAnimationDef> = emptyMap(),
         customTransitions: Map<String, CustomTransitionDef> = emptyMap(),
-        audioSyncTracks: List<AudioSyncMetadata> = emptyList()
+        audioSyncTracks: List<AudioSyncMetadata> = emptyList(),
+        directorStagePreview: Boolean = false
     ) {
         val w = width.toFloat().coerceAtLeast(1f)
         val h = height.toFloat().coerceAtLeast(1f)
@@ -225,7 +226,10 @@ class SceneRenderer(
         } else {
             CameraShakeOffset()
         }
-        val effectiveCamera = if (!shake.isZero) {
+        val isDirectorStage = directorStagePreview && drawEditorOverlays && !isPlaying
+        val effectiveCamera = if (isDirectorStage) {
+            EvaluatedCamera(x = 0.5f, y = 0.5f, zoom = CameraBoxEngine.DIRECTOR_STAGE_ZOOM, rotation = 0f)
+        } else if (!shake.isZero) {
             camera.copy(
                 x = (camera.x + shake.dxNorm).coerceIn(0.02f, 0.98f),
                 y = (camera.y + shake.dyNorm).coerceIn(0.02f, 0.98f),
@@ -235,12 +239,24 @@ class SceneRenderer(
             camera
         }
 
+        if (isDirectorStage) {
+            // Subtle dark off-screen margin surround around the wide stage canvas
+            scratch.bgPaint.color = 0xFF0A0F18.toInt()
+            canvas.drawRect(0f, 0f, w, h, scratch.bgPaint)
+        }
+
         canvas.save()
         if (!effectiveCamera.isIdentity) {
             canvas.translate(w * 0.5f, h * 0.5f)
             canvas.scale(effectiveCamera.zoom, effectiveCamera.zoom)
             canvas.rotate(-effectiveCamera.rotation)
             canvas.translate(-effectiveCamera.x * w, -effectiveCamera.y * h)
+        }
+
+        if (isDirectorStage) {
+            // Draw the true 0..1 scene canvas background inside stage bounds so off-screen margins are unmistakable
+            scratch.bgPaint.color = baseBgColor
+            canvas.drawRect(0f, 0f, w, h, scratch.bgPaint)
         }
 
         val sceneBgBitmap = if (isChromaActive) null else bitmapProvider(scene.backgroundImagePath, scene.backgroundBundledKey)
@@ -341,6 +357,14 @@ class SceneRenderer(
                     }
                 }
             }
+        }
+
+        if (isDirectorStage) {
+            // Crisp hairline outline around the 0..1 main stage area inside Director Mode
+            scratch.strokePaint.color = 0x5594A3B8
+            scratch.strokePaint.strokeWidth = 1.6f / CameraBoxEngine.DIRECTOR_STAGE_ZOOM
+            scratch.strokePaint.pathEffect = null
+            canvas.drawRect(0f, 0f, w, h, scratch.strokePaint)
         }
 
         canvas.restore() // restore camera transform
@@ -449,7 +473,7 @@ class SceneRenderer(
             }
         }
 
-        if (drawEditorOverlays && !isPlaying && (isCameraKeyMode || camera.trackedClipName != null)) {
+        if (drawEditorOverlays && !isPlaying && !isDirectorStage && (isCameraKeyMode || camera.trackedClipName != null)) {
             drawCameraViewfinderOverlay(canvas, w, h, camera, isCameraKeyMode, scratch)
         }
 

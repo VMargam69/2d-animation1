@@ -59,6 +59,8 @@ fun EditorCanvasPane(
     ikFlipBend: Boolean = false,
     ikJointLimitsEnabled: Boolean = true,
     isCameraKeyMode: Boolean = false,
+    selectedCameraBoxId: String? = null,
+    isCameraPreviewMode: Boolean = false,
     showGridOverlay: Boolean = false,
     brushColorHex: String,
     brushWidthRatio: Float,
@@ -68,6 +70,10 @@ fun EditorCanvasPane(
     onCommitClipTranslation: (clipId: String, totalDxNorm: Float, totalDyNorm: Float) -> Unit,
     onCommitIkPose: (clipId: String, finalOffsets: PoseKeyframeOffsets) -> Unit = { _, _ -> },
     onCommitCameraPan: (totalDxNorm: Float, totalDyNorm: Float) -> Unit = { _, _ -> },
+    onSelectCameraBox: (String?) -> Unit = {},
+    onAddCameraBox: () -> Unit = {},
+    onToggleCameraViewportMode: () -> Unit = {},
+    onCommitCameraBoxTransform: (boxId: String, centerX: Float, centerY: Float, zoom: Float, rotation: Float) -> Unit = { _, _, _, _, _ -> },
     onUpdateCamera: ((CameraKeyframe) -> CameraKeyframe) -> Unit = {},
     onOpenCameraStudio: () -> Unit = {},
     onResetCamera: () -> Unit = {},
@@ -197,6 +203,8 @@ fun EditorCanvasPane(
                 ikFlipBend = ikFlipBend,
                 ikJointLimitsEnabled = ikJointLimitsEnabled,
                 isCameraKeyMode = isCameraKeyMode,
+                selectedCameraBoxId = selectedCameraBoxId,
+                isCameraPreviewMode = isCameraPreviewMode,
                 brushColorHex = brushColorHex,
                 brushWidthRatio = brushWidthRatio,
                 brushStyle = brushStyle,
@@ -205,6 +213,8 @@ fun EditorCanvasPane(
                 onCommitClipTranslation = onCommitClipTranslation,
                 onCommitIkPose = onCommitIkPose,
                 onCommitCameraPan = onCommitCameraPan,
+                onSelectCameraBox = onSelectCameraBox,
+                onCommitCameraBoxTransform = onCommitCameraBoxTransform,
                 onDragStateChanged = { dragging -> isDraggingObject = dragging },
                 onActiveIkHandleChanged = { handle -> activeIkHandle = handle },
                 onFinishStroke = onFinishStroke,
@@ -338,7 +348,14 @@ fun EditorCanvasPane(
                     CanvasStatusPill(text = "IK ON", accent = ElectricCyan)
                 }
                 if (isCameraKeyMode) {
-                    CanvasStatusPill(text = "CAM KEY", accent = AmberKeyframe)
+                    val activeCamBox = scene.cameraBoxes.firstOrNull { it.id == selectedCameraBoxId }
+                    val modeText = when {
+                        scene.cameraBoxes.isEmpty() -> "CAM KEY"
+                        isCameraPreviewMode -> "CAM PREVIEW"
+                        activeCamBox != null -> "DIRECTOR • CAM ${activeCamBox.label}"
+                        else -> "DIRECTOR STAGE"
+                    }
+                    CanvasStatusPill(text = modeText, accent = Color(0xFFF59E6C))
                 }
                 if (project.onionSkinEnabled) {
                     CanvasStatusPill(text = "ONION ±2", accent = ElectricCyan)
@@ -565,15 +582,59 @@ fun EditorCanvasPane(
             }
         }
 
+        // 1-Tap Viewport Viewing Mode Toggle on Stage: Director/Stage Mode <-> Camera Preview Mode
+        if (!isPlaying && !isDrawingMode && (isCameraKeyMode || scene.cameraBoxes.isNotEmpty())) {
+            val isDirectorView = isCameraKeyMode && !isCameraPreviewMode && scene.cameraBoxes.isNotEmpty()
+            Surface(
+                color = StudioObsidian.copy(alpha = 0.88f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(
+                    1.dp,
+                    if (isDirectorView) Color(0xFFF59E6C).copy(alpha = 0.85f) else ElectricCyan.copy(alpha = 0.75f)
+                ),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 8.dp, bottom = 44.dp)
+                    .clickable(onClick = onToggleCameraViewportMode)
+                    .testTag("camera_viewport_mode_toggle_btn")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isDirectorView) Icons.Rounded.GridView else Icons.Rounded.Videocam,
+                        contentDescription = if (isDirectorView) "Switch to Camera Preview Mode" else "Switch to Director Stage Mode",
+                        tint = if (isDirectorView) Color(0xFFF59E6C) else ElectricCyan,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = if (isDirectorView) "Stage" else "Preview",
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDirectorView) Color(0xFFF59E6C) else ElectricCyan
+                    )
+                }
+            }
+        }
+
         // Sleek Floating On-Stage Camera Control HUD Pill (ONLY when Camera Key Mode is active & not playing)
         if (isCameraKeyMode && !isDrawingMode && !isPlaying) {
-            val evalCam = remember(scene, currentFrame) {
-                KeyframeEvaluator.evaluateCamera(scene, currentFrame)
+            val activeBox = remember(scene.cameraBoxes, selectedCameraBoxId, currentFrame) {
+                scene.cameraBoxes.firstOrNull { it.id == selectedCameraBoxId }
+                    ?: com.example.engine.CameraBoxEngine.activeCameraBoxAtFrame(scene.cameraBoxes, currentFrame)
             }
+            val evalCam = remember(scene, currentFrame, activeBox) {
+                activeBox?.let {
+                    com.example.engine.EvaluatedCamera(it.centerX, it.centerY, it.zoom, it.rotation)
+                } ?: KeyframeEvaluator.evaluateCamera(scene, currentFrame)
+            }
+            val peachAccent = Color(0xFFF59E6C)
             Surface(
                 color = StudioCharcoal.copy(alpha = 0.94f),
                 shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.85f)),
+                border = BorderStroke(1.dp, peachAccent.copy(alpha = 0.85f)),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 6.dp, start = 8.dp, end = 8.dp)
@@ -584,12 +645,53 @@ fun EditorCanvasPane(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Videocam,
-                        contentDescription = "Camera Control HUD",
-                        tint = AmberKeyframe,
-                        modifier = Modifier.size(15.dp)
-                    )
+                    if (activeBox != null) {
+                        Surface(
+                            color = peachAccent,
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.height(22.dp)
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(horizontal = 6.dp)
+                            ) {
+                                Text(
+                                    text = activeBox.label,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFF1A1410)
+                                )
+                            }
+                        }
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.Videocam,
+                            contentDescription = "Camera Control HUD",
+                            tint = peachAccent,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+
+                    // + Cam button to add Camera Box A, B, C...
+                    Surface(
+                        color = peachAccent.copy(alpha = 0.20f),
+                        shape = RoundedCornerShape(7.dp),
+                        border = BorderStroke(1.dp, peachAccent),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(onClick = onAddCameraBox)
+                            .testTag("cam_hud_add_box_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        ) {
+                            Icon(Icons.Rounded.Add, "Add Camera Box", tint = peachAccent, modifier = Modifier.size(13.dp))
+                            Text("Cam", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = peachAccent)
+                        }
+                    }
+
                     // Zoom - / readout / +
                     Box(
                         contentAlignment = Alignment.Center,
@@ -606,7 +708,7 @@ fun EditorCanvasPane(
                         text = "${(evalCam.zoom * 100).toInt()}%",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        color = AmberKeyframe
+                        color = peachAccent
                     )
                     Box(
                         contentAlignment = Alignment.Center,
@@ -656,7 +758,7 @@ fun EditorCanvasPane(
                     Surface(
                         color = StudioPanel,
                         shape = RoundedCornerShape(7.dp),
-                        border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.6f)),
+                        border = BorderStroke(1.dp, peachAccent.copy(alpha = 0.6f)),
                         modifier = Modifier
                             .height(26.dp)
                             .clickable(onClick = onOpenCameraStudio)
@@ -667,28 +769,8 @@ fun EditorCanvasPane(
                             horizontalArrangement = Arrangement.spacedBy(2.dp),
                             modifier = Modifier.padding(horizontal = 6.dp)
                         ) {
-                            Icon(Icons.Rounded.MovieFilter, "Camera presets", tint = AmberKeyframe, modifier = Modifier.size(13.dp))
-                            Text("Presets", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = AmberKeyframe)
-                        }
-                    }
-
-                    // Stamp Camera Keyframe
-                    Surface(
-                        color = AmberKeyframeDim,
-                        shape = RoundedCornerShape(7.dp),
-                        border = BorderStroke(1.dp, AmberKeyframe),
-                        modifier = Modifier
-                            .height(26.dp)
-                            .clickable(onClick = onStampPoseKey)
-                            .testTag("cam_hud_stamp_key_btn")
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            modifier = Modifier.padding(horizontal = 6.dp)
-                        ) {
-                            Icon(Icons.Rounded.Add, "Stamp camera keyframe", tint = AmberKeyframe, modifier = Modifier.size(13.dp))
-                            Text("Key", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = AmberKeyframe)
+                            Icon(Icons.Rounded.MovieFilter, "Camera presets", tint = peachAccent, modifier = Modifier.size(13.dp))
+                            Text("Presets", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = peachAccent)
                         }
                     }
 

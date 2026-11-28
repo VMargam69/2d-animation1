@@ -105,6 +105,14 @@ fun TimelinePanel(
     onStampCameraKeyframe: () -> Unit = {},
     onOpenCameraStudio: () -> Unit = {},
     isCameraKeyMode: Boolean = false,
+    selectedCameraBoxId: String? = null,
+    onAddCameraBox: () -> Unit = {},
+    onSelectCameraBox: (String?) -> Unit = {},
+    onTrimOrMoveCameraBox: (boxId: String, newStartFrame: Int, newEndFrame: Int) -> Unit = { _, _, _ -> },
+    onDuplicateCameraBox: (String) -> Unit = {},
+    onSplitCameraBox: (String) -> Unit = {},
+    onDeleteCameraBox: (String) -> Unit = {},
+    onCycleCameraBoxEasing: (String) -> Unit = {},
     isMultiSelectMode: Boolean = false,
     selectedClipIds: Set<String> = emptySet(),
     onToggleMultiSelectMode: () -> Unit = {},
@@ -891,6 +899,22 @@ fun TimelinePanel(
 
             HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
 
+            val selectedCamBox = remember(scene.cameraBoxes, selectedCameraBoxId) {
+                selectedCameraBoxId?.let { id -> scene.cameraBoxes.firstOrNull { it.id == id } }
+            }
+            if (selectedCamBox != null && !isPlaying) {
+                CameraBoxQuickActionsStrip(
+                    selectedBox = selectedCamBox,
+                    isLocked = scene.cameraLayerLocked,
+                    onAddCameraBox = onAddCameraBox,
+                    onCycleEasing = onCycleCameraBoxEasing,
+                    onSplitCameraBox = onSplitCameraBox,
+                    onDuplicateCameraBox = onDuplicateCameraBox,
+                    onDeleteCameraBox = onDeleteCameraBox
+                )
+                HorizontalDivider(color = CameraPeachAccent.copy(alpha = 0.35f), thickness = 1.dp)
+            }
+
             // 2. Synchronized Collapsible Layer Rail & Horizontal Keyframe Track Area
             Row(modifier = Modifier.fillMaxSize()) {
                 // Collapsible Left Layer Column (116dp full <-> 40dp icon-only rail)
@@ -956,17 +980,17 @@ fun TimelinePanel(
                             .fillMaxSize()
                             .verticalScroll(verticalScroll)
                     ) {
-                        // Dedicated Camera Control Layer Row (pinned at top of Layer Rail)
+                        // Dedicated Orange Camera Track Header Row (pinned at top of Layer Rail)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(34.dp)
                                 .background(
-                                    if (isCameraKeyMode) AmberKeyframe.copy(alpha = 0.16f)
+                                    if (isCameraKeyMode) CameraPeachAccent.copy(alpha = 0.16f)
                                     else StudioObsidian.copy(alpha = 0.45f)
                                 )
                                 .clickable(onClick = onOpenCameraStudio)
-                                .padding(horizontal = if (isLayerRailCollapsed) 4.dp else 5.dp)
+                                .padding(horizontal = if (isLayerRailCollapsed) 3.dp else 5.dp)
                                 .testTag("camera_control_layer_header"),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = if (isLayerRailCollapsed) Arrangement.Center else Arrangement.spacedBy(3.dp)
@@ -976,31 +1000,48 @@ fun TimelinePanel(
                                     .width(3.dp)
                                     .height(20.dp)
                                     .clip(RoundedCornerShape(2.dp))
-                                    .background(if (scene.cameraLayerEnabled) AmberKeyframe else StudioTextMuted.copy(alpha = 0.4f))
+                                    .background(if (scene.cameraLayerEnabled) CameraPeachAccent else StudioTextMuted.copy(alpha = 0.4f))
                             )
                             if (!isLayerRailCollapsed) {
                                 Icon(
                                     imageVector = Icons.Rounded.Videocam,
-                                    contentDescription = "Camera control layer",
-                                    tint = if (scene.cameraLayerEnabled) AmberKeyframe else StudioTextMuted,
+                                    contentDescription = "Camera track",
+                                    tint = if (scene.cameraLayerEnabled) CameraPeachAccent else StudioTextMuted,
                                     modifier = Modifier.size(13.dp)
                                 )
                                 Text(
                                     text = "Camera",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = if (scene.cameraLayerEnabled) AmberKeyframe else StudioTextMuted,
+                                    color = if (scene.cameraLayerEnabled) CameraPeachAccent else StudioTextMuted,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f)
                                 )
+                                // Quick + button to add Camera Box A, B, C...
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(CameraPeachAccent.copy(alpha = 0.22f))
+                                        .clickable(enabled = !scene.cameraLayerLocked, onClick = onAddCameraBox)
+                                        .testTag("camera_track_quick_add_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Add,
+                                        contentDescription = "Add Camera Box",
+                                        tint = if (!scene.cameraLayerLocked) CameraPeachAccent else StudioTextMuted,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
                             } else {
                                 Spacer(Modifier.width(2.dp))
                             }
                             Box(
                                 contentAlignment = Alignment.Center,
                                 modifier = Modifier
-                                    .size(24.dp)
+                                    .size(22.dp)
                                     .clip(CircleShape)
                                     .clickable(onClick = onToggleCameraLayerEnabled)
                                     .testTag("camera_layer_vis_btn")
@@ -1008,7 +1049,7 @@ fun TimelinePanel(
                                 Icon(
                                     imageVector = if (scene.cameraLayerEnabled) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
                                     contentDescription = "Toggle camera layer active",
-                                    tint = if (scene.cameraLayerEnabled) AmberKeyframe else StudioTextMuted,
+                                    tint = if (scene.cameraLayerEnabled) CameraPeachAccent else StudioTextMuted,
                                     modifier = Modifier.size(14.dp)
                                 )
                             }
@@ -1016,7 +1057,7 @@ fun TimelinePanel(
                                 Box(
                                     contentAlignment = Alignment.Center,
                                     modifier = Modifier
-                                        .size(22.dp)
+                                        .size(20.dp)
                                         .clip(CircleShape)
                                         .clickable(onClick = onToggleCameraLayerLocked)
                                         .testTag("camera_layer_lock_btn")
@@ -1030,7 +1071,7 @@ fun TimelinePanel(
                                 }
                             }
                         }
-                        HorizontalDivider(color = AmberKeyframe.copy(alpha = 0.30f), thickness = 1.dp)
+                        HorizontalDivider(color = CameraPeachAccent.copy(alpha = 0.32f), thickness = 1.dp)
 
                         sortedLayers.forEachIndexed { layerIdx, layer ->
                             val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))
@@ -1380,7 +1421,10 @@ fun TimelinePanel(
                                 .fillMaxSize()
                                 .verticalScroll(verticalScroll)
                         ) {
-                            // Dedicated Camera Control Layer Track (Keyframed Pan, Zoom & Rotation)
+                            // Dedicated Orange Camera Track (Trimmable Cam A/B/C Boxes + Legacy Keyframes)
+                            val camBoxesSorted = remember(scene.cameraBoxes) {
+                                scene.cameraBoxes.sortedBy { it.startFrame }
+                            }
                             val camKeysSorted = remember(scene.cameraKeyframes) {
                                 scene.cameraKeyframes.sortedBy { it.frame }
                             }
@@ -1390,7 +1434,7 @@ fun TimelinePanel(
                                     .fillMaxWidth()
                                     .height(34.dp)
                                     .background(
-                                        if (isCameraKeyMode) AmberKeyframe.copy(alpha = 0.10f)
+                                        if (isCameraKeyMode) CameraPeachAccent.copy(alpha = 0.10f)
                                         else StudioObsidian.copy(alpha = 0.55f)
                                     )
                                     .pointerInput(scene.durationFrames, frameWidthPx) {
@@ -1407,7 +1451,24 @@ fun TimelinePanel(
                                     }
                                     .testTag("camera_control_track_row")
                             ) {
-                                if (camKeysSorted.isNotEmpty()) {
+                                if (camBoxesSorted.isNotEmpty()) {
+                                    camBoxesSorted.forEach { box ->
+                                        CameraBoxTimelineClipBar(
+                                            box = box,
+                                            isSelected = box.id == selectedCameraBoxId,
+                                            isLocked = scene.cameraLayerLocked,
+                                            visAlpha = camVisAlpha,
+                                            frameWidthDp = frameWidthDp,
+                                            frameWidthPx = frameWidthPx,
+                                            sceneDurationFrames = scene.durationFrames,
+                                            onSelect = { onSelectCameraBox(box.id) },
+                                            onCycleEasing = { onCycleCameraBoxEasing(box.id) },
+                                            onTrimOrMove = { newStart, newEnd ->
+                                                onTrimOrMoveCameraBox(box.id, newStart, newEnd)
+                                            }
+                                        )
+                                    }
+                                } else if (camKeysSorted.isNotEmpty()) {
                                     val firstFrame = camKeysSorted.first().frame
                                     val lastFrame = camKeysSorted.last().frame
                                     val barStartDp = frameWidthDp * firstFrame
@@ -1475,20 +1536,41 @@ fun TimelinePanel(
                                         modifier = Modifier
                                             .align(Alignment.CenterStart)
                                             .padding(horizontal = 8.dp)
-                                            .clickable(onClick = onOpenCameraStudio)
                                     ) {
-                                        Text(
-                                            text = "Camera Control • Tap to keyframe Pan, Zoom & Roll or pick a Preset",
-                                            fontSize = 9.5.sp,
-                                            color = StudioTextMuted,
-                                            maxLines = 1
-                                        )
                                         Surface(
-                                            color = AmberKeyframe.copy(alpha = 0.16f),
+                                            color = CameraPeachAccent.copy(alpha = 0.22f),
                                             shape = RoundedCornerShape(6.dp),
-                                            border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.55f)),
+                                            border = BorderStroke(1.dp, CameraPeachAccent),
                                             modifier = Modifier
-                                                .height(20.dp)
+                                                .height(22.dp)
+                                                .clickable(enabled = !scene.cameraLayerLocked, onClick = onAddCameraBox)
+                                                .testTag("camera_track_add_box_btn")
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                                modifier = Modifier.padding(horizontal = 7.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Add,
+                                                    contentDescription = "Add Camera Box",
+                                                    tint = CameraPeachAccent,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                                Text(
+                                                    text = "Camera A",
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = CameraPeachAccent
+                                                )
+                                            }
+                                        }
+                                        Surface(
+                                            color = AmberKeyframe.copy(alpha = 0.14f),
+                                            shape = RoundedCornerShape(6.dp),
+                                            border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.50f)),
+                                            modifier = Modifier
+                                                .height(22.dp)
                                                 .clickable(onClick = onStampCameraKeyframe)
                                                 .testTag("camera_track_add_kf_btn")
                                         ) {
@@ -1499,15 +1581,22 @@ fun TimelinePanel(
                                                 Text(
                                                     text = "+ Key",
                                                     fontSize = 9.5.sp,
-                                                    fontWeight = FontWeight.Bold,
+                                                    fontWeight = FontWeight.SemiBold,
                                                     color = AmberKeyframe
                                                 )
                                             }
                                         }
+                                        Text(
+                                            text = "Add visual A/B/C Camera Boxes or Presets",
+                                            fontSize = 9.5.sp,
+                                            color = StudioTextMuted,
+                                            maxLines = 1,
+                                            modifier = Modifier.clickable(onClick = onOpenCameraStudio)
+                                        )
                                     }
                                 }
                             }
-                            HorizontalDivider(color = AmberKeyframe.copy(alpha = 0.30f), thickness = 1.dp)
+                            HorizontalDivider(color = CameraPeachAccent.copy(alpha = 0.32f), thickness = 1.dp)
 
                             sortedLayers.forEach { layer ->
                                 val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))

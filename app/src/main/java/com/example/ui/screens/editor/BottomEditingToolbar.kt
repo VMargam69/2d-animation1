@@ -83,6 +83,7 @@ fun BottomEditingToolbar(
     onStepAdjacentKeyframe: (Boolean) -> Unit,
     onResetPoseAtCurrentFrame: () -> Unit,
     onOpenCharacterActingProps: () -> Unit,
+    onAddCameraBox: () -> Unit = {},
     onToggleCameraKeyMode: () -> Unit,
     onOpenCameraChroma: () -> Unit,
     onOpenSceneVfx: () -> Unit = {},
@@ -212,7 +213,8 @@ fun BottomEditingToolbar(
                 DockToolAction("background", "BG", Icons.Rounded.Wallpaper, onClick = onOpenBackground)
             )
             DockSubMenu.CAMERA -> listOf(
-                DockToolAction("cam_key", "Cam Key", Icons.Rounded.ControlCamera, isActive = isCameraKeyMode, onClick = onToggleCameraKeyMode),
+                DockToolAction("add_camera", "+ Camera", Icons.Rounded.VideoCall, accentTint = Color(0xFFF59E6C), onClick = onAddCameraBox),
+                DockToolAction("cam_key", "Director", Icons.Rounded.ControlCamera, isActive = isCameraKeyMode, accentTint = if (isCameraKeyMode) Color(0xFFF59E6C) else null, onClick = onToggleCameraKeyMode),
                 DockToolAction("camera_chroma", "Chroma", Icons.Rounded.Videocam, onClick = onOpenCameraChroma),
                 DockToolAction("transitions", "Transitions", Icons.Rounded.AutoAwesomeMotion, onClick = onOpenSceneTransitions)
             )
