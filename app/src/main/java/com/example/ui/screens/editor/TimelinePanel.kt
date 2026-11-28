@@ -84,6 +84,7 @@ fun TimelinePanel(
     onSendLayerToBack: (String) -> Unit = {},
     onBringLayerForward: (String) -> Unit = {},
     onSendLayerBackward: (String) -> Unit = {},
+    onDuplicateLayer: (String) -> Unit = {},
     onDeleteLayer: (String) -> Unit = {},
     onOpenLayerManager: () -> Unit,
     onTrimAudioClip: (
@@ -1401,6 +1402,30 @@ fun TimelinePanel(
                                                 onSendLayerBackward(layer.id)
                                             },
                                             modifier = Modifier.testTag("layer_menu_backward_${layer.id}")
+                                        )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "Duplicate Layer",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = enabledText
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.ContentCopy,
+                                                    contentDescription = "Duplicate layer",
+                                                    tint = ElectricCyan,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                openLayerMenuId = null
+                                                onDuplicateLayer(layer.id)
+                                            },
+                                            modifier = Modifier.testTag("layer_menu_duplicate_${layer.id}")
                                         )
 
                                         HorizontalDivider(

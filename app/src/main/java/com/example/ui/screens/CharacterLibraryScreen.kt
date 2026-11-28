@@ -55,6 +55,7 @@ fun CharacterLibraryScreen(
     onOpenCharacterMakerSetup: () -> Unit,
     onEditAtlasCharacter: (CharacterRigDefinition) -> Unit,
     onImportCharacterPack: (Uri, (String) -> Unit) -> Unit = { _, _ -> },
+    isReplaceMode: Boolean = false,
     onClose: () -> Unit
 ) {
     BackHandler { onClose() }
@@ -105,13 +106,13 @@ fun CharacterLibraryScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Icon(
-                        Icons.Rounded.Groups,
+                        if (isReplaceMode) Icons.Rounded.SwapHoriz else Icons.Rounded.Groups,
                         contentDescription = null,
                         tint = ElectricCyan,
                         modifier = Modifier.size(22.dp)
                     )
                     Text(
-                        text = stringResource(R.string.characters_title),
+                        text = if (isReplaceMode) "Replace Character" else stringResource(R.string.characters_title),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = StudioTextPrimary,

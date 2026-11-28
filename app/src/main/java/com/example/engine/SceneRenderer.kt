@@ -745,6 +745,26 @@ class SceneRenderer(
                 if (effectiveAlpha <= 0.01f) continue
 
                 if (layer.type == LayerType.BACKGROUND) {
+                    val bgColorFilter = if (tintOverlay == null) ClipVisualFxEngine.createColorAdjustFilter(clip.colorAdjust) else null
+                    val bgSaveCount = if (bgColorFilter != null) {
+                        val layerPaint = Paint().apply { colorFilter = bgColorFilter }
+                        canvas.saveLayer(0f, 0f, w, h, layerPaint)
+                    } else -1
+                    val bgMaskType = clip.effectiveMaskType
+                    if (bgMaskType != ClipMaskType.NONE) {
+                        canvas.save()
+                        canvas.translate(w * 0.5f, h * 0.5f)
+                        ClipVisualFxEngine.applyClipMask(
+                            canvas = canvas,
+                            type = bgMaskType,
+                            config = clip.maskConfig,
+                            legacyRadius = clip.maskRadius,
+                            refW = w,
+                            refH = h,
+                            scratchPath = scratch.path
+                        )
+                        canvas.translate(-w * 0.5f, -h * 0.5f)
+                    }
                     if (inlineSvgDef != null) {
                         canvas.save()
                         canvas.translate(w * 0.5f, h * 0.5f)
@@ -779,11 +799,25 @@ class SceneRenderer(
                             )
                         }
                     }
+                    if (bgMaskType != ClipMaskType.NONE) {
+                        canvas.restore()
+                    }
+                    if (bgSaveCount >= 0) {
+                        canvas.restoreToCount(bgSaveCount)
+                    }
                     continue
                 }
 
                 if (layer.type == LayerType.DRAWING) {
+                    val drawColorFilter = if (tintOverlay == null) ClipVisualFxEngine.createColorAdjustFilter(clip.colorAdjust) else null
+                    val drawSaveCount = if (drawColorFilter != null) {
+                        val layerPaint = Paint().apply { colorFilter = drawColorFilter }
+                        canvas.saveLayer(0f, 0f, w, h, layerPaint)
+                    } else -1
                     drawStrokesClip(canvas, intW, intH, w, h, clip, effectiveAlpha, tintOverlay, scratch)
+                    if (drawSaveCount >= 0) {
+                        canvas.restoreToCount(drawSaveCount)
+                    }
                     continue
                 }
 
@@ -797,31 +831,67 @@ class SceneRenderer(
                 val sy = transform.scaleY * (parentAnchor?.scaleY ?: 1f) * if (effFlipY) -1f else 1f
                 canvas.scale(sx, sy)
 
-                // Apply Clip Masking (supports both built-in ClipMaskType and universal mask.x/y/w/h/radius/feather)
+                // Resolve Clip Masking (ClipMaskConfig + legacy maskType + universal mask overrides)
                 val universalMask = UniversalKeyframeEngine.resolveClipMask(universalSnapshot, clip)
+                val effMaskType = clip.effectiveMaskType
                 val effMaskRadius = universalMask.radiusOverride ?: clip.maskRadius
-                if (clip.maskType != ClipMaskType.NONE) {
-                    val maskDim = min(w, h) * effMaskRadius.coerceIn(0.08f, 0.95f)
-                    val maskPath = buildClipMaskPath(clip.maskType, maskDim, scratch.path)
-                    if (maskPath != null) {
-                        if (universalMask.hasCustomRectMask) {
-                            val mx = universalMask.maskX * maskDim
-                            val my = universalMask.maskY * maskDim
-                            maskPath.offset(mx, my)
-                        }
-                        canvas.clipPath(maskPath)
-                    }
-                } else if (universalMask.hasCustomRectMask) {
-                    val baseDim = min(w, h) * 0.45f
-                    val cxM = universalMask.maskX * baseDim
-                    val cyM = universalMask.maskY * baseDim
-                    val hw = baseDim * universalMask.maskW * 0.5f
-                    val hh = baseDim * universalMask.maskH * 0.5f
-                    val cr = min(hw, hh) * universalMask.feather * 0.4f
-                    scratch.path.reset()
-                    scratch.path.addRoundRect(cxM - hw, cyM - hh, cxM + hw, cyM + hh, cr, cr, Path.Direction.CW)
-                    canvas.clipPath(scratch.path)
+                val resolvedMaskConfig = if (universalMask.hasCustomRectMask) {
+                    clip.maskConfig.copy(
+                        type = if (effMaskType != ClipMaskType.NONE) effMaskType else ClipMaskType.ROUNDED_RECT,
+                        centerX = clip.maskConfig.centerX + universalMask.maskX * 0.5f,
+                        centerY = clip.maskConfig.centerY + universalMask.maskY * 0.5f,
+                        width = universalMask.maskW.coerceIn(0.1f, 1.5f),
+                        height = universalMask.maskH.coerceIn(0.1f, 1.5f),
+                        feather = kotlin.math.max(clip.maskConfig.feather, universalMask.feather)
+                    )
+                } else {
+                    clip.maskConfig
                 }
+                val finalMaskType = resolvedMaskConfig.resolvedType(effMaskType)
+                val clipRefW = min(w, h) * 0.52f
+                val clipRefH = min(w, h) * 0.52f
+
+                // Dynamic Ground / Drop Shadow (drawn cleanly behind the clip before mask & colorAdjust layers)
+                if (clip.shadowConfig.isActive && tintOverlay == null) {
+                    val isCharLayer = layer.type == LayerType.CHARACTER
+                    val liveBodyBobY = if (isCharLayer) {
+                        val cycleF = clip.animationPresetType.defaultDurationFrames.coerceAtLeast(8).toFloat()
+                        val rawP = (localFrame * clip.speedMultiplier) / cycleF
+                        val ph = if (clip.loopAnimation) rawP % 1f else rawP.coerceIn(0f, 0.999f)
+                        ProceduralRigRenderer.computePose(clip.animationPresetType, ph).bodyBobY
+                    } else 0f
+                    ClipVisualFxEngine.drawClipShadow(
+                        canvas = canvas,
+                        config = clip.shadowConfig,
+                        isCharacter = isCharLayer,
+                        baseScale = baseScale,
+                        bodyBobY = liveBodyBobY,
+                        clipWidthPx = clipRefW,
+                        clipHeightPx = clipRefH,
+                        clipOpacity = effectiveAlpha
+                    )
+                }
+
+                if (finalMaskType != ClipMaskType.NONE) {
+                    ClipVisualFxEngine.applyClipMask(
+                        canvas = canvas,
+                        type = finalMaskType,
+                        config = resolvedMaskConfig,
+                        legacyRadius = effMaskRadius,
+                        refW = clipRefW,
+                        refH = clipRefH,
+                        scratchPath = scratch.path
+                    )
+                }
+
+                // Per-Clip Colour Adjust via fast ColorMatrixColorFilter
+                val clipColorFilter = if (tintOverlay == null) {
+                    ClipVisualFxEngine.createColorAdjustFilter(clip.colorAdjust)
+                } else null
+                val clipColorSaveCount = if (clipColorFilter != null) {
+                    val colorPaint = Paint().apply { colorFilter = clipColorFilter }
+                    canvas.saveLayer(null, colorPaint)
+                } else -1
 
                 when (layer.type) {
                     LayerType.CHARACTER -> {
@@ -937,7 +1007,11 @@ class SceneRenderer(
                                 blinkOverride = charState.blinkOverride,
                                 atlasSlices = atlasSlices,
                                 organicFace = organicFace,
-                                propSwayState = propSwayState
+                                propSwayState = propSwayState,
+                                tearsConfig = clip.tearsConfig,
+                                globalFrame = frame,
+                                fps = fps,
+                                clipSeed = clip.id.hashCode()
                             )
                         }
                     }
@@ -979,6 +1053,21 @@ class SceneRenderer(
                     }
                     else -> Unit
                 }
+                if (clipColorSaveCount >= 0) {
+                    canvas.restoreToCount(clipColorSaveCount)
+                }
+                if (finalMaskType != ClipMaskType.NONE && resolvedMaskConfig.feather > 0.02f && tintOverlay == null) {
+                    ClipVisualFxEngine.drawMaskFeatherEdge(
+                        canvas = canvas,
+                        type = finalMaskType,
+                        config = resolvedMaskConfig,
+                        legacyRadius = effMaskRadius,
+                        refW = clipRefW,
+                        refH = clipRefH,
+                        scratchPath = scratch.path,
+                        bgColor = 0xFF162033.toInt()
+                    )
+                }
                 canvas.restore()
             }
 
@@ -1003,44 +1092,14 @@ class SceneRenderer(
 
     private fun buildClipMaskPath(type: ClipMaskType, radius: Float, outPath: Path): Path? {
         if (type == ClipMaskType.NONE) return null
-        outPath.reset()
-        when (type) {
-            ClipMaskType.NONE -> return null
-            ClipMaskType.CIRCLE -> outPath.addCircle(0f, 0f, radius, Path.Direction.CW)
-            ClipMaskType.ROUNDED_RECT -> outPath.addRoundRect(
-                -radius, -radius, radius, radius,
-                radius * 0.28f, radius * 0.28f,
-                Path.Direction.CW
-            )
-            ClipMaskType.OVAL -> outPath.addOval(-radius * 0.85f, -radius * 1.1f, radius * 0.85f, radius * 1.1f, Path.Direction.CW)
-            ClipMaskType.STAR -> {
-                val points = 5
-                val outerR = radius
-                val innerR = radius * 0.45f
-                for (i in 0 until points * 2) {
-                    val r = if (i % 2 == 0) outerR else innerR
-                    val angle = (-PI / 2.0) + (i * PI / points)
-                    val px = (cos(angle) * r).toFloat()
-                    val py = (sin(angle) * r).toFloat()
-                    if (i == 0) outPath.moveTo(px, py) else outPath.lineTo(px, py)
-                }
-                outPath.close()
-            }
-            ClipMaskType.ARCH -> {
-                outPath.moveTo(-radius * 0.8f, radius)
-                outPath.lineTo(-radius * 0.8f, -radius * 0.1f)
-                outPath.arcTo(-radius * 0.8f, -radius, radius * 0.8f, radius * 0.6f, 180f, 180f, false)
-                outPath.lineTo(radius * 0.8f, radius)
-                outPath.close()
-            }
-            ClipMaskType.DIAGONAL_SPLIT -> {
-                outPath.moveTo(-radius * 1.1f, -radius * 1.1f)
-                outPath.lineTo(radius * 1.1f, -radius * 0.55f)
-                outPath.lineTo(radius * 1.1f, radius * 1.1f)
-                outPath.lineTo(-radius * 1.1f, radius * 0.55f)
-                outPath.close()
-            }
-        }
+        ClipVisualFxEngine.buildClipMaskPath(
+            type = type,
+            config = ClipMaskConfig(),
+            legacyRadius = 1f,
+            refW = radius * 2f,
+            refH = radius * 2f,
+            outPath = outPath
+        )
         return outPath
     }
 

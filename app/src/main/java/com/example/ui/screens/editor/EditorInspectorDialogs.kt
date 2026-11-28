@@ -502,6 +502,7 @@ fun LayerManagerDialog(
     onUpdateLayerParallaxDepth: (String, Float) -> Unit = { _, _ -> },
     onToggleVisibility: (String) -> Unit,
     onToggleLock: (String) -> Unit,
+    onDuplicateLayer: (String) -> Unit = {},
     onDeleteLayer: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -609,6 +610,14 @@ fun LayerManagerDialog(
                                         tint = if (layer.isLocked) AmberKeyframe else StudioTextMuted,
                                         modifier = Modifier.size(16.dp)
                                     )
+                                }
+                                IconButton(
+                                    onClick = { onDuplicateLayer(layer.id) },
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .testTag("layer_manager_duplicate_${layer.id}")
+                                ) {
+                                    Icon(Icons.Rounded.ContentCopy, "Duplicate layer", tint = ElectricCyan, modifier = Modifier.size(16.dp))
                                 }
                                 if (layers.size > 1) {
                                     IconButton(onClick = { onDeleteLayer(layer.id) }, modifier = Modifier.size(30.dp)) {

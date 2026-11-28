@@ -72,10 +72,17 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
         }
 
         is HashRoute.CharacterLibrary -> {
+            val isReplacingChar = state.replacingClipId != null
             CharacterLibraryScreen(
                 characters = state.characters,
                 assetStorage = viewModel.assetStorage,
-                onSelectCharacter = { char -> viewModel.openAnimationLibraryForCharacter(char.id) },
+                onSelectCharacter = { char ->
+                    if (isReplacingChar) {
+                        viewModel.replaceSelectedClipCharacter(char)
+                    } else {
+                        viewModel.openAnimationLibraryForCharacter(char.id)
+                    }
+                },
                 onTogglePin = { char -> viewModel.togglePinCharacter(char) },
                 onSaveCharacter = { char -> viewModel.saveCharacter(char) },
                 onDeleteCharacter = { char -> viewModel.deleteCustomCharacter(char) },
@@ -86,6 +93,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                     viewModel.openCharacterMaker(pose = pose, editCharacterId = char.id)
                 },
                 onImportCharacterPack = { uri, onMsg -> viewModel.importCharacterPackUri(uri, onMsg) },
+                isReplaceMode = isReplacingChar,
                 onClose = { viewModel.navigateBack() }
             )
         }
@@ -132,11 +140,19 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
         }
 
         is HashRoute.MediaLibrary -> {
+            val isReplacingMedia = state.replacingClipId != null
             MediaLibraryScreen(
                 assets = state.mediaAssets,
                 onImportUri = { uri, type -> viewModel.importMediaUri(uri, preferredType = type) },
-                onPlaceOnCanvas = { asset, asBg -> viewModel.placeMediaAssetOnCanvas(asset, asBg) },
+                onPlaceOnCanvas = { asset, asBg ->
+                    if (isReplacingMedia) {
+                        viewModel.replaceSelectedClipMedia(asset)
+                    } else {
+                        viewModel.placeMediaAssetOnCanvas(asset, asBg)
+                    }
+                },
                 onDeleteAsset = { asset -> viewModel.deleteMediaAsset(asset) },
+                isReplaceMode = isReplacingMedia,
                 onClose = { viewModel.navigateBack() }
             )
         }
@@ -204,8 +220,11 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onSendLayerToBack = { id -> viewModel.sendLayerToBack(id) },
                 onBringLayerForward = { id -> viewModel.bringLayerForward(id) },
                 onSendLayerBackward = { id -> viewModel.sendLayerBackward(id) },
+                onDuplicateLayer = { id -> viewModel.duplicateLayer(id) },
                 onUpdateLayerParallaxDepth = { id, d -> viewModel.updateLayerParallaxDepth(id, d) },
                 onDeleteLayer = { id -> viewModel.deleteLayer(id) },
+                onReplaceCharacterClip = { clipId -> viewModel.openCharacterLibraryForReplace(clipId) },
+                onReplaceMediaClip = { clipId -> viewModel.openMediaLibraryForReplace(clipId) },
                 onUpdateTransform = { viewModel.updateSelectedClipTransform(it) },
                 onUpdateSelectedClip = { viewModel.updateSelectedClipProps(it) },
                 onSplitClip = { viewModel.splitSelectedClipAtPlayhead() },

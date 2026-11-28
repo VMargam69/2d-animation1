@@ -1210,4 +1210,136 @@ object ProjectMutator {
             )
         }
     }
+
+    /**
+     * Deep-copies an entire layer (including all clips, keyframes, simultaneous tracks,
+     * drawing strokes, masks, shadows, tears, colorAdjust, blend mode, and parallax depth)
+     * immediately above the original layer (`orderIndex + 1`) with a " (Copy)" suffix.
+     */
+    fun duplicateLayer(
+        project: ProjectDocument,
+        layerId: String
+    ): Pair<ProjectDocument, String?> {
+        var createdLayerId: String? = null
+        val updated = updateActiveScene(project) { scene ->
+            val sortedAsc = scene.layers.sortedBy { it.orderIndex }
+            val srcIdx = sortedAsc.indexOfFirst { it.id == layerId }
+            if (srcIdx < 0) return@updateActiveScene scene
+            val sourceLayer = sortedAsc[srcIdx]
+            val newLayerId = UUID.randomUUID().toString()
+            createdLayerId = newLayerId
+
+            val cleanBase = sourceLayer.name.removeSuffix(" (Copy)").trim().ifBlank { sourceLayer.type.displayName }
+            val duplicatedLayer = sourceLayer.copy(
+                id = newLayerId,
+                name = "$cleanBase (Copy)",
+                isLocked = false
+            )
+
+            // Insert directly above original in ascending Z-order (higher orderIndex renders on top)
+            val reorderedLayers = sortedAsc.toMutableList().apply {
+                add(srcIdx + 1, duplicatedLayer)
+            }.mapIndexed { idx, l -> l.copy(orderIndex = idx) }
+
+            val duplicatedClips = scene.clips
+                .filter { it.layerId == layerId }
+                .map { clip ->
+                    clip.copy(
+                        id = UUID.randomUUID().toString(),
+                        layerId = newLayerId,
+                        keyframes = clip.keyframes.map { kf ->
+                            kf.copy(poseOffsets = kf.poseOffsets.copy())
+                        },
+                        simultaneousTracks = clip.simultaneousTracks.map { st ->
+                            st.copy(id = UUID.randomUUID().toString())
+                        },
+                        drawingStrokes = clip.drawingStrokes.map { stroke ->
+                            stroke.copy(
+                                id = UUID.randomUUID().toString(),
+                                points = stroke.points.toList()
+                            )
+                        },
+                        motionPathControlPoints = clip.motionPathControlPoints.toList(),
+                        tearsConfig = clip.tearsConfig.copy(),
+                        shadowConfig = clip.shadowConfig.copy(),
+                        colorAdjust = clip.colorAdjust.copy(),
+                        maskConfig = clip.maskConfig.copy()
+                    )
+                }
+
+            scene.copy(
+                layers = reorderedLayers,
+                clips = scene.clips + duplicatedClips
+            )
+        }
+        return updated to createdLayerId
+    }
+
+    /**
+     * Swaps a character clip's rig (`characterId`) while preserving 100% of timeline range,
+     * Transform keyframes, MotionPath, IK poses, presets, face overrides, tears, shadow,
+     * colorAdjust, mask, and sway physics.
+     */
+    fun replaceClipCharacter(
+        project: ProjectDocument,
+        clipId: String,
+        newCharacterId: String,
+        newCharacterName: String? = null
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val target = scene.clips.firstOrNull { it.id == clipId } ?: return@updateActiveScene scene
+        val layer = scene.layers.firstOrNull { it.id == target.layerId }
+        if (layer?.isLocked == true) return@updateActiveScene scene
+
+        val nextName = if (!newCharacterName.isNullOrBlank()) {
+            if (target.name.contains("•")) {
+                "$newCharacterName • ${target.animationPresetType.displayName}"
+            } else {
+                newCharacterName
+            }
+        } else {
+            target.name
+        }
+
+        val updatedClips = scene.clips.map { clip ->
+            if (clip.id == clipId) {
+                clip.copy(
+                    characterId = newCharacterId,
+                    name = nextName
+                )
+            } else {
+                clip
+            }
+        }
+        scene.copy(clips = updatedClips)
+    }
+
+    /**
+     * Swaps an Image / Background / Prop clip's media source while preserving 100% of its
+     * timeline range, Transform keyframes, MotionPath, masks, shadows, and colorAdjust.
+     */
+    fun replaceClipMedia(
+        project: ProjectDocument,
+        clipId: String,
+        newImagePath: String?,
+        newBundledBgKey: String?,
+        newName: String? = null
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val target = scene.clips.firstOrNull { it.id == clipId } ?: return@updateActiveScene scene
+        val layer = scene.layers.firstOrNull { it.id == target.layerId }
+        if (layer?.isLocked == true) return@updateActiveScene scene
+
+        val updatedClips = scene.clips.map { clip ->
+            if (clip.id == clipId) {
+                clip.copy(
+                    imagePath = newImagePath,
+                    bundledBgKey = newBundledBgKey,
+                    inlineSvgAssetId = null,
+                    name = newName?.takeIf { it.isNotBlank() } ?: clip.name
+                )
+            } else {
+                clip
+            }
+        }
+        scene.copy(clips = updatedClips)
+    }
 }

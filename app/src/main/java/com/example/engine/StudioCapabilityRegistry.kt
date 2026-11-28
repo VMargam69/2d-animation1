@@ -58,6 +58,8 @@ object StudioCapabilityRegistry {
         val vfxStyles: List<CapabilityItem>,
         val colourGradingPresets: List<CapabilityItem>,
         val maskTypes: List<CapabilityItem>,
+        val tearsFxStyles: List<CapabilityItem>,
+        val shadowModes: List<CapabilityItem>,
         val curveAndEasingTypes: List<CapabilityItem>,
         val transitions: List<CapabilityItem>,
         val customTransitionClipTypes: List<CapabilityItem>,
@@ -178,6 +180,14 @@ object StudioCapabilityRegistry {
             CapabilityItem(id = it.name, label = it.displayName)
         }
 
+        val tearsFxStyles = TearsFxStyle.entries.map {
+            CapabilityItem(id = it.name, label = it.displayName)
+        }
+
+        val shadowModes = ShadowMode.entries.map {
+            CapabilityItem(id = it.name, label = it.displayName)
+        }
+
         val curveAndEasingTypes = EasingType.entries.map { easing ->
             val handles = KeyframeEvaluator.defaultBezierHandles(easing)
             CapabilityItem(
@@ -271,7 +281,14 @@ object StudioCapabilityRegistry {
             ClipOperationCapability("duplicate", "Clone clip onto next layer or shifted time", listOf("offsetSec", "newClipId")),
             ClipOperationCapability("delete", "Remove a referenced clip from the scene", listOf("targetClipId")),
             ClipOperationCapability("speed", "Adjust playback speed multiplier (0.25..4.0)", listOf("multiplier")),
-            ClipOperationCapability("trim", "Adjust start/end timing or audio trim window", listOf("startSec", "durationSec", "audioTrimStartMs", "audioTrimEndMs"))
+            ClipOperationCapability("trim", "Adjust start/end timing or audio trim window", listOf("startSec", "durationSec", "audioTrimStartMs", "audioTrimEndMs")),
+            ClipOperationCapability("replace", "Swap character rig or image/background asset while preserving all keyframes, IK poses, masks, shadows, tears, and sway physics", listOf("newCharacterId", "newImageAssetId")),
+            ClipOperationCapability("tears", "Configure deterministic animated Tears FX anchored beneath character eyes", listOf("style", "intensity", "speed")),
+            ClipOperationCapability("shadow", "Configure dynamic ground ellipse or drop shadow (auto-scales on jumps)", listOf("enabled", "mode", "opacity", "softness", "scaleX", "scaleY", "offsetX", "offsetY", "colorHex")),
+            ClipOperationCapability("adjust", "Configure per-clip ColorMatrix colour grading (brightness, contrast, saturation, hueDeg, warmth)", listOf("brightness", "contrast", "saturation", "hueDeg", "warmth")),
+            ClipOperationCapability("mask", "Configure interactive clip mask shape with position, width/height, feather, and invert", listOf("type", "centerX", "centerY", "width", "height", "feather", "invert")),
+            ClipOperationCapability("duplicateLayer", "Deep-copy an entire layer and all of its clips directly above the original layer", listOf("targetLayerId", "newLayerId")),
+            ClipOperationCapability("sort", "Change layer Z-order (BRING_TO_FRONT, BRING_FORWARD, SEND_BACKWARD, SEND_TO_BACK)", listOf("targetLayerId", "zOrderAction"))
         )
 
         val armGesturePresets = ArmGestureTrackPreset.entries.map { gesture ->
@@ -361,6 +378,8 @@ object StudioCapabilityRegistry {
             vfxStyles = vfxStyles,
             colourGradingPresets = colourGradingPresets,
             maskTypes = maskTypes,
+            tearsFxStyles = tearsFxStyles,
+            shadowModes = shadowModes,
             curveAndEasingTypes = curveAndEasingTypes,
             transitions = transitions,
             customTransitionClipTypes = customTransitionClipTypes,
@@ -419,6 +438,8 @@ object StudioCapabilityRegistry {
             snapshot.vfxStyles.size +
             snapshot.colourGradingPresets.size +
             snapshot.maskTypes.size +
+            snapshot.tearsFxStyles.size +
+            snapshot.shadowModes.size +
             snapshot.curveAndEasingTypes.size +
             snapshot.transitions.size +
             snapshot.customTransitionClipTypes.size +

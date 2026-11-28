@@ -46,6 +46,10 @@ internal object HumanRigDrawer {
         customPropBitmap: Bitmap? = null,
         propScale: Float = 1.0f,
         organicFace: OrganicFacialState? = null,
+        tearsConfig: TearsFxConfig = TearsFxConfig(),
+        globalFrame: Int = 0,
+        fps: Int = 24,
+        clipSeed: Int = 0,
         drawAccessory: (Canvas, CharacterAccessory, Float, Int, Int, Paint, Int) -> Unit
     ) {
         val scratch = scratchLocal.get()!!
@@ -226,7 +230,8 @@ internal object HumanRigDrawer {
         // Realistic Facial Features (visible on Front, 3/4 Front, Side)
         if (!isBack) {
             drawHumanFaceFeatures(
-                canvas, orientation, faceShiftX, pose, s, alphaInt, skin, hair, eyeColor, organicFace
+                canvas, orientation, faceShiftX, pose, s, alphaInt, skin, hair, eyeColor, organicFace,
+                tearsConfig, globalFrame, fps, clipSeed
             )
         }
 
@@ -465,7 +470,11 @@ internal object HumanRigDrawer {
         skin: Int,
         hair: Int,
         eyeColor: Int,
-        organicFace: OrganicFacialState? = null
+        organicFace: OrganicFacialState? = null,
+        tearsConfig: TearsFxConfig = TearsFxConfig(),
+        globalFrame: Int = 0,
+        fps: Int = 24,
+        clipSeed: Int = 0
     ) {
         val isSide = orientation == CharacterOrientation.SIDE
         val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
@@ -583,12 +592,34 @@ internal object HumanRigDrawer {
                 stroke.strokeWidth = 1.65f * s
                 canvas.drawArc(RectF(ex - 4.6f * s, topY - 0.3f * s, ex + 4.6f * s, botY + 0.2f * s), 192f, 156f, false, stroke)
 
-                // Sad glistening tear droplet
-                if (face.showTear) {
+                // Sad glistening tear droplet (legacy fallback when explicit Tears FX is off)
+                if (face.showTear && !tearsConfig.isActive) {
                     fill.color = withAlpha(0xD938BDF8.toInt(), alphaInt)
                     canvas.drawOval(RectF(ex + 2.0f * s, botY - 0.5f * s, ex + 4.5f * s, botY + 3.8f * s), fill)
                 }
             }
+        }
+
+        // 2b. Animated Tears FX anchored smoothly under eyes
+        if (tearsConfig.isActive) {
+            val tearAnchors = eyePositions.mapIndexed { idx, ex ->
+                val sideSign = if (isSide) 1f else if (idx == 0) -1f else 1f
+                ClipVisualFxEngine.TearEyeAnchor(
+                    x = ex + sideSign * 0.8f * s,
+                    y = 1.6f * s,
+                    sideSign = sideSign
+                )
+            }
+            ClipVisualFxEngine.drawTearsAtEyes(
+                canvas = canvas,
+                config = tearsConfig,
+                eyeAnchors = tearAnchors,
+                scale = s,
+                globalFrame = globalFrame,
+                fps = fps,
+                alphaInt = alphaInt,
+                seed = clipSeed
+            )
         }
 
         // 3. Subtle Anatomical Nose Bridge & Tip Shadow

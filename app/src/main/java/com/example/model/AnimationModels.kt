@@ -460,11 +460,75 @@ enum class TransitionType(val displayName: String) {
 enum class ClipMaskType(val displayName: String) {
     NONE("None"),
     CIRCLE("Circle"),
+    RECTANGLE("Rectangle"),
     ROUNDED_RECT("Rounded Rect"),
     OVAL("Oval"),
     STAR("Star"),
     ARCH("Arch"),
+    LINEAR_SPLIT("Linear Split"),
     DIAGONAL_SPLIT("Diagonal Split")
+}
+
+enum class TearsFxStyle(val displayName: String) {
+    OFF("Off"),
+    GLISTENING("Glistening"),
+    FLOWING("Flowing"),
+    HEAVY_STREAM("Heavy Stream")
+}
+
+data class TearsFxConfig(
+    val style: TearsFxStyle = TearsFxStyle.OFF,
+    val intensity: Float = 0.75f,
+    val speed: Float = 1.0f
+) {
+    val isActive: Boolean get() = style != TearsFxStyle.OFF && intensity > 0.01f
+}
+
+enum class ShadowMode(val displayName: String) {
+    GROUND_ELLIPSE("Ground Shadow"),
+    DROP_SHADOW("Drop Shadow")
+}
+
+data class ShadowConfig(
+    val enabled: Boolean = false,
+    val mode: ShadowMode = ShadowMode.GROUND_ELLIPSE,
+    val opacity: Float = 0.42f,
+    val softness: Float = 0.45f,
+    val scaleX: Float = 1.0f,
+    val scaleY: Float = 0.32f,
+    val offsetX: Float = 0f,
+    val offsetY: Float = 0f,
+    val colorHex: String = "#0B101B"
+) {
+    val isActive: Boolean get() = enabled && opacity > 0.01f
+}
+
+data class ClipColorAdjust(
+    val brightness: Float = 0f,   // -1f..1f
+    val contrast: Float = 1f,     // 0.2f..2.5f
+    val saturation: Float = 1f,   // 0f..2.5f
+    val hueDeg: Float = 0f,       // -180f..180f
+    val warmth: Float = 0f        // -1f..1f
+) {
+    val isActive: Boolean
+        get() = kotlin.math.abs(brightness) > 0.005f ||
+            kotlin.math.abs(contrast - 1f) > 0.005f ||
+            kotlin.math.abs(saturation - 1f) > 0.005f ||
+            kotlin.math.abs(hueDeg) > 0.5f ||
+            kotlin.math.abs(warmth) > 0.005f
+}
+
+data class ClipMaskConfig(
+    val type: ClipMaskType = ClipMaskType.NONE,
+    val centerX: Float = 0f,      // Normalized offset -0.5..0.5 from clip center
+    val centerY: Float = 0f,      // Normalized offset -0.5..0.5 from clip center
+    val width: Float = 0.72f,     // Normalized 0.1..1.4
+    val height: Float = 0.72f,    // Normalized 0.1..1.4
+    val feather: Float = 0f,      // 0f..1f soft edge feather
+    val invert: Boolean = false
+) {
+    fun resolvedType(legacyMaskType: ClipMaskType): ClipMaskType =
+        if (type != ClipMaskType.NONE) type else legacyMaskType
 }
 
 enum class LayerBlendMode(val displayName: String) {
@@ -731,10 +795,15 @@ data class TimelineClip(
     val customAnimationId: String? = null,
     val maskType: ClipMaskType = ClipMaskType.NONE,
     val maskRadius: Float = 0.46f,
+    val maskConfig: ClipMaskConfig = ClipMaskConfig(),
+    val tearsConfig: TearsFxConfig = TearsFxConfig(),
+    val shadowConfig: ShadowConfig = ShadowConfig(),
+    val colorAdjust: ClipColorAdjust = ClipColorAdjust(),
     val motionPathControlPoints: List<NormalizedPoint> = emptyList(),
     val lipSyncAudioClipId: String? = null
 ) {
     val endFrame: Int get() = startFrame + durationFrames
+    val effectiveMaskType: ClipMaskType get() = maskConfig.resolvedType(maskType)
 }
 
 enum class ParallaxDepthPreset(val displayName: String, val depth: Float) {

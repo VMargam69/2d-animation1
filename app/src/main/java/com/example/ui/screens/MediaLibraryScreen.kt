@@ -45,6 +45,7 @@ fun MediaLibraryScreen(
     onImportUri: (Uri, MediaAssetType?) -> Unit,
     onPlaceOnCanvas: (LocalMediaAsset, asBackground: Boolean) -> Unit,
     onDeleteAsset: (LocalMediaAsset) -> Unit,
+    isReplaceMode: Boolean = false,
     onClose: () -> Unit
 ) {
     BackHandler { onClose() }
@@ -94,9 +95,14 @@ fun MediaLibraryScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Rounded.PermMedia, null, tint = VioletLayer, modifier = Modifier.size(22.dp))
+                        Icon(
+                            if (isReplaceMode) Icons.Rounded.SwapHoriz else Icons.Rounded.PermMedia,
+                            null,
+                            tint = if (isReplaceMode) ElectricCyan else VioletLayer,
+                            modifier = Modifier.size(22.dp)
+                        )
                         Text(
-                            text = stringResource(R.string.media_title),
+                            text = if (isReplaceMode) "Replace Media" else stringResource(R.string.media_title),
                             style = MaterialTheme.typography.titleLarge,
                             color = StudioTextPrimary
                         )
@@ -214,7 +220,7 @@ fun MediaLibraryScreen(
                         MediaAssetCard(
                             asset = asset,
                             onSelect = {
-                                if (asset.type == MediaAssetType.AUDIO) {
+                                if (isReplaceMode || asset.type == MediaAssetType.AUDIO) {
                                     onPlaceOnCanvas(asset, false)
                                 } else {
                                     pendingPlacementAsset = asset

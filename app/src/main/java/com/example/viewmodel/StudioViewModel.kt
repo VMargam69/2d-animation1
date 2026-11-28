@@ -61,6 +61,10 @@ enum class ActiveEditorSheet {
     WAVEFORM_EXPORT,
     DIRECTOR_SCRIPT_STUDIO,
     IK_STUDIO,
+    TEARS_FX_INSPECTOR,
+    SHADOW_INSPECTOR,
+    COLOR_ADJUST_INSPECTOR,
+    MASK_INSPECTOR,
     TUTORIAL_GUIDE
 }
 
@@ -81,6 +85,7 @@ data class StudioUiState(
     val mediaAssets: List<LocalMediaAsset> = BuiltInCatalog.bundledMediaAssets,
     val selectedCharacterIdForLibrary: String? = null,
     val editingClipForAnimationSwapId: String? = null,
+    val replacingClipId: String? = null,
     val selectedClipId: String? = null,
     val selectedLayerId: String? = null,
     val isTimelineMultiSelectMode: Boolean = false,
@@ -292,6 +297,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 returnDestinationAfterLibrary = from,
                 editingClipForAnimationSwapId = null,
+                replacingClipId = null,
+                destination = StudioDestination.CHARACTER_LIBRARY,
+                activeSheet = ActiveEditorSheet.NONE
+            )
+        }
+    }
+
+    fun openCharacterLibraryForReplace(clipId: String) {
+        stopPlayback()
+        router.navigate(HashRoute.CharacterLibrary)
+        _uiState.update {
+            it.copy(
+                returnDestinationAfterLibrary = StudioDestination.EDITOR,
+                editingClipForAnimationSwapId = null,
+                replacingClipId = clipId,
                 destination = StudioDestination.CHARACTER_LIBRARY,
                 activeSheet = ActiveEditorSheet.NONE
             )
@@ -305,6 +325,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 selectedCharacterIdForLibrary = characterId,
                 editingClipForAnimationSwapId = swapClipId,
+                replacingClipId = null,
                 destination = StudioDestination.ANIMATION_LIBRARY
             )
         }
@@ -316,10 +337,77 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update {
             it.copy(
                 returnDestinationAfterLibrary = from,
+                replacingClipId = null,
                 destination = StudioDestination.MEDIA_LIBRARY,
                 activeSheet = ActiveEditorSheet.NONE
             )
         }
+    }
+
+    fun openMediaLibraryForReplace(clipId: String) {
+        stopPlayback()
+        router.navigate(HashRoute.MediaLibrary)
+        _uiState.update {
+            it.copy(
+                returnDestinationAfterLibrary = StudioDestination.EDITOR,
+                replacingClipId = clipId,
+                destination = StudioDestination.MEDIA_LIBRARY,
+                activeSheet = ActiveEditorSheet.NONE
+            )
+        }
+    }
+
+    fun replaceSelectedClipCharacter(character: CharacterRigDefinition) {
+        val state = _uiState.value
+        val targetClipId = state.replacingClipId ?: state.selectedClipId ?: return
+        val updated = ProjectMutator.replaceClipCharacter(
+            project = state.project,
+            clipId = targetClipId,
+            newCharacterId = character.id,
+            newCharacterName = character.name
+        )
+        commitProjectChange(updated)
+        prefetchActiveScene(updated)
+        router.popUpTo(HashRoute.HASH_EDITOR)
+        if (router.currentRoute !is HashRoute.AnimationEditor) {
+            router.navigate(HashRoute.AnimationEditor(updated.id))
+        }
+        _uiState.update {
+            it.copy(
+                replacingClipId = null,
+                selectedClipId = targetClipId,
+                destination = StudioDestination.EDITOR,
+                activeSheet = ActiveEditorSheet.NONE
+            )
+        }
+        showStatus("Replaced character with ${character.name}")
+    }
+
+    fun replaceSelectedClipMedia(asset: LocalMediaAsset) {
+        val state = _uiState.value
+        val targetClipId = state.replacingClipId ?: state.selectedClipId ?: return
+        val updated = ProjectMutator.replaceClipMedia(
+            project = state.project,
+            clipId = targetClipId,
+            newImagePath = asset.localFilePath,
+            newBundledBgKey = asset.bundledResKey,
+            newName = asset.name
+        )
+        commitProjectChange(updated)
+        prefetchActiveScene(updated)
+        router.popUpTo(HashRoute.HASH_EDITOR)
+        if (router.currentRoute !is HashRoute.AnimationEditor) {
+            router.navigate(HashRoute.AnimationEditor(updated.id))
+        }
+        _uiState.update {
+            it.copy(
+                replacingClipId = null,
+                selectedClipId = targetClipId,
+                destination = StudioDestination.EDITOR,
+                activeSheet = ActiveEditorSheet.NONE
+            )
+        }
+        showStatus("Replaced media with ${asset.name}")
     }
 
     fun navigateBack(): Boolean {
@@ -343,7 +431,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 is HashRoute.CharacterSetup -> StudioDestination.CHARACTER_SETUP
                 is HashRoute.CharacterMaker -> StudioDestination.CHARACTER_MAKER
             }
-            _uiState.update { it.copy(destination = dest, isDrawingMode = false) }
+            _uiState.update {
+                it.copy(
+                    destination = dest,
+                    isDrawingMode = false,
+                    replacingClipId = if (dest == StudioDestination.EDITOR) null else it.replacingClipId
+                )
+            }
         }
         return popped
     }
@@ -1996,6 +2090,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun updateLayerParallaxDepth(layerId: String, depth: Float) {
         val updated = ProjectMutator.updateLayerParallaxDepth(_uiState.value.project, layerId, depth)
         commitProjectChange(updated)
+    }
+
+    fun duplicateLayer(layerId: String) {
+        val current = _uiState.value.project
+        val sourceName = current.activeScene.layers.firstOrNull { it.id == layerId }?.name ?: return
+        val (updated, newLayerId) = ProjectMutator.duplicateLayer(current, layerId)
+        if (newLayerId != null && updated != current) {
+            commitProjectChange(updated)
+            val newClipId = updated.activeScene.clips.firstOrNull { it.layerId == newLayerId }?.id
+            _uiState.update {
+                it.copy(
+                    selectedLayerId = newLayerId,
+                    selectedClipId = newClipId ?: it.selectedClipId
+                )
+            }
+            showStatus("Duplicated \"$sourceName\"")
+        }
     }
 
     fun upsertDialogueOverlay(beat: DialogueOverlayBeat) {

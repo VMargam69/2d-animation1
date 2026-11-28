@@ -105,7 +105,11 @@ object ProceduralRigRenderer {
         mouthSlotOverride: AtlasPartSlot? = null,
         atlasSlices: Map<AtlasPartSlot, Bitmap>? = null,
         organicFace: OrganicFacialState? = null,
-        propSwayState: PropSwayState? = null
+        propSwayState: PropSwayState? = null,
+        tearsConfig: TearsFxConfig = TearsFxConfig(),
+        globalFrame: Int = 0,
+        fps: Int = 24,
+        clipSeed: Int = 0
     ) {
         val p = ((phase % 1f) + 1f) % 1f
         val swayDeg = when {
@@ -155,7 +159,11 @@ object ProceduralRigRenderer {
                 propScale = propScale,
                 drawGhostFallbackWhenEmpty = resolvedSlices.isEmpty(),
                 skipFaceOverlays = rig.spriteAtlasRig?.faceBakedInHead == true,
-                organicFace = organicFace
+                organicFace = organicFace,
+                tearsConfig = tearsConfig,
+                globalFrame = globalFrame,
+                fps = fps,
+                clipSeed = clipSeed
             )
             canvas.restore()
             return
@@ -210,6 +218,22 @@ object ProceduralRigRenderer {
                     canvas.restore()
                 }
             }
+            if (tearsConfig.isActive) {
+                val alphaIntCustom = (alpha.coerceIn(0f, 1f) * 255).toInt()
+                ClipVisualFxEngine.drawTearsAtEyes(
+                    canvas = canvas,
+                    config = tearsConfig,
+                    eyeAnchors = listOf(
+                        ClipVisualFxEngine.TearEyeAnchor(-9f * rigScale, -56f * rigScale, -1f),
+                        ClipVisualFxEngine.TearEyeAnchor(9f * rigScale, -56f * rigScale, 1f)
+                    ),
+                    scale = rigScale,
+                    globalFrame = globalFrame,
+                    fps = fps,
+                    alphaInt = alphaIntCustom,
+                    seed = clipSeed
+                )
+            }
             canvas.restore()
             return
         }
@@ -241,6 +265,10 @@ object ProceduralRigRenderer {
                 customPropBitmap = customPropBitmap,
                 propScale = propScale,
                 organicFace = organicFace,
+                tearsConfig = tearsConfig,
+                globalFrame = globalFrame,
+                fps = fps,
+                clipSeed = clipSeed,
                 drawAccessory = { c, acc, sc, acCol, prCol, st, al ->
                     drawHeadAccessory(c, acc, sc, acCol, prCol, st, al)
                 }

@@ -4570,4 +4570,280 @@ class AnimationEngineTest {
         assertNull(noSnap.snappedGuideFrame)
         assertEquals(16, noSnap.snappedStartFrame)
     }
+
+    @Test
+    fun `Pro Tools 1 - Replace character and media swaps asset while preserving 100 percent of keyframes, IK pose, motionPath, FX, and sway`() {
+        val char1 = BuiltInCatalog.builtInCharacters[0]
+        val char2 = BuiltInCatalog.builtInCharacters[1]
+        val origClip = TimelineClip(
+            id = "c_rep_char",
+            layerId = "l_char",
+            name = "${char1.name} • Walk",
+            startFrame = 12,
+            durationFrames = 64,
+            characterId = char1.id,
+            orientation = CharacterOrientation.SIDE,
+            animationPresetType = AnimationPresetType.WALK,
+            facialExpression = FacialExpression.SAD,
+            propSwayEnabled = true,
+            propSwayStrength = 1.45f,
+            tearsConfig = TearsFxConfig(TearsFxStyle.FLOWING, 0.85f, 1.2f),
+            shadowConfig = ShadowConfig(enabled = true, mode = ShadowMode.GROUND_ELLIPSE, opacity = 0.5f),
+            colorAdjust = ClipColorAdjust(brightness = 0.1f, contrast = 1.2f, saturation = 1.3f, warmth = 0.25f),
+            maskType = ClipMaskType.ROUNDED_RECT,
+            maskConfig = ClipMaskConfig(type = ClipMaskType.ROUNDED_RECT, width = 0.8f, height = 0.9f, invert = true),
+            motionPathControlPoints = listOf(NormalizedPoint(0.2f, 0.7f), NormalizedPoint(0.8f, 0.5f)),
+            keyframes = listOf(
+                TransformKeyframe(frame = 0, x = 0.2f, y = 0.7f, poseOffsets = PoseKeyframeOffsets(headNodOffset = 14f, rightArmOffset = -28f)),
+                TransformKeyframe(frame = 32, x = 0.75f, y = 0.65f, easing = EasingType.EASE_IN_OUT)
+            )
+        )
+        val imgClip = TimelineClip(
+            id = "c_rep_img",
+            layerId = "l_img",
+            name = "Old BG",
+            startFrame = 0,
+            durationFrames = 80,
+            imagePath = "/old/path.png",
+            bundledBgKey = "bg_old",
+            inlineSvgAssetId = "svg_old",
+            shadowConfig = ShadowConfig(enabled = true, mode = ShadowMode.DROP_SHADOW),
+            colorAdjust = ClipColorAdjust(warmth = -0.35f),
+            keyframes = listOf(TransformKeyframe(frame = 0, x = 0.5f, y = 0.5f, scaleX = 1.2f))
+        )
+        val doc = ProjectDocument(
+            scenes = listOf(
+                AnimationScene(
+                    layers = listOf(
+                        AnimationLayer(id = "l_img", name = "Img", type = LayerType.IMAGE, orderIndex = 0),
+                        AnimationLayer(id = "l_char", name = "Char", type = LayerType.CHARACTER, orderIndex = 1)
+                    ),
+                    clips = listOf(imgClip, origClip)
+                )
+            )
+        )
+
+        val swappedCharDoc = ProjectMutator.replaceClipCharacter(doc, origClip.id, char2.id, char2.name)
+        val swappedChar = swappedCharDoc.activeScene.clips.first { it.id == origClip.id }
+        assertEquals(char2.id, swappedChar.characterId)
+        assertTrue(swappedChar.name.startsWith(char2.name))
+        assertEquals(origClip.startFrame, swappedChar.startFrame)
+        assertEquals(origClip.durationFrames, swappedChar.durationFrames)
+        assertEquals(origClip.keyframes, swappedChar.keyframes)
+        assertEquals(origClip.motionPathControlPoints, swappedChar.motionPathControlPoints)
+        assertEquals(origClip.orientation, swappedChar.orientation)
+        assertEquals(origClip.animationPresetType, swappedChar.animationPresetType)
+        assertEquals(origClip.facialExpression, swappedChar.facialExpression)
+        assertEquals(origClip.propSwayStrength, swappedChar.propSwayStrength, 0.0001f)
+        assertEquals(origClip.tearsConfig, swappedChar.tearsConfig)
+        assertEquals(origClip.shadowConfig, swappedChar.shadowConfig)
+        assertEquals(origClip.colorAdjust, swappedChar.colorAdjust)
+        assertEquals(origClip.maskConfig, swappedChar.maskConfig)
+
+        val swappedImgDoc = ProjectMutator.replaceClipMedia(swappedCharDoc, imgClip.id, "/new/bg.png", "bg_new", "New BG")
+        val swappedImg = swappedImgDoc.activeScene.clips.first { it.id == imgClip.id }
+        assertEquals("/new/bg.png", swappedImg.imagePath)
+        assertEquals("bg_new", swappedImg.bundledBgKey)
+        assertNull(swappedImg.inlineSvgAssetId)
+        assertEquals("New BG", swappedImg.name)
+        assertEquals(imgClip.keyframes, swappedImg.keyframes)
+        assertEquals(imgClip.shadowConfig, swappedImg.shadowConfig)
+        assertEquals(imgClip.colorAdjust, swappedImg.colorAdjust)
+    }
+
+    @Test
+    fun `Pro Tools 2 - ClipVisualFxEngine Tears FX is deterministic per frame and animates downward across all styles`() {
+        val offDrops = com.example.engine.ClipVisualFxEngine.computeTearDrops(
+            TearsFxConfig(TearsFxStyle.OFF, 0.8f, 1.0f), eyeX = 10f, eyeY = 2f, scale = 1.5f, globalFrame = 15, fps = 24, seed = 42
+        )
+        assertTrue(offDrops.isEmpty())
+
+        val glistening = com.example.engine.ClipVisualFxEngine.computeTearDrops(
+            TearsFxConfig(TearsFxStyle.GLISTENING, 0.8f, 1.0f), eyeX = 10f, eyeY = 2f, scale = 1.5f, globalFrame = 15, fps = 24, seed = 42
+        )
+        assertTrue("Glistening should produce eye pool + corner glint", glistening.size >= 2)
+
+        val flowingA = com.example.engine.ClipVisualFxEngine.computeTearDrops(
+            TearsFxConfig(TearsFxStyle.FLOWING, 0.9f, 1.2f), eyeX = 10f, eyeY = 2f, scale = 1.5f, globalFrame = 20, fps = 24, seed = 7
+        )
+        val flowingB = com.example.engine.ClipVisualFxEngine.computeTearDrops(
+            TearsFxConfig(TearsFxStyle.FLOWING, 0.9f, 1.2f), eyeX = 10f, eyeY = 2f, scale = 1.5f, globalFrame = 20, fps = 24, seed = 7
+        )
+        val flowingLater = com.example.engine.ClipVisualFxEngine.computeTearDrops(
+            TearsFxConfig(TearsFxStyle.FLOWING, 0.9f, 1.2f), eyeX = 10f, eyeY = 2f, scale = 1.5f, globalFrame = 26, fps = 24, seed = 7
+        )
+        assertEquals("Same frame & seed must be bit-identical for preview & export", flowingA, flowingB)
+        assertNotEquals("Advancing frame must animate falling teardrops", flowingA, flowingLater)
+
+        val heavy = com.example.engine.ClipVisualFxEngine.computeTearDrops(
+            TearsFxConfig(TearsFxStyle.HEAVY_STREAM, 1.0f, 1.5f), eyeX = 10f, eyeY = 2f, scale = 1.5f, globalFrame = 30, fps = 24, seed = 9
+        )
+        assertTrue("Heavy stream must include animated stream ribbon", heavy.any { it.isStreamRibbon })
+        assertTrue("Heavy stream must include splash droplets", heavy.count { !it.isStreamRibbon } >= 4)
+    }
+
+    @Test
+    fun `Pro Tools 3 - Dynamic Ground Shadow scales and softens naturally when character jumps`() {
+        val cfg = ShadowConfig(enabled = true, mode = ShadowMode.GROUND_ELLIPSE, opacity = 0.50f, softness = 0.35f, scaleX = 1.0f, scaleY = 0.32f)
+        val grounded = com.example.engine.ClipVisualFxEngine.computeShadowGeometry(
+            config = cfg, isCharacter = true, baseScale = 2.0f, bodyBobY = 0f, clipWidthPx = 220f, clipHeightPx = 300f
+        )
+        val midJump = com.example.engine.ClipVisualFxEngine.computeShadowGeometry(
+            config = cfg, isCharacter = true, baseScale = 2.0f, bodyBobY = -42f, clipWidthPx = 220f, clipHeightPx = 300f
+        )
+        assertTrue("Jump must shrink shadow radiusX", midJump.radiusX < grounded.radiusX)
+        assertTrue("Jump must shrink shadow radiusY", midJump.radiusY < grounded.radiusY)
+        assertTrue("Jump must reduce shadow opacity naturally", midJump.effectiveOpacity < grounded.effectiveOpacity)
+        assertTrue("Jump must soften shadow penumbra", midJump.softness > grounded.softness)
+        assertEquals(1f, grounded.jumpFactor, 0.001f)
+        assertTrue(midJump.jumpFactor in 0.42f..0.9f)
+
+        val drop = com.example.engine.ClipVisualFxEngine.computeShadowGeometry(
+            config = cfg.copy(mode = ShadowMode.DROP_SHADOW),
+            isCharacter = false, baseScale = 1.5f, bodyBobY = 0f, clipWidthPx = 240f, clipHeightPx = 200f
+        )
+        assertFalse(drop.isGroundMode)
+        assertTrue(drop.centerX > 0f && drop.centerY > 0f)
+    }
+
+    @Test
+    fun `Pro Tools 4 - Colour Adjust 4x5 ColorMatrix computes identity, brightness, contrast, grayscale saturation, hue, and warmth`() {
+        val id = com.example.engine.ClipVisualFxEngine.buildColorAdjustMatrix(ClipColorAdjust())
+        assertEquals(20, id.size)
+        assertEquals(1f, id[0], 0.0001f)
+        assertEquals(1f, id[6], 0.0001f)
+        assertEquals(1f, id[12], 0.0001f)
+        assertEquals(0f, id[4], 0.0001f)
+
+        val bright = com.example.engine.ClipVisualFxEngine.buildColorAdjustMatrix(ClipColorAdjust(brightness = 0.5f))
+        assertEquals(60f, bright[4], 0.1f)
+        assertEquals(60f, bright[9], 0.1f)
+        assertEquals(60f, bright[14], 0.1f)
+
+        val contrast = com.example.engine.ClipVisualFxEngine.buildColorAdjustMatrix(ClipColorAdjust(contrast = 1.5f))
+        assertEquals(1.5f, contrast[0], 0.001f)
+        assertEquals(-64f, contrast[4], 0.1f)
+
+        val gray = com.example.engine.ClipVisualFxEngine.buildColorAdjustMatrix(ClipColorAdjust(saturation = 0f))
+        // All 3 RGB rows become identical luminance weights [0.213, 0.715, 0.072]
+        assertEquals(gray[0], gray[5], 0.001f)
+        assertEquals(gray[1], gray[6], 0.001f)
+        assertEquals(gray[2], gray[7], 0.001f)
+
+        val warm = com.example.engine.ClipVisualFxEngine.buildColorAdjustMatrix(ClipColorAdjust(warmth = 0.8f))
+        assertTrue("Positive warmth boosts red gain above blue gain", warm[0] > warm[12])
+        assertTrue("Positive warmth shifts red offset above blue offset", warm[4] > warm[14])
+
+        val hue = com.example.engine.ClipVisualFxEngine.buildColorAdjustMatrix(ClipColorAdjust(hueDeg = 90f))
+        assertTrue("Hue rotation 90° mixes blue into red channel", kotlin.math.abs(hue[2]) > 0.9f)
+        assertTrue("Hue rotation 90° mixes green into blue channel", kotlin.math.abs(hue[11]) > 1.0f)
+        assertEquals("Hue rotation preserves white point row sum", 1f, hue[0] + hue[1] + hue[2], 0.001f)
+    }
+
+    @Test
+    fun `Pro Tools 5 - Duplicate Layer deep-copies cleanly above original and all 7 features are registered in Blueprint and DirectorScript`() {
+        val baseLayer = AnimationLayer(id = "l_hero", name = "Hero", type = LayerType.CHARACTER, orderIndex = 0, parallaxDepth = 1.25f)
+        val topLayer = AnimationLayer(id = "l_fg", name = "Foreground", type = LayerType.IMAGE, orderIndex = 1)
+        val heroClip = TimelineClip(
+            id = "c_hero",
+            layerId = baseLayer.id,
+            name = "Hero Walk",
+            characterId = BuiltInCatalog.builtInCharacters.first().id,
+            tearsConfig = TearsFxConfig(TearsFxStyle.FLOWING, 0.7f, 1.1f),
+            shadowConfig = ShadowConfig(enabled = true),
+            colorAdjust = ClipColorAdjust(contrast = 1.25f),
+            maskConfig = ClipMaskConfig(type = ClipMaskType.LINEAR_SPLIT, width = 0.6f, invert = true)
+        )
+        val doc = ProjectDocument(
+            scenes = listOf(AnimationScene(layers = listOf(baseLayer, topLayer), clips = listOf(heroClip)))
+        )
+
+        val (dupDoc, dupLayerId) = ProjectMutator.duplicateLayer(doc, baseLayer.id)
+        assertNotNull(dupLayerId)
+        val sortedLayers = dupDoc.activeScene.layers.sortedBy { it.orderIndex }
+        assertEquals(3, sortedLayers.size)
+        assertEquals("l_hero", sortedLayers[0].id)
+        assertEquals(dupLayerId, sortedLayers[1].id)
+        assertEquals("Hero (Copy)", sortedLayers[1].name)
+        assertEquals(1.25f, sortedLayers[1].parallaxDepth, 0.001f)
+        assertEquals("l_fg", sortedLayers[2].id)
+
+        val dupClips = dupDoc.activeScene.clips.filter { it.layerId == dupLayerId }
+        assertEquals(1, dupClips.size)
+        assertNotEquals(heroClip.id, dupClips.first().id)
+        assertEquals(heroClip.tearsConfig, dupClips.first().tearsConfig)
+        assertEquals(heroClip.shadowConfig, dupClips.first().shadowConfig)
+        assertEquals(heroClip.colorAdjust, dupClips.first().colorAdjust)
+        assertEquals(heroClip.maskConfig, dupClips.first().maskConfig)
+
+        // Verify StudioCapabilityRegistry & AIBlueprintExporter dynamically expose all 7 features
+        val caps = com.example.engine.StudioCapabilityRegistry.introspect()
+        assertTrue(caps.tearsFxStyles.any { it.id == "HEAVY_STREAM" })
+        assertTrue(caps.shadowModes.any { it.id == "GROUND_ELLIPSE" })
+        assertTrue(caps.maskTypes.any { it.id == "RECTANGLE" } && caps.maskTypes.any { it.id == "LINEAR_SPLIT" })
+        val opIds = caps.clipOperations.map { it.id }.toSet()
+        assertTrue(setOf("replace", "tears", "shadow", "adjust", "mask", "duplicateLayer", "sort").all { it in opIds })
+
+        val bp = com.example.engine.AIBlueprintExporter.buildBlueprint(dupDoc, BuiltInCatalog.builtInCharacters, BuiltInCatalog.bundledMediaAssets)
+        assertTrue(bp.capabilities.tearsFxStyles.contains("FLOWING"))
+        assertTrue(bp.capabilities.shadowModes.contains("DROP_SHADOW"))
+        assertTrue(bp.capabilities.maskTypes.contains("LINEAR_SPLIT"))
+
+        // Verify DirectorScriptReceiver parses clip visual FX + executes replace, duplicateLayer, and sort
+        val char1 = BuiltInCatalog.builtInCharacters[0].id
+        val char2 = BuiltInCatalog.builtInCharacters[1].id
+        val scriptJson = """
+            {
+              "format": "framecraft.director_script",
+              "schemaVersion": 3,
+              "scenes": [{
+                "name": "FX Test Scene",
+                "durationSec": 4.0,
+                "layers": [
+                  { "id": "lay_a", "name": "Actor A", "type": "CHARACTER", "zIndex": 0 },
+                  { "id": "lay_b", "name": "Overlay", "type": "TEXT", "zIndex": 1 }
+                ],
+                "clips": [
+                  {
+                    "id": "clip_a",
+                    "layerId": "lay_a",
+                    "characterId": "$char1",
+                    "startSec": 0.0,
+                    "durationSec": 3.0,
+                    "tears": { "style": "HEAVY_STREAM", "intensity": 0.9, "speed": 1.4 },
+                    "shadow": { "enabled": true, "mode": "GROUND_ELLIPSE", "opacity": 0.55 },
+                    "colorAdjust": { "brightness": 0.15, "contrast": 1.3, "warmth": 0.4 },
+                    "mask": { "type": "RECTANGLE", "width": 0.8, "height": 0.7, "feather": 0.2, "invert": true }
+                  }
+                ],
+                "clipOperations": [
+                  { "op": "replace", "targetClipId": "clip_a", "newCharacterId": "$char2" },
+                  { "op": "duplicateLayer", "targetLayerId": "lay_a", "newLayerId": "lay_a_dup" },
+                  { "op": "sort", "targetLayerId": "lay_a", "zOrderAction": "BRING_TO_FRONT" }
+                ]
+              }]
+            }
+        """.trimIndent()
+        val compileResult = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = scriptJson,
+            currentProject = dupDoc,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = BuiltInCatalog.bundledMediaAssets,
+            importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE
+        )
+        assertTrue("Script compile failed: ${compileResult.exceptionOrNull()?.message}", compileResult.isSuccess)
+        val applied = compileResult.getOrThrow()
+        assertTrue("Script validation failed: ${applied.report.errors}", applied.report.isValid)
+        val outScene = applied.project.scenes.first()
+        val outClip = outScene.clips.first { it.id == "clip_a" }
+        assertEquals(char2, outClip.characterId)
+        assertEquals(TearsFxStyle.HEAVY_STREAM, outClip.tearsConfig.style)
+        assertTrue(outClip.shadowConfig.enabled)
+        assertEquals(1.3f, outClip.colorAdjust.contrast, 0.001f)
+        assertEquals(ClipMaskType.RECTANGLE, outClip.effectiveMaskType)
+        assertTrue(outClip.maskConfig.invert)
+        assertTrue("Duplicate layer must exist", outScene.layers.any { it.id == "lay_a_dup" })
+        assertEquals("Sort BRING_TO_FRONT must move lay_a to highest orderIndex", "lay_a", outScene.layers.maxByOrNull { it.orderIndex }?.id)
+    }
 }

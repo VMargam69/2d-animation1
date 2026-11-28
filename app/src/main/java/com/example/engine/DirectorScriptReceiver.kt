@@ -275,7 +275,39 @@ object DirectorScriptReceiver {
 
     data class ScriptMaskDto(
         val type: String? = "NONE",
-        val radius: Float? = 0.46f
+        val radius: Float? = 0.46f,
+        val centerX: Float? = 0f,
+        val centerY: Float? = 0f,
+        val width: Float? = 0.72f,
+        val height: Float? = 0.72f,
+        val feather: Float? = 0f,
+        val invert: Boolean? = false
+    )
+
+    data class ScriptTearsDto(
+        val style: String? = "OFF",
+        val intensity: Float? = 0.75f,
+        val speed: Float? = 1.0f
+    )
+
+    data class ScriptShadowDto(
+        val enabled: Boolean? = true,
+        val mode: String? = "GROUND_ELLIPSE",
+        val opacity: Float? = 0.42f,
+        val softness: Float? = 0.45f,
+        val scaleX: Float? = 1.0f,
+        val scaleY: Float? = 0.32f,
+        val offsetX: Float? = 0f,
+        val offsetY: Float? = 0f,
+        val colorHex: String? = "#0B101B"
+    )
+
+    data class ScriptColorAdjustDto(
+        val brightness: Float? = 0f,
+        val contrast: Float? = 1f,
+        val saturation: Float? = 1f,
+        val hueDeg: Float? = 0f,
+        val warmth: Float? = 0f
     )
 
     data class ScriptPointDto(
@@ -323,6 +355,15 @@ object DirectorScriptReceiver {
     data class ScriptClipOperationDto(
         val op: String? = null,
         val targetClipId: String? = null,
+        val targetLayerId: String? = null,
+        val newLayerId: String? = null,
+        val zOrderAction: String? = null,
+        val newCharacterId: String? = null,
+        val newImageAssetId: String? = null,
+        val tears: ScriptTearsDto? = null,
+        val shadow: ScriptShadowDto? = null,
+        val colorAdjust: ScriptColorAdjustDto? = null,
+        val mask: ScriptMaskDto? = null,
         val atSec: Float? = null,
         val atFrame: Int? = null,
         val enabled: Boolean? = null,
@@ -375,6 +416,10 @@ object DirectorScriptReceiver {
         val flipX: Boolean? = null,
         val flipY: Boolean? = null,
         val mask: ScriptMaskDto? = null,
+        val tears: ScriptTearsDto? = null,
+        val shadow: ScriptShadowDto? = null,
+        val colorAdjust: ScriptColorAdjustDto? = null,
+        val adjust: ScriptColorAdjustDto? = null,
         val motionPath: List<ScriptPointDto>? = null,
         val textContent: String? = null,
         val textColorHex: String? = null,
@@ -1007,15 +1052,21 @@ object DirectorScriptReceiver {
                     customAnimationId = cDto.customAnimationId?.takeIf { mergedCustomAnims.containsKey(it) },
                     maskType = parseEnumIgnoreCase<ClipMaskType>(cDto.mask?.type) ?: ClipMaskType.NONE,
                     maskRadius = (cDto.mask?.radius ?: 0.46f).coerceIn(0.08f, 0.95f),
+                    maskConfig = buildMaskConfigFromDto(cDto.mask),
+                    tearsConfig = buildTearsConfigFromDto(cDto.tears),
+                    shadowConfig = buildShadowConfigFromDto(cDto.shadow),
+                    colorAdjust = buildColorAdjustFromDto(cDto.colorAdjust ?: cDto.adjust),
                     motionPathControlPoints = motionPoints,
                     lipSyncAudioClipId = cDto.lipSyncAudioId
                 )
                 clips.add(clip)
             }
 
-            // Execute Clip Operations: split, flipX, flipY, duplicate, delete, speed, trim
+            // Execute Clip & Layer Operations: split, flipX, flipY, duplicate, delete, speed, trim, replace, tears, shadow, adjust, mask, duplicateLayer, sort
             executeClipOperations(
                 clips = clips,
+                layersById = layersById,
+                mediaById = mediaById,
                 operations = sceneDto.clipOperations.orEmpty(),
                 fps = fps,
                 sceneDurationFrames = sceneDurationFrames
@@ -1517,18 +1568,124 @@ object DirectorScriptReceiver {
         return byFrame.values.sortedBy { it.frame }
     }
 
+    private fun buildMaskConfigFromDto(dto: ScriptMaskDto?): ClipMaskConfig {
+        if (dto == null) return ClipMaskConfig()
+        val parsedType = parseEnumIgnoreCase<ClipMaskType>(dto.type) ?: ClipMaskType.NONE
+        return ClipMaskConfig(
+            type = parsedType,
+            centerX = (dto.centerX ?: 0f).coerceIn(-0.6f, 0.6f),
+            centerY = (dto.centerY ?: 0f).coerceIn(-0.6f, 0.6f),
+            width = (dto.width ?: ((dto.radius ?: 0.36f) * 2f)).coerceIn(0.08f, 1.5f),
+            height = (dto.height ?: ((dto.radius ?: 0.36f) * 2f)).coerceIn(0.08f, 1.5f),
+            feather = (dto.feather ?: 0f).coerceIn(0f, 1f),
+            invert = dto.invert ?: false
+        )
+    }
+
+    private fun buildTearsConfigFromDto(dto: ScriptTearsDto?): TearsFxConfig {
+        if (dto == null) return TearsFxConfig()
+        val parsedStyle = parseEnumIgnoreCase<TearsFxStyle>(dto.style) ?: TearsFxStyle.OFF
+        return TearsFxConfig(
+            style = parsedStyle,
+            intensity = (dto.intensity ?: 0.75f).coerceIn(0f, 1f),
+            speed = (dto.speed ?: 1.0f).coerceIn(0.5f, 2.0f)
+        )
+    }
+
+    private fun buildShadowConfigFromDto(dto: ScriptShadowDto?): ShadowConfig {
+        if (dto == null) return ShadowConfig()
+        val parsedMode = parseEnumIgnoreCase<ShadowMode>(dto.mode) ?: ShadowMode.GROUND_ELLIPSE
+        return ShadowConfig(
+            enabled = dto.enabled ?: true,
+            mode = parsedMode,
+            opacity = (dto.opacity ?: 0.42f).coerceIn(0f, 1f),
+            softness = (dto.softness ?: 0.45f).coerceIn(0f, 1f),
+            scaleX = (dto.scaleX ?: 1.0f).coerceIn(0.2f, 2.5f),
+            scaleY = (dto.scaleY ?: 0.32f).coerceIn(0.1f, 2.0f),
+            offsetX = (dto.offsetX ?: 0f).coerceIn(-0.6f, 0.6f),
+            offsetY = (dto.offsetY ?: 0f).coerceIn(-0.6f, 0.6f),
+            colorHex = dto.colorHex?.takeIf { it.isNotBlank() } ?: "#0B101B"
+        )
+    }
+
+    private fun buildColorAdjustFromDto(dto: ScriptColorAdjustDto?): ClipColorAdjust {
+        if (dto == null) return ClipColorAdjust()
+        return ClipColorAdjust(
+            brightness = (dto.brightness ?: 0f).coerceIn(-1f, 1f),
+            contrast = (dto.contrast ?: 1f).coerceIn(0.2f, 2.5f),
+            saturation = (dto.saturation ?: 1f).coerceIn(0f, 2.5f),
+            hueDeg = (dto.hueDeg ?: 0f).coerceIn(-180f, 180f),
+            warmth = (dto.warmth ?: 0f).coerceIn(-1f, 1f)
+        )
+    }
+
     /**
-     * Executes full Studio clip operations declared in `clipOperations[]`:
-     * `split`, `flipX`, `flipY`, `duplicate`, `delete`, `speed`, and `trim`.
+     * Executes full Studio clip & layer operations declared in `clipOperations[]`:
+     * `split`, `flipX`, `flipY`, `duplicate`, `delete`, `speed`, `trim`,
+     * `replace`, `tears`, `shadow`, `adjust`, `mask`, `duplicateLayer`, and `sort`.
      */
     private fun executeClipOperations(
         clips: MutableList<TimelineClip>,
+        layersById: LinkedHashMap<String, AnimationLayer>,
+        mediaById: Map<String, LocalMediaAsset>,
         operations: List<ScriptClipOperationDto>,
         fps: Int,
         sceneDurationFrames: Int
     ) {
         for (opDto in operations) {
             val opName = opDto.op?.trim()?.lowercase() ?: continue
+
+            // Layer-level operations
+            if (opName == "duplicatelayer" || opName == "duplicate_layer") {
+                val srcLayerId = opDto.targetLayerId
+                    ?: opDto.targetClipId?.let { cid -> clips.firstOrNull { it.id == cid }?.layerId }
+                    ?: continue
+                val srcLayer = layersById[srcLayerId] ?: continue
+                val newLayerId = opDto.newLayerId?.takeIf { it.isNotBlank() } ?: "${srcLayer.id}_copy"
+                val sortedAsc = layersById.values.sortedBy { it.orderIndex }.toMutableList()
+                val srcIdx = sortedAsc.indexOfFirst { it.id == srcLayerId }
+                if (srcIdx >= 0) {
+                    val copiedLayer = srcLayer.copy(
+                        id = newLayerId,
+                        name = "${srcLayer.name} (Copy)",
+                        isLocked = false
+                    )
+                    sortedAsc.add(srcIdx + 1, copiedLayer)
+                    layersById.clear()
+                    sortedAsc.forEachIndexed { idx, l -> layersById[l.id] = l.copy(orderIndex = idx) }
+                    val copiedClips = clips.filter { it.layerId == srcLayerId }.map { c ->
+                        c.copy(
+                            id = UUID.randomUUID().toString(),
+                            layerId = newLayerId
+                        )
+                    }
+                    clips.addAll(copiedClips)
+                }
+                continue
+            }
+
+            if (opName == "sort" || opName == "reorderlayer" || opName == "zorder") {
+                val targetLayerId = opDto.targetLayerId
+                    ?: opDto.targetClipId?.let { cid -> clips.firstOrNull { it.id == cid }?.layerId }
+                    ?: continue
+                val sortedAsc = layersById.values.sortedBy { it.orderIndex }.toMutableList()
+                val curIdx = sortedAsc.indexOfFirst { it.id == targetLayerId }
+                if (curIdx >= 0) {
+                    val item = sortedAsc.removeAt(curIdx)
+                    val action = opDto.zOrderAction?.trim()?.uppercase() ?: "BRING_TO_FRONT"
+                    when (action) {
+                        "BRING_TO_FRONT", "FRONT" -> sortedAsc.add(item)
+                        "SEND_TO_BACK", "BACK" -> sortedAsc.add(0, item)
+                        "BRING_FORWARD", "UP", "FORWARD" -> sortedAsc.add((curIdx + 1).coerceAtMost(sortedAsc.size), item)
+                        "SEND_BACKWARD", "DOWN", "BACKWARD" -> sortedAsc.add((curIdx - 1).coerceAtLeast(0), item)
+                        else -> sortedAsc.add(item)
+                    }
+                    layersById.clear()
+                    sortedAsc.forEachIndexed { idx, l -> layersById[l.id] = l.copy(orderIndex = idx) }
+                }
+                continue
+            }
+
             val targetId = opDto.targetClipId ?: continue
             val idx = clips.indexOfFirst { it.id == targetId }
             if (idx < 0) continue
@@ -1612,6 +1769,36 @@ object DirectorScriptReceiver {
                         durationFrames = newDur,
                         audioTrimStartMs = opDto.audioTrimStartMs ?: target.audioTrimStartMs,
                         audioTrimEndMs = opDto.audioTrimEndMs ?: target.audioTrimEndMs
+                    )
+                }
+                "replace" -> {
+                    val nextCharId = opDto.newCharacterId?.takeIf { it.isNotBlank() }
+                    val nextMedia = opDto.newImageAssetId?.let { mediaById[it] }
+                    clips[idx] = when {
+                        nextCharId != null -> target.copy(characterId = nextCharId)
+                        nextMedia != null -> target.copy(
+                            imagePath = nextMedia.localFilePath,
+                            bundledBgKey = nextMedia.bundledResKey,
+                            inlineSvgAssetId = null
+                        )
+                        else -> target
+                    }
+                }
+                "tears" -> {
+                    clips[idx] = target.copy(tearsConfig = buildTearsConfigFromDto(opDto.tears))
+                }
+                "shadow" -> {
+                    clips[idx] = target.copy(shadowConfig = buildShadowConfigFromDto(opDto.shadow))
+                }
+                "adjust", "coloradjust" -> {
+                    clips[idx] = target.copy(colorAdjust = buildColorAdjustFromDto(opDto.colorAdjust))
+                }
+                "mask" -> {
+                    val cfg = buildMaskConfigFromDto(opDto.mask)
+                    clips[idx] = target.copy(
+                        maskType = cfg.type,
+                        maskRadius = (opDto.mask?.radius ?: (cfg.width * 0.5f)).coerceIn(0.08f, 0.95f),
+                        maskConfig = cfg
                     )
                 }
             }

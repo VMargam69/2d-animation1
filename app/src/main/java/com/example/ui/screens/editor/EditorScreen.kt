@@ -83,8 +83,11 @@ fun EditorScreen(
     onSendLayerToBack: (String) -> Unit = {},
     onBringLayerForward: (String) -> Unit = {},
     onSendLayerBackward: (String) -> Unit = {},
+    onDuplicateLayer: (String) -> Unit = {},
     onUpdateLayerParallaxDepth: (String, Float) -> Unit = { _, _ -> },
     onDeleteLayer: (String) -> Unit,
+    onReplaceCharacterClip: (String) -> Unit = {},
+    onReplaceMediaClip: (String) -> Unit = {},
     onUpdateTransform: ((TransformKeyframe) -> TransformKeyframe) -> Unit,
     onUpdateSelectedClip: ((TimelineClip) -> TimelineClip) -> Unit,
     onSplitClip: () -> Unit,
@@ -357,6 +360,7 @@ fun EditorScreen(
                             onSendLayerToBack = onSendLayerToBack,
                             onBringLayerForward = onBringLayerForward,
                             onSendLayerBackward = onSendLayerBackward,
+                            onDuplicateLayer = onDuplicateLayer,
                             onDeleteLayer = onDeleteLayer,
                             onOpenLayerManager = { onOpenSheet(ActiveEditorSheet.LAYER_MANAGER) },
                             onTrimAudioClip = onTrimAudioClip,
@@ -521,6 +525,7 @@ fun EditorScreen(
                             onSendLayerToBack = onSendLayerToBack,
                             onBringLayerForward = onBringLayerForward,
                             onSendLayerBackward = onSendLayerBackward,
+                            onDuplicateLayer = onDuplicateLayer,
                             onDeleteLayer = onDeleteLayer,
                             onOpenLayerManager = { onOpenSheet(ActiveEditorSheet.LAYER_MANAGER) },
                             onTrimAudioClip = onTrimAudioClip,
@@ -657,7 +662,49 @@ fun EditorScreen(
                 onSplitClip = onSplitClip,
                 onDuplicateClip = onDuplicateClip,
                 onFlipHorizontal = { onFlipClip(true) },
-                onDeleteClip = onDeleteClip
+                onDeleteClip = onDeleteClip,
+                onReplaceClip = {
+                    val clip = state.selectedClip
+                    if (clip != null) {
+                        if (clip.characterId != null) {
+                            onReplaceCharacterClip(clip.id)
+                        } else {
+                            onReplaceMediaClip(clip.id)
+                        }
+                    }
+                },
+                onOpenTearsFx = { onOpenSheet(ActiveEditorSheet.TEARS_FX_INSPECTOR) },
+                onOpenShadowFx = { onOpenSheet(ActiveEditorSheet.SHADOW_INSPECTOR) },
+                onOpenColorAdjust = { onOpenSheet(ActiveEditorSheet.COLOR_ADJUST_INSPECTOR) },
+                onOpenMaskInspector = { onOpenSheet(ActiveEditorSheet.MASK_INSPECTOR) },
+                canBringSelectedLayerForward = run {
+                    val selLayerId = state.selectedClip?.layerId ?: state.selectedLayerId
+                    val sortedTopDown = activeScene.layers.sortedByDescending { it.orderIndex }
+                    val idx = sortedTopDown.indexOfFirst { it.id == selLayerId }
+                    idx > 0
+                },
+                canSendSelectedLayerBackward = run {
+                    val selLayerId = state.selectedClip?.layerId ?: state.selectedLayerId
+                    val sortedTopDown = activeScene.layers.sortedByDescending { it.orderIndex }
+                    val idx = sortedTopDown.indexOfFirst { it.id == selLayerId }
+                    idx in 0 until sortedTopDown.lastIndex
+                },
+                onBringSelectedLayerToFront = {
+                    val selLayerId = state.selectedClip?.layerId ?: state.selectedLayerId
+                    if (selLayerId != null) onBringLayerToFront(selLayerId)
+                },
+                onBringSelectedLayerForward = {
+                    val selLayerId = state.selectedClip?.layerId ?: state.selectedLayerId
+                    if (selLayerId != null) onBringLayerForward(selLayerId)
+                },
+                onSendSelectedLayerBackward = {
+                    val selLayerId = state.selectedClip?.layerId ?: state.selectedLayerId
+                    if (selLayerId != null) onSendLayerBackward(selLayerId)
+                },
+                onSendSelectedLayerToBack = {
+                    val selLayerId = state.selectedClip?.layerId ?: state.selectedLayerId
+                    if (selLayerId != null) onSendLayerToBack(selLayerId)
+                }
             )
         }
 
@@ -808,6 +855,7 @@ fun EditorScreen(
                 onUpdateLayerParallaxDepth = onUpdateLayerParallaxDepth,
                 onToggleVisibility = onToggleLayerVisibility,
                 onToggleLock = onToggleLayerLock,
+                onDuplicateLayer = onDuplicateLayer,
                 onDeleteLayer = onDeleteLayer,
                 onDismiss = onCloseSheet
             )
@@ -897,6 +945,54 @@ fun EditorScreen(
                     onApplySavedPose = onApplySavedPose,
                     onInsertModularAction = onInsertModularAction,
                     onCommitIkPose = onCommitIkStudioPose,
+                    onDismiss = onCloseSheet
+                )
+            } else {
+                onCloseSheet()
+            }
+        }
+        ActiveEditorSheet.TEARS_FX_INSPECTOR -> {
+            val targetClip = state.selectedClip
+            if (targetClip != null) {
+                TearsFxInspectorDialog(
+                    clip = targetClip,
+                    onUpdateClip = onUpdateSelectedClip,
+                    onDismiss = onCloseSheet
+                )
+            } else {
+                onCloseSheet()
+            }
+        }
+        ActiveEditorSheet.SHADOW_INSPECTOR -> {
+            val targetClip = state.selectedClip
+            if (targetClip != null) {
+                ShadowInspectorDialog(
+                    clip = targetClip,
+                    onUpdateClip = onUpdateSelectedClip,
+                    onDismiss = onCloseSheet
+                )
+            } else {
+                onCloseSheet()
+            }
+        }
+        ActiveEditorSheet.COLOR_ADJUST_INSPECTOR -> {
+            val targetClip = state.selectedClip
+            if (targetClip != null) {
+                ColorAdjustInspectorDialog(
+                    clip = targetClip,
+                    onUpdateClip = onUpdateSelectedClip,
+                    onDismiss = onCloseSheet
+                )
+            } else {
+                onCloseSheet()
+            }
+        }
+        ActiveEditorSheet.MASK_INSPECTOR -> {
+            val targetClip = state.selectedClip
+            if (targetClip != null) {
+                MaskInspectorDialog(
+                    clip = targetClip,
+                    onUpdateClip = onUpdateSelectedClip,
                     onDismiss = onCloseSheet
                 )
             } else {

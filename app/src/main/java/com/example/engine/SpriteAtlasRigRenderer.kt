@@ -55,7 +55,11 @@ object SpriteAtlasRigRenderer {
         propScale: Float = 1.0f,
         drawGhostFallbackWhenEmpty: Boolean = false,
         skipFaceOverlays: Boolean = false,
-        organicFace: OrganicFacialState? = null
+        organicFace: OrganicFacialState? = null,
+        tearsConfig: TearsFxConfig = TearsFxConfig(),
+        globalFrame: Int = 0,
+        fps: Int = 24,
+        clipSeed: Int = 0
     ) {
         val s = rigScale
         val alphaInt = (alpha.coerceIn(0f, 1f) * 255).toInt()
@@ -263,6 +267,28 @@ object SpriteAtlasRigRenderer {
                     }
                     canvas.restore()
                 }
+            }
+
+            // Animated Tears FX anchored beneath Sprite Atlas eye coordinates (works even when face is baked in head!)
+            if (tearsConfig.isActive) {
+                val tearAnchors = eyeOffsets.mapIndexed { idx, ex ->
+                    val sideSign = if (isBackSide) 1f else if (idx == 0) -1f else 1f
+                    ClipVisualFxEngine.TearEyeAnchor(
+                        x = ex,
+                        y = eyeY + 5.2f * s,
+                        sideSign = sideSign
+                    )
+                }
+                ClipVisualFxEngine.drawTearsAtEyes(
+                    canvas = canvas,
+                    config = tearsConfig,
+                    eyeAnchors = tearAnchors,
+                    scale = s * 1.15f,
+                    globalFrame = globalFrame,
+                    fps = fps,
+                    alphaInt = alphaInt,
+                    seed = clipSeed
+                )
             }
 
             // Eyebrow Expression Swap (automatic slot selection + organic asymmetric lift & tilt)

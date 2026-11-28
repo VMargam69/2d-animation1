@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -27,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.model.ClipMaskType
 import com.example.model.TimelineClip
 import com.example.ui.theme.*
 
@@ -40,6 +42,8 @@ private enum class DockSubMenu {
     CANVAS,
     // Level 2 (Character selected) sub-groups
     CHAR_POSE,
+    CHAR_FACE,
+    CHAR_STYLE,
     CHAR_MOTION,
     CHAR_EDIT,
     // Level 2 (Generic clip selected) sub-groups
@@ -114,20 +118,47 @@ fun BottomEditingToolbar(
     onSplitClip: () -> Unit,
     onDuplicateClip: () -> Unit,
     onFlipHorizontal: () -> Unit,
-    onDeleteClip: () -> Unit
+    onDeleteClip: () -> Unit,
+    onReplaceClip: () -> Unit = {},
+    onOpenTearsFx: () -> Unit = {},
+    onOpenShadowFx: () -> Unit = {},
+    onOpenColorAdjust: () -> Unit = {},
+    onOpenMaskInspector: () -> Unit = {},
+    canBringSelectedLayerForward: Boolean = true,
+    canSendSelectedLayerBackward: Boolean = true,
+    onBringSelectedLayerToFront: () -> Unit = {},
+    onBringSelectedLayerForward: () -> Unit = {},
+    onSendSelectedLayerBackward: () -> Unit = {},
+    onSendSelectedLayerToBack: () -> Unit = {}
 ) {
     var activeSubMenu by remember { mutableStateOf(DockSubMenu.NONE) }
+    var sortMenuExpanded by remember { mutableStateOf(false) }
     val selectedClipId = selectedClip?.id
     val isCharSelected = selectedClip?.characterId != null
     val isAudioSelected = !selectedClip?.audioPath.isNullOrBlank()
+    val canReplaceMediaClip = selectedClip != null && !isCharSelected && !isAudioSelected &&
+        selectedClip.textContent == null && selectedClip.shapeKind == null && selectedClip.drawingStrokes.isEmpty()
 
     // Reset sub-menu whenever selection context changes
     LaunchedEffect(selectedClipId) {
         activeSubMenu = DockSubMenu.NONE
+        sortMenuExpanded = false
     }
 
     val dockModeKey = Triple(selectedClipId != null, if (isCharSelected) 1 else if (isAudioSelected) 2 else 0, activeSubMenu)
     val showBackButton = selectedClip != null || activeSubMenu != DockSubMenu.NONE
+
+    val hasCharStyleActive = selectedClip != null && (
+        selectedClip.tearsConfig.isActive ||
+            selectedClip.shadowConfig.isActive ||
+            selectedClip.colorAdjust.isActive ||
+            selectedClip.effectiveMaskType != ClipMaskType.NONE
+        )
+    val hasClipStyleActive = selectedClip != null && (
+        selectedClip.shadowConfig.isActive ||
+            selectedClip.colorAdjust.isActive ||
+            selectedClip.effectiveMaskType != ClipMaskType.NONE
+        )
 
     val actions: List<DockToolAction> = when {
         // LEVEL 2: Contextual Selection Dock
@@ -141,6 +172,52 @@ fun BottomEditingToolbar(
                 DockToolAction("next_kf", "Next KF", Icons.Rounded.SkipNext, onClick = { onStepAdjacentKeyframe(true) }),
                 DockToolAction("reset_pose", "Reset", Icons.Rounded.RestartAlt, onClick = onResetPoseAtCurrentFrame)
             )
+            DockSubMenu.CHAR_FACE -> listOf(
+                DockToolAction("acting_props", "Acting", Icons.Rounded.EmojiEmotions, onClick = onOpenCharacterActingProps),
+                DockToolAction(
+                    "tears",
+                    "Tears",
+                    Icons.Rounded.WaterDrop,
+                    isActive = selectedClip.tearsConfig.isActive,
+                    accentTint = if (selectedClip.tearsConfig.isActive) Color(0xFF38BDF8) else null,
+                    onClick = onOpenTearsFx
+                )
+            )
+            DockSubMenu.CHAR_STYLE -> listOf(
+                DockToolAction(
+                    "tears",
+                    "Tears",
+                    Icons.Rounded.WaterDrop,
+                    isActive = selectedClip.tearsConfig.isActive,
+                    accentTint = if (selectedClip.tearsConfig.isActive) Color(0xFF38BDF8) else null,
+                    onClick = onOpenTearsFx
+                ),
+                DockToolAction(
+                    "shadow",
+                    "Shadow",
+                    Icons.Rounded.LensBlur,
+                    isActive = selectedClip.shadowConfig.isActive,
+                    accentTint = if (selectedClip.shadowConfig.isActive) VioletLayer else null,
+                    onClick = onOpenShadowFx
+                ),
+                DockToolAction(
+                    "adjust",
+                    "Adjust",
+                    Icons.Rounded.Tune,
+                    isActive = selectedClip.colorAdjust.isActive,
+                    accentTint = if (selectedClip.colorAdjust.isActive) AmberKeyframe else null,
+                    onClick = onOpenColorAdjust
+                ),
+                DockToolAction(
+                    "mask",
+                    "Mask",
+                    Icons.Rounded.FilterTiltShift,
+                    isActive = selectedClip.effectiveMaskType != ClipMaskType.NONE,
+                    onClick = onOpenMaskInspector
+                ),
+                DockToolAction("opacity", "Opacity", Icons.Rounded.Opacity, onClick = onOpenTransform),
+                DockToolAction("transitions", "Transitions", Icons.Rounded.AutoAwesomeMotion, onClick = onOpenTransitions)
+            )
             DockSubMenu.CHAR_MOTION -> listOf(
                 DockToolAction("curve", "Curve", Icons.Rounded.ShowChart, accentTint = ElectricCyan, onClick = onOpenEasingCurve),
                 DockToolAction("transform", "Transform", Icons.Rounded.OpenWith, onClick = onOpenTransform),
@@ -149,6 +226,8 @@ fun BottomEditingToolbar(
                 DockToolAction("transitions", "Transitions", Icons.Rounded.AutoAwesomeMotion, onClick = onOpenTransitions)
             )
             DockSubMenu.CHAR_EDIT -> listOf(
+                DockToolAction("replace", "Replace", Icons.Rounded.SwapHoriz, accentTint = ElectricCyan, onClick = onReplaceClip),
+                DockToolAction("sort", "Sort", Icons.Rounded.Layers, isActive = sortMenuExpanded, onClick = { sortMenuExpanded = true }),
                 DockToolAction("split", "Split", Icons.Rounded.ContentCut, onClick = onSplitClip),
                 DockToolAction("flip", "Flip", Icons.Rounded.Flip, onClick = onFlipHorizontal),
                 DockToolAction("duplicate", "Duplicate", Icons.Rounded.ContentCopy, onClick = onDuplicateClip),
@@ -157,7 +236,20 @@ fun BottomEditingToolbar(
             else -> listOf(
                 DockToolAction("pose", "Pose", Icons.Rounded.Hub, isActive = isIkPosingMode, onClick = { activeSubMenu = DockSubMenu.CHAR_POSE }),
                 DockToolAction("presets", "Presets", Icons.Rounded.DirectionsRun, onClick = onOpenPresetsForSelectedChar),
-                DockToolAction("acting_props", "Face", Icons.Rounded.EmojiEmotions, onClick = onOpenCharacterActingProps),
+                DockToolAction(
+                    "face_group",
+                    "Face",
+                    Icons.Rounded.EmojiEmotions,
+                    isActive = selectedClip.tearsConfig.isActive,
+                    onClick = { activeSubMenu = DockSubMenu.CHAR_FACE }
+                ),
+                DockToolAction(
+                    "style_group",
+                    "Style",
+                    Icons.Rounded.AutoFixHigh,
+                    isActive = hasCharStyleActive,
+                    onClick = { activeSubMenu = DockSubMenu.CHAR_STYLE }
+                ),
                 DockToolAction("motion", "Motion", Icons.Rounded.Timeline, isActive = showMotionPaths, onClick = { activeSubMenu = DockSubMenu.CHAR_MOTION }),
                 DockToolAction("edit", "Edit", Icons.Rounded.Tune, onClick = { activeSubMenu = DockSubMenu.CHAR_EDIT })
             )
@@ -178,18 +270,45 @@ fun BottomEditingToolbar(
         )
 
         selectedClip != null -> when (activeSubMenu) {
-            DockSubMenu.CLIP_EDIT -> listOf(
-                DockToolAction("split", "Split", Icons.Rounded.ContentCut, onClick = onSplitClip),
-                DockToolAction("duplicate", "Duplicate", Icons.Rounded.ContentCopy, onClick = onDuplicateClip),
-                DockToolAction("flip", "Flip", Icons.Rounded.Flip, onClick = onFlipHorizontal),
-                DockToolAction("delete", "Delete", Icons.Rounded.DeleteOutline, accentTint = CoralPlayhead, onClick = onDeleteClip)
-            )
+            DockSubMenu.CLIP_EDIT -> buildList {
+                if (canReplaceMediaClip) {
+                    add(DockToolAction("replace", "Replace", Icons.Rounded.SwapHoriz, accentTint = ElectricCyan, onClick = onReplaceClip))
+                }
+                add(DockToolAction("sort", "Sort", Icons.Rounded.Layers, isActive = sortMenuExpanded, onClick = { sortMenuExpanded = true }))
+                add(DockToolAction("split", "Split", Icons.Rounded.ContentCut, onClick = onSplitClip))
+                add(DockToolAction("duplicate", "Duplicate", Icons.Rounded.ContentCopy, onClick = onDuplicateClip))
+                add(DockToolAction("flip", "Flip", Icons.Rounded.Flip, onClick = onFlipHorizontal))
+                add(DockToolAction("delete", "Delete", Icons.Rounded.DeleteOutline, accentTint = CoralPlayhead, onClick = onDeleteClip))
+            }
             DockSubMenu.CLIP_MOTION -> listOf(
                 DockToolAction("curve", "Curve", Icons.Rounded.ShowChart, accentTint = ElectricCyan, onClick = onOpenEasingCurve),
                 DockToolAction("path", "Path", Icons.Rounded.Timeline, isActive = showMotionPaths, onClick = onToggleMotionPath),
                 DockToolAction("speed", "Speed", Icons.Rounded.Speed, onClick = onOpenSpeed)
             )
             DockSubMenu.CLIP_STYLE -> listOf(
+                DockToolAction(
+                    "shadow",
+                    "Shadow",
+                    Icons.Rounded.LensBlur,
+                    isActive = selectedClip.shadowConfig.isActive,
+                    accentTint = if (selectedClip.shadowConfig.isActive) VioletLayer else null,
+                    onClick = onOpenShadowFx
+                ),
+                DockToolAction(
+                    "adjust",
+                    "Adjust",
+                    Icons.Rounded.Tune,
+                    isActive = selectedClip.colorAdjust.isActive,
+                    accentTint = if (selectedClip.colorAdjust.isActive) AmberKeyframe else null,
+                    onClick = onOpenColorAdjust
+                ),
+                DockToolAction(
+                    "mask",
+                    "Mask",
+                    Icons.Rounded.FilterTiltShift,
+                    isActive = selectedClip.effectiveMaskType != ClipMaskType.NONE,
+                    onClick = onOpenMaskInspector
+                ),
                 DockToolAction("opacity", "Opacity", Icons.Rounded.Opacity, onClick = onOpenTransform),
                 DockToolAction("transitions", "Transitions", Icons.Rounded.AutoAwesomeMotion, onClick = onOpenTransitions)
             )
@@ -197,7 +316,7 @@ fun BottomEditingToolbar(
                 DockToolAction("edit", "Edit", Icons.Rounded.ContentCut, onClick = { activeSubMenu = DockSubMenu.CLIP_EDIT }),
                 DockToolAction("transform", "Transform", Icons.Rounded.OpenWith, onClick = onOpenTransform),
                 DockToolAction("motion", "Motion", Icons.Rounded.Timeline, isActive = showMotionPaths, onClick = { activeSubMenu = DockSubMenu.CLIP_MOTION }),
-                DockToolAction("style", "Style", Icons.Rounded.AutoAwesomeMotion, onClick = { activeSubMenu = DockSubMenu.CLIP_STYLE })
+                DockToolAction("style", "Style", Icons.Rounded.AutoFixHigh, isActive = hasClipStyleActive, onClick = { activeSubMenu = DockSubMenu.CLIP_STYLE })
             )
         }
 
@@ -322,6 +441,26 @@ fun BottomEditingToolbar(
                         actions.forEach { action ->
                             FlatDockToolButton(
                                 action = action,
+                                sortMenuExpanded = sortMenuExpanded && action.id == "sort",
+                                onDismissSortMenu = { sortMenuExpanded = false },
+                                canBringForward = canBringSelectedLayerForward,
+                                canSendBackward = canSendSelectedLayerBackward,
+                                onBringToFront = {
+                                    sortMenuExpanded = false
+                                    onBringSelectedLayerToFront()
+                                },
+                                onBringForward = {
+                                    sortMenuExpanded = false
+                                    onBringSelectedLayerForward()
+                                },
+                                onSendBackward = {
+                                    sortMenuExpanded = false
+                                    onSendSelectedLayerBackward()
+                                },
+                                onSendToBack = {
+                                    sortMenuExpanded = false
+                                    onSendSelectedLayerToBack()
+                                },
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
@@ -338,6 +477,26 @@ fun BottomEditingToolbar(
                         items(actions, key = { it.id }) { action ->
                             FlatDockToolButton(
                                 action = action,
+                                sortMenuExpanded = sortMenuExpanded && action.id == "sort",
+                                onDismissSortMenu = { sortMenuExpanded = false },
+                                canBringForward = canBringSelectedLayerForward,
+                                canSendBackward = canSendSelectedLayerBackward,
+                                onBringToFront = {
+                                    sortMenuExpanded = false
+                                    onBringSelectedLayerToFront()
+                                },
+                                onBringForward = {
+                                    sortMenuExpanded = false
+                                    onBringSelectedLayerForward()
+                                },
+                                onSendBackward = {
+                                    sortMenuExpanded = false
+                                    onSendSelectedLayerBackward()
+                                },
+                                onSendToBack = {
+                                    sortMenuExpanded = false
+                                    onSendSelectedLayerToBack()
+                                },
                                 modifier = Modifier
                                     .widthIn(min = 58.dp)
                                     .fillMaxHeight()
@@ -353,6 +512,14 @@ fun BottomEditingToolbar(
 @Composable
 private fun FlatDockToolButton(
     action: DockToolAction,
+    sortMenuExpanded: Boolean = false,
+    onDismissSortMenu: () -> Unit = {},
+    canBringForward: Boolean = true,
+    canSendBackward: Boolean = true,
+    onBringToFront: () -> Unit = {},
+    onBringForward: () -> Unit = {},
+    onSendBackward: () -> Unit = {},
+    onSendToBack: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val contentColor = when {
@@ -404,6 +571,48 @@ private fun FlatDockToolButton(
                     .clip(RoundedCornerShape(2.dp))
                     .background(ElectricCyan)
             )
+        }
+        if (action.id == "sort") {
+            DropdownMenu(
+                expanded = sortMenuExpanded,
+                onDismissRequest = onDismissSortMenu,
+                shape = RoundedCornerShape(14.dp),
+                containerColor = Color(0xFF1A1E26),
+                border = BorderStroke(1.dp, Color(0xFF2C3444))
+            ) {
+                val enabledText = Color(0xFFF1F5F9)
+                val enabledIcon = Color(0xFFCBD5E1)
+                val disabledTint = Color(0xFF64748B).copy(alpha = 0.45f)
+
+                DropdownMenuItem(
+                    text = { Text("Bring To Front", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (canBringForward) enabledText else disabledTint) },
+                    leadingIcon = { Icon(Icons.Rounded.FlipToFront, "Bring To Front", tint = if (canBringForward) enabledIcon else disabledTint, modifier = Modifier.size(18.dp)) },
+                    enabled = canBringForward,
+                    onClick = onBringToFront,
+                    modifier = Modifier.testTag("toolbar_sort_front_item")
+                )
+                DropdownMenuItem(
+                    text = { Text("Bring Forward", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (canBringForward) enabledText else disabledTint) },
+                    leadingIcon = { Icon(Icons.Rounded.MoveUp, "Bring Forward", tint = if (canBringForward) enabledIcon else disabledTint, modifier = Modifier.size(18.dp)) },
+                    enabled = canBringForward,
+                    onClick = onBringForward,
+                    modifier = Modifier.testTag("toolbar_sort_forward_item")
+                )
+                DropdownMenuItem(
+                    text = { Text("Send Backward", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (canSendBackward) enabledText else disabledTint) },
+                    leadingIcon = { Icon(Icons.Rounded.MoveDown, "Send Backward", tint = if (canSendBackward) enabledIcon else disabledTint, modifier = Modifier.size(18.dp)) },
+                    enabled = canSendBackward,
+                    onClick = onSendBackward,
+                    modifier = Modifier.testTag("toolbar_sort_backward_item")
+                )
+                DropdownMenuItem(
+                    text = { Text("Send To Back", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (canSendBackward) enabledText else disabledTint) },
+                    leadingIcon = { Icon(Icons.Rounded.FlipToBack, "Send To Back", tint = if (canSendBackward) enabledIcon else disabledTint, modifier = Modifier.size(18.dp)) },
+                    enabled = canSendBackward,
+                    onClick = onSendToBack,
+                    modifier = Modifier.testTag("toolbar_sort_back_item")
+                )
+            }
         }
     }
 }
