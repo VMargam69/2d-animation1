@@ -199,6 +199,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onAddLayer = { type, name -> viewModel.addEmptyLayer(type, name) },
                 onRenameLayer = { id, name -> viewModel.renameLayer(id, name) },
                 onReorderLayer = { id, up -> viewModel.reorderLayer(id, up) },
+                onUpdateLayerParallaxDepth = { id, d -> viewModel.updateLayerParallaxDepth(id, d) },
                 onDeleteLayer = { id -> viewModel.deleteLayer(id) },
                 onUpdateTransform = { viewModel.updateSelectedClipTransform(it) },
                 onUpdateSelectedClip = { viewModel.updateSelectedClipProps(it) },
@@ -206,6 +207,10 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onDuplicateClip = { viewModel.duplicateSelectedClip() },
                 onFlipClip = { viewModel.flipSelectedClip(it) },
                 onDeleteClip = { viewModel.deleteSelectedClip() },
+                onToggleTimelineMultiSelectMode = { viewModel.toggleTimelineMultiSelectMode() },
+                onToggleTimelineClipMultiSelect = { viewModel.toggleTimelineClipSelection(it) },
+                onSelectAllTimelineClips = { viewModel.selectAllTimelineClips() },
+                onDeleteSelectedTimelineClips = { viewModel.deleteSelectedTimelineClips() },
                 onAddShape = { kind, fill, stroke -> viewModel.addShape(kind, fill, stroke) },
                 onAddText = { text, col, sp, bubbleStyle, bubbleFill ->
                     viewModel.addText(text, col, sp, bubbleStyle, bubbleFill)
@@ -222,6 +227,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onCancelExport = { viewModel.cancelExport() },
                 onToggleIkPosingMode = { viewModel.toggleIkPosingMode() },
                 onToggleIkFlipBend = { viewModel.toggleIkFlipBend() },
+                onToggleIkJointLimits = { viewModel.toggleIkJointLimits() },
                 onMirrorIkPose = { viewModel.mirrorSelectedClipPoseAtCurrentFrame() },
                 onToggleCameraKeyMode = { viewModel.toggleCameraKeyMode() },
                 onStepAdjacentKeyframe = { forward -> viewModel.stepToAdjacentKeyframe(forward) },
@@ -240,6 +246,9 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                     viewModel.applyCinematicCameraPreset(presetId, label, intensity)
                 },
                 onUpdateSceneVfx = { updater -> viewModel.updateSceneVfxConfig(updater) },
+                onUpsertDialogueOverlay = { beat -> viewModel.upsertDialogueOverlay(beat) },
+                onRemoveDialogueOverlay = { beatId -> viewModel.removeDialogueOverlay(beatId) },
+                onUpdateAudioDucking = { updater -> viewModel.updateAudioDuckingConfig(updater) },
                 onImportCustomPropUri = { uri, onPath -> viewModel.importCharacterSpriteUri(uri, onPath) },
                 onTrimAudioClip = { clipId, startF, durF, trimStartMs, trimEndMs ->
                     viewModel.trimAudioClip(clipId, startF, durF, trimStartMs, trimEndMs)
@@ -276,6 +285,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                     viewModel.renameSavedPose(id, newName, newCat)
                 },
                 onDeleteSavedPose = { id -> viewModel.deleteSavedPose(id) },
+                onDeleteSavedPoses = { ids -> viewModel.deleteSavedPoses(ids) },
                 onApplySavedPose = { pose -> viewModel.applySavedPoseToSelectedClip(pose) },
                 onInsertModularAction = { clipId, action ->
                     viewModel.insertModularActionAtPlayhead(clipId, action)

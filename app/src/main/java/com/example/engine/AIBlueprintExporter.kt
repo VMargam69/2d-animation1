@@ -37,6 +37,7 @@ object AIBlueprintExporter {
         val width: Int,
         val height: Int,
         val sceneCount: Int,
+        val audioDucking: AudioDuckingConfig = AudioDuckingConfig(),
         val coordinateSystem: CoordinateSystemSpec = CoordinateSystemSpec()
     )
 
@@ -65,7 +66,8 @@ object AIBlueprintExporter {
         val durationMs: Long,
         val trimStartMs: Long = 0L,
         val trimEndMs: Long = 0L,
-        val hasWaveformLipSync: Boolean = false
+        val hasWaveformLipSync: Boolean = false,
+        val audioTrackRole: String = AudioTrackRole.BGM.name
     )
 
     data class BlueprintSavedPoseAsset(
@@ -113,7 +115,20 @@ object AIBlueprintExporter {
         val textBubbleStyles: List<String>,
         val modularActions: List<String>,
         val savedPoseIds: List<String>,
-        val clipOperations: List<String>
+        val clipOperations: List<String>,
+        val armGesturePresets: List<String>,
+        val simultaneousTrackTypes: List<String>,
+        val ikJointLimits: Map<String, List<Float>>,
+        val propSwayDefaults: PropSwayConfig,
+        val parallaxDepthPresets: List<Map<String, Any>>,
+        val weatherParticleStyles: List<String>,
+        val dialogueOverlayLanguages: List<String>,
+        val audioTrackRoles: List<String>,
+        val audioDuckingDefaults: AudioDuckingConfig,
+        val universalCurveTypes: List<String>,
+        val universalLoopModes: List<String>,
+        val universalPropertyDomains: List<String>,
+        val universalKeyframeChannels: List<Map<String, Any>>
     )
 
     data class UniversalExtensionSchemasPayload(
@@ -122,6 +137,7 @@ object AIBlueprintExporter {
         val inlineSvgAssetExample: Map<String, Any>,
         val customAnimationExample: Map<String, Any>,
         val customTransitionExample: Map<String, Any>,
+        val universalKeyframeTrackExample: Map<String, Any>,
         val directorScriptSkeleton: Map<String, Any>
     )
 
@@ -159,7 +175,8 @@ object AIBlueprintExporter {
             aspectRatio = project.aspectRatioPreset.label,
             width = project.width,
             height = project.height,
-            sceneCount = project.scenes.size
+            sceneCount = project.scenes.size,
+            audioDucking = project.audioDucking
         )
 
         val charAssets = characters.map { rig ->
@@ -227,7 +244,8 @@ object AIBlueprintExporter {
                     durationMs = trimmedMs,
                     trimStartMs = clip.audioTrimStartMs,
                     trimEndMs = effectiveEndMs,
-                    hasWaveformLipSync = (syncMeta?.phonemeMappings?.isNotEmpty() == true)
+                    hasWaveformLipSync = (syncMeta?.phonemeMappings?.isNotEmpty() == true),
+                    audioTrackRole = AudioDuckingEngine.inferEffectiveRole(clip).name
                 )
             }
         }
@@ -295,7 +313,32 @@ object AIBlueprintExporter {
             textBubbleStyles = caps.textBubbleStyles.map { it.id },
             modularActions = caps.modularActions.map { it.id },
             savedPoseIds = caps.savedPoses.map { it.id },
-            clipOperations = caps.clipOperations.map { it.id }
+            clipOperations = caps.clipOperations.map { it.id },
+            armGesturePresets = caps.armGesturePresets.map { it.id },
+            simultaneousTrackTypes = caps.simultaneousTrackTypes.map { it.id },
+            ikJointLimits = caps.ikJointLimits,
+            propSwayDefaults = caps.propSwayDefaults,
+            parallaxDepthPresets = caps.parallaxDepthPresets.map { item ->
+                mapOf(
+                    "id" to item.id,
+                    "label" to item.label,
+                    "depth" to (item.meta?.get("depth") ?: 1.0f)
+                )
+            },
+            weatherParticleStyles = caps.weatherParticleStyles.map { it.id },
+            dialogueOverlayLanguages = caps.dialogueOverlayLanguages.map { it.id },
+            audioTrackRoles = caps.audioTrackRoles.map { it.id },
+            audioDuckingDefaults = caps.audioDuckingDefaults,
+            universalCurveTypes = caps.universalCurveTypes.map { it.id },
+            universalLoopModes = caps.universalLoopModes.map { it.id },
+            universalPropertyDomains = caps.universalPropertyDomains.map { it.id },
+            universalKeyframeChannels = caps.universalKeyframeChannels.map { ch ->
+                buildMap {
+                    put("propertyPath", ch.id)
+                    put("description", ch.label)
+                    ch.meta?.forEach { (k, v) -> put(k, v) }
+                }
+            }
         )
 
         val extensionSchemas = UniversalExtensionSchemasPayload(
@@ -304,7 +347,12 @@ object AIBlueprintExporter {
                 "Invent brand-new trees, animals, props, backgrounds, or 2048x2048 characters via inlineSvgAssets[] using clean AndroidSVG markup (<path>, <circle>, <rect>, <ellipse>, <polygon>, <g id='...' data-pivot='x,y'>). Never use <script>, <foreignObject>, or <filter>.",
                 "Invent any custom motion via customAnimations{} targeting character bone IDs (HEAD, TORSO, LEFT_ARM, LEFT_FOREARM, RIGHT_ARM, RIGHT_FOREARM, LEFT_LEG, LEFT_KNEE, RIGHT_LEG, RIGHT_KNEE) OR any SVG sub-group id.",
                 "Invent any custom scene transition via customTransitions{} with clipPathType, outgoing/incoming transforms, flashOverlay, and cubicBezier.",
-                "Use cameraShots[] with focusTargetCharacterId + shotType for automatic cinematic speaker tracking and reaction cuts."
+                "Universal Advance Keyframe Engine: use scenes[].keyframeTracks[] (or top-level keyframeTracks[]) to animate ANY studio property (Characters, IK joints, Gaze, PropSway, 2.5D Parallax Depth, Seamless Background Scroll/Blur, Colour Grading, Day/Night Blend, Camera, Transitions, Masking, VFX/Weather, or Inline SVG <g id='...'> sub-parts) with LINEAR/EASE_IN/EASE_OUT/EASE_IN_OUT/HOLD/BOUNCE/ELASTIC/SPRING/CUSTOM_CUBIC curves, ONCE/LOOP/PING_PONG/OFFSET_REPEAT loop modes, and curved Bezier motionPath + autoOrientToPath.",
+                "Use cameraShots[] with focusTargetCharacterId + shotType for automatic cinematic speaker tracking and reaction cuts.",
+                "Simultaneous character layering: combine animationPreset + armGesturePreset + ikPose (clamped by enforceJointLimits=true by default) + facialOverridesEnabled (mouth/eye/eyebrow overrides) + lipSyncAudioId without overwriting tracks.",
+                "2.5D Parallax Depth: set layers[].parallaxDepth (0.2=Far, 0.6=Mid, 1.0=Stage, 1.35=Near). Deterministic Weather: set scenes[].weatherLayers[] (RAIN/FOG/FALLING_LEAVES/FIRE_SPARKS/SMOKE/DUST_MOTES/SNOW).",
+                "Opt-in Dialogue Overlays: scenes[].dialogueOverlays[] supports English ('en'), Hindi ('hi'), and Odia ('or'). Both showSpeechBubble and showSubtitle default to false and render ONLY when explicitly set true.",
+                "Smart Auto Audio Ducking: set top-level audioDucking{duckingEnabled, duckTargetVolume, attackMs, releaseMs, voiceThreshold} and clips[].audioTrackRole (DIALOGUE/BGM/SFX) + audioVolume. Hand/Head prop spring physics: propSwayEnabled, propSwayStiffness, propSwayDamping, propSwayMaxAngleDeg."
             ),
             inlineSvgAssetExample = mapOf(
                 "id" to "svg_windy_tree",
@@ -336,6 +384,15 @@ object AIBlueprintExporter {
                     "incoming" to mapOf("dx" to 0.12, "dy" to 0.0, "scale" to 1.0, "rotation" to 0.0, "alpha" to 1.0),
                     "flashOverlay" to mapOf("colorHex" to "#FDE68A", "peakAlpha" to 0.45),
                     "cubicBezier" to listOf(0.22, 1.0, 0.36, 1.0)
+                )
+            ),
+            universalKeyframeTrackExample = mapOf(
+                "targetId" to "background",
+                "propertyPath" to "bg.scrollX",
+                "loopMode" to "OFFSET_REPEAT",
+                "keyframes" to listOf(
+                    mapOf("tSec" to 0.0, "value" to 0.0, "curve" to "LINEAR"),
+                    mapOf("tSec" to 4.0, "value" to 1.0, "curve" to "LINEAR")
                 )
             ),
             directorScriptSkeleton = mapOf(
@@ -374,6 +431,17 @@ object AIBlueprintExporter {
                                 "motionPath" to listOf(mapOf("x" to 0.32, "y" to 0.82), mapOf("x" to 0.48, "y" to 0.82)),
                                 "keyframes" to listOf(
                                     mapOf("tSec" to 0.0, "x" to 0.32, "y" to 0.82, "scaleX" to 1.0, "scaleY" to 1.0, "easing" to "EASE_IN_OUT")
+                                )
+                            )
+                        ),
+                        "keyframeTracks" to listOf(
+                            mapOf(
+                                "targetId" to "background",
+                                "propertyPath" to "bg.dayNightBlend",
+                                "loopMode" to "ONCE",
+                                "keyframes" to listOf(
+                                    mapOf("tSec" to 0.0, "value" to 0.0, "curve" to "EASE_IN_OUT"),
+                                    mapOf("tSec" to 6.0, "value" to 0.75, "curve" to "EASE_IN_OUT")
                                 )
                             )
                         ),
@@ -421,9 +489,10 @@ object AIBlueprintExporter {
         AudioWaveformExtractor.parseWavWaveform(file, 48)?.durationMs?.takeIf { it > 0L }?.let { return it }
         var retriever: MediaMetadataRetriever? = null
         return runCatching {
-            retriever = MediaMetadataRetriever()
-            retriever?.setDataSource(file.absolutePath)
-            retriever?.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            val r = MediaMetadataRetriever()
+            retriever = r
+            r.setDataSource(file.absolutePath)
+            r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
         }.getOrNull().also {
             runCatching { retriever?.release() }
         }

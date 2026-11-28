@@ -100,6 +100,12 @@ fun TimelinePanel(
     onStampCameraKeyframe: () -> Unit = {},
     onOpenCameraStudio: () -> Unit = {},
     isCameraKeyMode: Boolean = false,
+    isMultiSelectMode: Boolean = false,
+    selectedClipIds: Set<String> = emptySet(),
+    onToggleMultiSelectMode: () -> Unit = {},
+    onToggleClipMultiSelect: (String) -> Unit = {},
+    onSelectAllClips: () -> Unit = {},
+    onDeleteSelectedClips: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scene = project.activeScene
@@ -131,6 +137,7 @@ fun TimelinePanel(
     var isLayerRailCollapsed by remember { mutableStateOf(false) }
     var showSensitivitySlider by remember { mutableStateOf(false) }
     var showFacialTray by remember { mutableStateOf(true) }
+    var showBulkDeleteClipsConfirm by remember { mutableStateOf(false) }
     val hasAudioTrack = remember(scene.layers, scene.clips) {
         scene.layers.any { it.type == LayerType.AUDIO } || scene.clips.any { !it.audioPath.isNullOrBlank() }
     }
@@ -616,6 +623,142 @@ fun TimelinePanel(
                                     modifier = Modifier.size(13.dp)
                                 )
                             }
+                        }
+
+                        // Multi-Select Toggle Chip for bulk deleting timeline clips
+                        Surface(
+                            color = if (isMultiSelectMode) CoralPlayhead.copy(alpha = 0.22f) else StudioPanel,
+                            shape = RoundedCornerShape(7.dp),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (isMultiSelectMode) CoralPlayhead else StudioBorderSubtle
+                            ),
+                            modifier = Modifier
+                                .height(26.dp)
+                                .clickable(onClick = onToggleMultiSelectMode)
+                                .testTag("timeline_multi_select_toggle_btn")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isMultiSelectMode) Icons.Rounded.Done else Icons.Rounded.Checklist,
+                                    contentDescription = if (isMultiSelectMode) "Exit clip multi-select" else "Multi-select timeline clips",
+                                    tint = if (isMultiSelectMode) CoralPlayhead else StudioTextSecondary,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    text = if (isMultiSelectMode) "Done" else "Select",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isMultiSelectMode) CoralPlayhead else StudioTextPrimary,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (isMultiSelectMode) {
+                HorizontalDivider(color = StudioBorderSubtle, thickness = 1.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                        .background(StudioPanel)
+                        .padding(horizontal = 8.dp)
+                        .testTag("timeline_multi_select_bar"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Checklist,
+                        contentDescription = null,
+                        tint = ElectricCyan,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = "${selectedClipIds.size} clip${if (selectedClipIds.size == 1) "" else "s"} selected",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = StudioTextPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Surface(
+                        color = StudioCharcoal,
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, StudioBorderSubtle),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(onClick = onSelectAllClips)
+                            .testTag("timeline_select_all_clips_btn")
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        ) {
+                            Text(
+                                text = "Select All",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = ElectricCyan
+                            )
+                        }
+                    }
+                    Surface(
+                        color = StudioCharcoal,
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, StudioBorderSubtle),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(onClick = onToggleMultiSelectMode)
+                            .testTag("timeline_cancel_multi_select_btn")
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        ) {
+                            Text(
+                                text = "Cancel",
+                                fontSize = 10.sp,
+                                color = StudioTextSecondary
+                            )
+                        }
+                    }
+                    Surface(
+                        color = if (selectedClipIds.isNotEmpty()) CoralPlayhead else StudioCharcoal,
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(
+                            1.dp,
+                            if (selectedClipIds.isNotEmpty()) CoralPlayhead else StudioBorderSubtle
+                        ),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(enabled = selectedClipIds.isNotEmpty()) {
+                                showBulkDeleteClipsConfirm = true
+                            }
+                            .testTag("timeline_bulk_delete_btn")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.DeleteOutline,
+                                contentDescription = "Delete selected timeline clips",
+                                tint = if (selectedClipIds.isNotEmpty()) Color.White else StudioTextMuted,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "Delete (${selectedClipIds.size})",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (selectedClipIds.isNotEmpty()) Color.White else StudioTextMuted
+                            )
                         }
                     }
                 }
@@ -1239,8 +1382,12 @@ fun TimelinePanel(
                                         )
                                 ) {
                                     layerClips.forEach { clip ->
-                                        val isSelected = clip.id == selectedClipId
+                                        val isMultiChecked = isMultiSelectMode && clip.id in selectedClipIds
+                                        val isSelected = if (isMultiSelectMode) isMultiChecked else (clip.id == selectedClipId)
                                         val isAudioClip = layer.type == LayerType.AUDIO || !clip.audioPath.isNullOrBlank()
+                                        val clipTapHandler: (String) -> Unit = { clickedId ->
+                                            if (isMultiSelectMode) onToggleClipMultiSelect(clickedId) else onSelectClip(clickedId)
+                                        }
 
                                         if (isAudioClip) {
                                             TrimmableAudioTimelineClip(
@@ -1251,12 +1398,12 @@ fun TimelinePanel(
                                                 frameWidthPx = frameWidthPx,
                                                 clipHeight = clipHeight,
                                                 horizontalScrollPxProvider = { horizontalScroll.value.toFloat() },
-                                                layerColor = layerColor,
+                                                layerColor = if (isMultiChecked) CoralPlayhead else layerColor,
                                                 isLayerVisible = layer.isVisible,
                                                 isLayerLocked = layer.isLocked,
                                                 isSelected = isSelected,
                                                 currentFrame = currentFrame,
-                                                onSelectClip = onSelectClip,
+                                                onSelectClip = clipTapHandler,
                                                 onSelectKeyframeNode = onSelectKeyframeNode,
                                                 onTrimAudioClip = onTrimAudioClip,
                                                 waveformSensitivity = waveformSensitivity
@@ -1273,28 +1420,48 @@ fun TimelinePanel(
                                                     .height(clipHeight)
                                                     .clip(RoundedCornerShape(6.dp))
                                                     .background(
-                                                        if (isSelected) layerColor.copy(alpha = 0.38f * visAlpha)
-                                                        else layerColor.copy(alpha = 0.20f * visAlpha)
+                                                        when {
+                                                            isMultiChecked -> CoralPlayhead.copy(alpha = 0.34f * visAlpha)
+                                                            isSelected -> layerColor.copy(alpha = 0.38f * visAlpha)
+                                                            else -> layerColor.copy(alpha = 0.20f * visAlpha)
+                                                        }
                                                     )
                                                     .border(
-                                                        width = if (isSelected) 1.5.dp else 1.dp,
-                                                        color = if (isSelected) ElectricCyan else layerColor.copy(alpha = 0.62f * visAlpha),
+                                                        width = if (isSelected || isMultiChecked) 1.5.dp else 1.dp,
+                                                        color = when {
+                                                            isMultiChecked -> CoralPlayhead
+                                                            isSelected -> ElectricCyan
+                                                            else -> layerColor.copy(alpha = 0.62f * visAlpha)
+                                                        },
                                                         shape = RoundedCornerShape(6.dp)
                                                     )
-                                                    .clickable { onSelectClip(clip.id) }
+                                                    .clickable { clipTapHandler(clip.id) }
                                                     .testTag("timeline_clip_${clip.id}")
                                             ) {
-                                                Text(
-                                                    text = clip.name,
-                                                    fontSize = 10.sp,
-                                                    color = StudioTextPrimary.copy(alpha = visAlpha),
-                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
                                                     modifier = Modifier
                                                         .align(Alignment.TopStart)
-                                                        .padding(horizontal = 6.dp, vertical = 1.dp)
-                                                )
+                                                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                                                ) {
+                                                    if (isMultiSelectMode) {
+                                                        Icon(
+                                                            imageVector = if (isMultiChecked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                                                            contentDescription = if (isMultiChecked) "Selected clip ${clip.name}" else "Unselected clip ${clip.name}",
+                                                            tint = if (isMultiChecked) CoralPlayhead else StudioTextSecondary,
+                                                            modifier = Modifier.size(11.dp)
+                                                        )
+                                                    }
+                                                    Text(
+                                                        text = clip.name,
+                                                        fontSize = 10.sp,
+                                                        color = StudioTextPrimary.copy(alpha = visAlpha),
+                                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
 
                                                 // Individually Selectable Keyframe Diamond Nodes (with Facial Expression color coding)
                                                 clip.keyframes.forEach { kf ->
@@ -1382,8 +1549,8 @@ fun TimelinePanel(
                                     }
 
                                     // Vertical snap-frame drop indicator line inside hovered Character track
-                                    if (isDropHovered) {
-                                        val snapFrame = hoveredDropTarget?.third ?: currentFrame
+                                    if (isDropHovered && hoveredDropTarget != null) {
+                                        val snapFrame = hoveredDropTarget.third
                                         Box(
                                             modifier = Modifier
                                                 .offset(x = frameWidthDp * snapFrame, y = 0.dp)
@@ -1419,6 +1586,48 @@ fun TimelinePanel(
             )
         }
         }
+    }
+
+    if (showBulkDeleteClipsConfirm && selectedClipIds.isNotEmpty()) {
+        val count = selectedClipIds.size
+        AlertDialog(
+            onDismissRequest = { showBulkDeleteClipsConfirm = false },
+            containerColor = StudioCharcoal,
+            title = {
+                Text(
+                    text = if (count == 1) "Delete 1 Timeline Clip?" else "Delete $count Timeline Clips?",
+                    color = StudioTextPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "Remove $count selected ${if (count == 1) "clip" else "clips"} from \"${scene.name}\"? You can restore them with Undo.",
+                    color = StudioTextSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showBulkDeleteClipsConfirm = false
+                        onDeleteSelectedClips()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CoralPlayhead),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("timeline_bulk_delete_confirm_btn")
+                ) {
+                    Text("Delete ($count)", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showBulkDeleteClipsConfirm = false },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Cancel", color = StudioTextSecondary)
+                }
+            }
+        )
     }
 }
 

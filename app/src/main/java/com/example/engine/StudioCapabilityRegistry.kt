@@ -72,7 +72,20 @@ object StudioCapabilityRegistry {
         val shapeKinds: List<CapabilityItem>,
         val modularActions: List<CapabilityItem>,
         val savedPoses: List<CapabilityItem>,
-        val clipOperations: List<ClipOperationCapability>
+        val clipOperations: List<ClipOperationCapability>,
+        val armGesturePresets: List<CapabilityItem>,
+        val simultaneousTrackTypes: List<CapabilityItem>,
+        val ikJointLimits: Map<String, List<Float>>,
+        val propSwayDefaults: PropSwayConfig,
+        val parallaxDepthPresets: List<CapabilityItem>,
+        val weatherParticleStyles: List<CapabilityItem>,
+        val dialogueOverlayLanguages: List<CapabilityItem>,
+        val audioTrackRoles: List<CapabilityItem>,
+        val audioDuckingDefaults: AudioDuckingConfig,
+        val universalCurveTypes: List<CapabilityItem>,
+        val universalLoopModes: List<CapabilityItem>,
+        val universalPropertyDomains: List<CapabilityItem>,
+        val universalKeyframeChannels: List<CapabilityItem>
     )
 
     /**
@@ -261,6 +274,78 @@ object StudioCapabilityRegistry {
             ClipOperationCapability("trim", "Adjust start/end timing or audio trim window", listOf("startSec", "durationSec", "audioTrimStartMs", "audioTrimEndMs"))
         )
 
+        val armGesturePresets = ArmGestureTrackPreset.entries.map { gesture ->
+            CapabilityItem(
+                id = gesture.name,
+                label = gesture.displayName,
+                meta = mapOf("defaultHandPose" to gesture.defaultHandPose.name)
+            )
+        }
+
+        val simultaneousTrackTypes = SimultaneousTrackType.entries.map { track ->
+            CapabilityItem(id = track.name, label = track.displayName)
+        }
+
+        val ikJointLimits = IkRigSolver.AnatomicalJointLimits.asMap().mapValues { (_, range) ->
+            listOf(range.first, range.second)
+        }
+
+        val propSwayDefaults = PropSwayPhysics.DEFAULT_CONFIG
+
+        val parallaxDepthPresets = ParallaxDepthPreset.entries.map { preset ->
+            CapabilityItem(
+                id = preset.name,
+                label = preset.displayName,
+                meta = mapOf("depth" to preset.depth)
+            )
+        }
+
+        val weatherParticleStyles = WeatherParticleStyle.entries.map { style ->
+            CapabilityItem(
+                id = style.name,
+                label = style.displayName,
+                meta = mapOf("accentHex" to style.accentHex)
+            )
+        }
+
+        val dialogueOverlayLanguages = DialogueLanguage.entries.map { lang ->
+            CapabilityItem(
+                id = lang.code,
+                label = lang.displayName,
+                meta = mapOf("enumName" to lang.name, "badge" to lang.badge)
+            )
+        }
+
+        val audioTrackRoles = AudioTrackRole.entries.map { role ->
+            CapabilityItem(id = role.name, label = role.displayName)
+        }
+
+        val audioDuckingDefaults = AudioDuckingConfig()
+
+        val universalCurveTypes = UniversalCurveType.entries.map { curve ->
+            CapabilityItem(id = curve.name, label = curve.displayName)
+        }
+
+        val universalLoopModes = UniversalLoopMode.entries.map { mode ->
+            CapabilityItem(id = mode.name, label = mode.displayName)
+        }
+
+        val universalPropertyDomains = UniversalPropertyDomain.entries.map { domain ->
+            CapabilityItem(id = domain.name, label = domain.displayName)
+        }
+
+        val universalKeyframeChannels = UniversalKeyframeEngine.canonicalPropertyChannels.map { ch ->
+            CapabilityItem(
+                id = ch.propertyPath,
+                label = ch.description,
+                meta = buildMap {
+                    put("domain", ch.domain.name)
+                    put("valueType", ch.valueType.name)
+                    if (!ch.rangeHint.isNullOrBlank()) put("range", ch.rangeHint)
+                }
+            )
+        }
+
         return StudioCapabilitiesSnapshot(
             animationPresets = animationPresets,
             facialExpressions = facialExpressions,
@@ -290,7 +375,20 @@ object StudioCapabilityRegistry {
             shapeKinds = shapeKinds,
             modularActions = modularActions,
             savedPoses = savedPoses,
-            clipOperations = clipOperations
+            clipOperations = clipOperations,
+            armGesturePresets = armGesturePresets,
+            simultaneousTrackTypes = simultaneousTrackTypes,
+            ikJointLimits = ikJointLimits,
+            propSwayDefaults = propSwayDefaults,
+            parallaxDepthPresets = parallaxDepthPresets,
+            weatherParticleStyles = weatherParticleStyles,
+            dialogueOverlayLanguages = dialogueOverlayLanguages,
+            audioTrackRoles = audioTrackRoles,
+            audioDuckingDefaults = audioDuckingDefaults,
+            universalCurveTypes = universalCurveTypes,
+            universalLoopModes = universalLoopModes,
+            universalPropertyDomains = universalPropertyDomains,
+            universalKeyframeChannels = universalKeyframeChannels
         )
     }
 
@@ -329,5 +427,15 @@ object StudioCapabilityRegistry {
             snapshot.builtInProps.size +
             snapshot.modularActions.size +
             snapshot.savedPoses.size +
-            snapshot.clipOperations.size
+            snapshot.clipOperations.size +
+            snapshot.armGesturePresets.size +
+            snapshot.simultaneousTrackTypes.size +
+            snapshot.ikJointLimits.size +
+            snapshot.parallaxDepthPresets.size +
+            snapshot.weatherParticleStyles.size +
+            snapshot.dialogueOverlayLanguages.size +
+            snapshot.audioTrackRoles.size +
+            snapshot.universalCurveTypes.size +
+            snapshot.universalLoopModes.size +
+            snapshot.universalKeyframeChannels.size
 }

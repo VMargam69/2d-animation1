@@ -78,6 +78,7 @@ fun EditorScreen(
     onAddLayer: (LayerType, String) -> Unit,
     onRenameLayer: (String, String) -> Unit,
     onReorderLayer: (String, Boolean) -> Unit,
+    onUpdateLayerParallaxDepth: (String, Float) -> Unit = { _, _ -> },
     onDeleteLayer: (String) -> Unit,
     onUpdateTransform: ((TransformKeyframe) -> TransformKeyframe) -> Unit,
     onUpdateSelectedClip: ((TimelineClip) -> TimelineClip) -> Unit,
@@ -85,6 +86,10 @@ fun EditorScreen(
     onDuplicateClip: () -> Unit,
     onFlipClip: (Boolean) -> Unit,
     onDeleteClip: () -> Unit,
+    onToggleTimelineMultiSelectMode: () -> Unit = {},
+    onToggleTimelineClipMultiSelect: (String) -> Unit = {},
+    onSelectAllTimelineClips: () -> Unit = {},
+    onDeleteSelectedTimelineClips: () -> Unit = {},
     onAddShape: (ShapeKind, String, String) -> Unit,
     onAddText: (String, String, Float, TextBubbleStyle, String) -> Unit,
     onSetBackgroundBundled: (String) -> Unit,
@@ -95,6 +100,7 @@ fun EditorScreen(
     onCancelExport: () -> Unit,
     onToggleIkPosingMode: () -> Unit = {},
     onToggleIkFlipBend: () -> Unit = {},
+    onToggleIkJointLimits: () -> Unit = {},
     onMirrorIkPose: () -> Unit = {},
     onToggleCameraKeyMode: () -> Unit = {},
     onStepAdjacentKeyframe: (Boolean) -> Unit = {},
@@ -111,6 +117,9 @@ fun EditorScreen(
     onResetAllCameraKeyframes: () -> Unit = {},
     onApplyCinematicCameraPreset: (presetId: String, label: String, intensity: Float) -> Unit = { _, _, _ -> },
     onUpdateSceneVfx: ((SceneVfxConfig) -> SceneVfxConfig) -> Unit = {},
+    onUpsertDialogueOverlay: (DialogueOverlayBeat) -> Unit = {},
+    onRemoveDialogueOverlay: (String) -> Unit = {},
+    onUpdateAudioDucking: ((AudioDuckingConfig) -> AudioDuckingConfig) -> Unit = {},
     onImportCustomPropUri: (Uri, (String) -> Unit) -> Unit = { _, _ -> },
     onTrimAudioClip: (
         clipId: String,
@@ -133,6 +142,7 @@ fun EditorScreen(
     onSavePoseToLibrary: (String, PoseCategory, PoseKeyframeOffsets, GazeTarget, Float, FacialExpression, HandPoseType) -> Unit = { _, _, _, _, _, _, _ -> },
     onRenameSavedPose: (poseId: String, newName: String, newCategory: PoseCategory) -> Unit = { _, _, _ -> },
     onDeleteSavedPose: (poseId: String) -> Unit = {},
+    onDeleteSavedPoses: (Set<String>) -> Unit = { ids -> ids.forEach(onDeleteSavedPose) },
     onApplySavedPose: (SavedPose) -> Unit = {},
     onInsertModularAction: (clipId: String, action: com.example.engine.ModularActionDef) -> Unit = { _, _ -> },
     loadPoseThumbnail: (String?) -> android.graphics.Bitmap? = { null },
@@ -147,6 +157,7 @@ fun EditorScreen(
     // Smart back handling: exit active editing modes or deselect clip before exiting editor
     BackHandler {
         when {
+            state.isTimelineMultiSelectMode -> onToggleTimelineMultiSelectMode()
             state.isDrawingMode -> onToggleDrawingMode()
             state.isIkPosingMode -> onToggleIkPosingMode()
             state.isCameraKeyMode -> onToggleCameraKeyMode()
@@ -241,6 +252,7 @@ fun EditorScreen(
                             isDrawingMode = state.isDrawingMode,
                             isIkPosingMode = state.isIkPosingMode,
                             ikFlipBend = state.ikFlipBend,
+                            ikJointLimitsEnabled = state.ikJointLimitsEnabled,
                             isCameraKeyMode = state.isCameraKeyMode,
                             showGridOverlay = showGridOverlay,
                             brushColorHex = state.brushColorHex,
@@ -256,6 +268,7 @@ fun EditorScreen(
                             onResetCamera = onResetAllCameraKeyframes,
                             onExitCameraKeyMode = onToggleCameraKeyMode,
                             onToggleIkFlipBend = onToggleIkFlipBend,
+                            onToggleIkJointLimits = onToggleIkJointLimits,
                             onMirrorIkPose = onMirrorIkPose,
                             onStampPoseKey = onStampPoseKey,
                             onResetPoseAtFrame = onResetPoseAtCurrentFrame,
@@ -312,6 +325,12 @@ fun EditorScreen(
                             onStampCameraKeyframe = { onUpdateCamera { it } },
                             onOpenCameraStudio = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
                             isCameraKeyMode = state.isCameraKeyMode,
+                            isMultiSelectMode = state.isTimelineMultiSelectMode,
+                            selectedClipIds = state.selectedTimelineClipIds,
+                            onToggleMultiSelectMode = onToggleTimelineMultiSelectMode,
+                            onToggleClipMultiSelect = onToggleTimelineClipMultiSelect,
+                            onSelectAllClips = onSelectAllTimelineClips,
+                            onDeleteSelectedClips = onDeleteSelectedTimelineClips,
                             modifier = Modifier
                                 .weight(0.42f)
                                 .fillMaxHeight()
@@ -334,6 +353,7 @@ fun EditorScreen(
                             isDrawingMode = state.isDrawingMode,
                             isIkPosingMode = state.isIkPosingMode,
                             ikFlipBend = state.ikFlipBend,
+                            ikJointLimitsEnabled = state.ikJointLimitsEnabled,
                             isCameraKeyMode = state.isCameraKeyMode,
                             showGridOverlay = showGridOverlay,
                             brushColorHex = state.brushColorHex,
@@ -349,6 +369,7 @@ fun EditorScreen(
                             onResetCamera = onResetAllCameraKeyframes,
                             onExitCameraKeyMode = onToggleCameraKeyMode,
                             onToggleIkFlipBend = onToggleIkFlipBend,
+                            onToggleIkJointLimits = onToggleIkJointLimits,
                             onMirrorIkPose = onMirrorIkPose,
                             onStampPoseKey = onStampPoseKey,
                             onResetPoseAtFrame = onResetPoseAtCurrentFrame,
@@ -439,6 +460,12 @@ fun EditorScreen(
                             onStampCameraKeyframe = { onUpdateCamera { it } },
                             onOpenCameraStudio = { onOpenSheet(ActiveEditorSheet.CAMERA_CHROMA_STUDIO) },
                             isCameraKeyMode = state.isCameraKeyMode,
+                            isMultiSelectMode = state.isTimelineMultiSelectMode,
+                            selectedClipIds = state.selectedTimelineClipIds,
+                            onToggleMultiSelectMode = onToggleTimelineMultiSelectMode,
+                            onToggleClipMultiSelect = onToggleTimelineClipMultiSelect,
+                            onSelectAllClips = onSelectAllTimelineClips,
+                            onDeleteSelectedClips = onDeleteSelectedTimelineClips,
                             modifier = Modifier
                                 .weight(1f - canvasSplitFraction)
                                 .fillMaxWidth()
@@ -598,10 +625,14 @@ fun EditorScreen(
                 CharacterActingAndPropsDialog(
                     clip = clip,
                     currentFrame = state.currentFrame,
+                    fps = state.project.fps,
+                    dialogueOverlays = state.project.activeScene.dialogueOverlays,
                     isIkPosingMode = state.isIkPosingMode,
                     onToggleIkPosingMode = onToggleIkPosingMode,
                     onUpdateClip = onUpdateSelectedClip,
                     onUpdateTransform = onUpdateTransform,
+                    onUpsertDialogueOverlay = onUpsertDialogueOverlay,
+                    onRemoveDialogueOverlay = onRemoveDialogueOverlay,
                     onResetPoseAtFrame = onResetPoseAtCurrentFrame,
                     onImportCustomPropPng = { _ ->
                         customPropPicker.launch(
@@ -658,7 +689,9 @@ fun EditorScreen(
             state.selectedClip?.let { clip ->
                 SpeedAndDurationDialog(
                     clip = clip,
+                    audioDucking = state.project.audioDucking,
                     onUpdateClip = onUpdateSelectedClip,
+                    onUpdateAudioDucking = onUpdateAudioDucking,
                     onDismiss = onCloseSheet
                 )
             }
@@ -678,6 +711,7 @@ fun EditorScreen(
                 onAddLayer = onAddLayer,
                 onRenameLayer = onRenameLayer,
                 onReorderLayer = onReorderLayer,
+                onUpdateLayerParallaxDepth = onUpdateLayerParallaxDepth,
                 onToggleVisibility = onToggleLayerVisibility,
                 onToggleLock = onToggleLayerLock,
                 onDeleteLayer = onDeleteLayer,
@@ -762,6 +796,7 @@ fun EditorScreen(
                     onSavePoseToLibrary = onSavePoseToLibrary,
                     onRenameSavedPose = onRenameSavedPose,
                     onDeleteSavedPose = onDeleteSavedPose,
+                    onDeleteSavedPoses = onDeleteSavedPoses,
                     onApplySavedPose = onApplySavedPose,
                     onInsertModularAction = onInsertModularAction,
                     onCommitIkPose = onCommitIkStudioPose,

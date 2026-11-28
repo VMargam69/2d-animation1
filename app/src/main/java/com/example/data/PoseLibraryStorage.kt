@@ -115,16 +115,30 @@ class PoseLibraryStorage(
     /**
      * Deletes a saved pose from `pose_library.json` and cleans up its cached thumbnail PNG.
      */
-    suspend fun deletePose(poseId: String): List<SavedPose> = withContext(Dispatchers.IO) {
+    suspend fun deletePose(poseId: String): List<SavedPose> = deletePoses(setOf(poseId))
+
+    /**
+     * Atomically deletes multiple saved poses in a single JSON write and cleans up all
+     * removed cached thumbnail PNGs while syncing [StudioCapabilityRegistry].
+     */
+    suspend fun deletePoses(poseIds: Set<String>): List<SavedPose> = withContext(Dispatchers.IO) {
+        deletePosesBlocking(poseIds)
+    }
+
+    fun deletePosesBlocking(poseIds: Set<String>): List<SavedPose> {
+        if (poseIds.isEmpty()) return loadPosesBlocking()
         val current = loadPosesBlocking()
-        val removed = current.firstOrNull { it.id == poseId }
-        val updated = current.filterNot { it.id == poseId }
+        val removed = current.filter { it.id in poseIds }
+        if (removed.isEmpty()) return current
+        val updated = current.filterNot { it.id in poseIds }
         writePosesBlocking(updated)
-        removed?.thumbnailPath?.let { path ->
-            runCatching { thumbnailCache.remove(path) }
-            runCatching { File(path).takeIf { it.exists() }?.delete() }
+        removed.forEach { pose ->
+            pose.thumbnailPath?.let { path ->
+                runCatching { thumbnailCache.remove(path) }
+                runCatching { File(path).takeIf { it.exists() }?.delete() }
+            }
         }
-        updated
+        return updated
     }
 
     fun writePosesBlocking(poses: List<SavedPose>) {

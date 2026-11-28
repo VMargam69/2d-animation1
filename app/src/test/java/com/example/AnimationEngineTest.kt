@@ -2183,5 +2183,1203 @@ class AnimationEngineTest {
         assertEquals(FacialExpression.HAPPY, evalMid.expressionOverride)
         assertEquals(HandPoseType.POINT, evalMid.handPoseOverride)
     }
+
+    @Test
+    fun `Phase 1 - simultaneous 5-track character layering blends Base Preset, Arm Gesture, IK Pose, Facial Overrides, and Auto Lip-Sync without overwriting`() {
+        val clip = TimelineClip(
+            id = "c_multi_1",
+            layerId = "l_char",
+            name = "Hero Multi",
+            characterId = BuiltInCatalog.builtInCharacters.first().id,
+            animationPresetType = AnimationPresetType.WALK,
+            armGesturePreset = ArmGestureTrackPreset.WAVE,
+            facialOverridesEnabled = true,
+            mouthShapeOverride = MouthShapeOverride.SMILE,
+            eyeShapeOverride = EyeShapeOverride.HAPPY_ARC,
+            eyebrowShapeOverride = EyebrowShapeOverride.ARCHED_HAPPY,
+            lipSyncAudioClipId = "aud_voice_1",
+            keyframes = listOf(
+                TransformKeyframe(
+                    frame = 0,
+                    poseOffsets = PoseKeyframeOffsets(
+                        leftLegOffset = 14f,
+                        rightArmOffset = -10f
+                    )
+                )
+            )
+        )
+        val syncMeta = AudioSyncMetadata(
+            clipId = "aud_voice_1",
+            clipName = "Voice",
+            fps = 24,
+            phonemeMappings = listOf(
+                PhonemeFrameMapping(frame = 12, timeMs = 500L, phoneme = "AA", mouthShape = "MTH4", amplitude = 0.72f)
+            )
+        )
+
+        val evalAt12 = KeyframeEvaluator.evaluate(clip, 12)
+        val blended = KeyframeEvaluator.evaluateSimultaneousCharacterTracks(
+            clip = clip,
+            eval = evalAt12,
+            globalFrame = 12,
+            fps = 24,
+            audioSyncTracks = listOf(syncMeta)
+        )
+
+        // Track 1 + 3: Base leg IK preserved untouched by Wave gesture
+        assertEquals(14f, blended.blendedPoseOffsets.leftLegOffset, 0.01f)
+        // Track 2 + 3: Wave arm gesture added cleanly on top of IK (-10f)
+        assertTrue("Expected Wave arm gesture to raise right arm strongly", blended.blendedPoseOffsets.rightArmOffset < -80f)
+        // Track 4: Eye & Eyebrow overrides active
+        assertEquals(EyeShapeOverride.HAPPY_ARC, blended.effectiveEyeOverride)
+        assertEquals(EyebrowShapeOverride.ARCHED_HAPPY, blended.effectiveEyebrowOverride)
+        // Track 5: Auto Lip-Sync overrides mouth to TALK_AA at speaking frame 12
+        assertTrue(blended.lipSyncActive)
+        assertEquals(MouthShapeOverride.TALK_AA, blended.effectiveMouthOverride)
+
+        // Disabling Facial Expression Overrides bypasses eye/eyebrow/mouth overrides cleanly while keeping legs & arm gesture!
+        val disabledClip = clip.copy(facialOverridesEnabled = false, lipSyncAudioClipId = null)
+        val blendedDisabled = KeyframeEvaluator.evaluateSimultaneousCharacterTracks(
+            clip = disabledClip,
+            eval = KeyframeEvaluator.evaluate(disabledClip, 12),
+            globalFrame = 12,
+            fps = 24
+        )
+        assertEquals(MouthShapeOverride.AUTO, blendedDisabled.effectiveMouthOverride)
+        assertEquals(EyeShapeOverride.AUTO, blendedDisabled.effectiveEyeOverride)
+        assertEquals(EyebrowShapeOverride.AUTO, blendedDisabled.effectiveEyebrowOverride)
+        assertTrue(blendedDisabled.blendedPoseOffsets.rightArmOffset < -80f)
+    }
+
+    @Test
+    fun `Phase 2 - anatomical IK joint rotation constraints clamp extreme bends when enabled and allow cartoon bending when disabled`() {
+        val extremePose = PoseKeyframeOffsets(
+            headNodOffset = 95f,
+            torsoTiltOffset = -85f,
+            leftArmOffset = 220f,
+            rightArmOffset = -220f,
+            leftForearmOffset = 95f,     // backward left elbow hyperextension (anatomical is -142..0)
+            rightForearmOffset = -95f,   // backward right elbow hyperextension (anatomical is 0..142)
+            leftLegOffset = 160f,
+            rightLegOffset = -160f,
+            leftKneeOffset = -110f,      // backward knee hyperextension (anatomical is 0..132)
+            rightKneeOffset = 190f       // over-bent/hyperextended knee
+        )
+
+        val clamped = com.example.engine.IkRigSolver.clampPoseOffsets(
+            offsets = extremePose,
+            enforceJointLimits = true,
+            orientation = CharacterOrientation.FRONT
+        )
+        assertTrue("Neck should stay within anatomical limit", clamped.headNodOffset in -42f..42f)
+        assertTrue("Torso should stay within anatomical limit", clamped.torsoTiltOffset in -38f..38f)
+        assertTrue("Left elbow must not hyperextend past 0", clamped.leftForearmOffset in -142f..0f)
+        assertTrue("Right elbow must not hyperextend below 0", clamped.rightForearmOffset in 0f..142f)
+        assertTrue("Left knee must not invert backward", clamped.leftKneeOffset in 0f..132f)
+        assertTrue("Right knee in FRONT view stays within hinge", clamped.rightKneeOffset in -132f..0f)
+        assertTrue("Left hip should stay within anatomical limit", clamped.leftLegOffset in -105f..95f)
+
+        val clampedSide = com.example.engine.IkRigSolver.clampPoseOffsets(
+            offsets = extremePose,
+            enforceJointLimits = true,
+            orientation = CharacterOrientation.SIDE
+        )
+        assertTrue("Right knee in SIDE view clamps at 132 deg max", clampedSide.rightKneeOffset in 0f..132f)
+
+        // When enforceJointLimits = false (cartoon bending mode), wider stylized range is permitted
+        val freeCartoon = com.example.engine.IkRigSolver.clampPoseOffsets(
+            offsets = extremePose,
+            enforceJointLimits = false
+        )
+        assertTrue("Cartoon mode should allow wider head tilt", freeCartoon.headNodOffset > 42f)
+        assertTrue("Cartoon mode should allow wider torso bend", freeCartoon.torsoTiltOffset < -38f)
+        assertTrue("Cartoon mode should allow stylized knee inversion", freeCartoon.leftKneeOffset < -20f)
+
+        // Verify live 2-bone IK drag solver respects enforceJointLimits flag
+        val rig = BuiltInCatalog.builtInCharacters.first()
+        val clip = TimelineClip(
+            id = "c_ik_p2",
+            layerId = "l_char",
+            name = "IK Hero",
+            characterId = rig.id
+        )
+        val eval = KeyframeEvaluator.evaluate(clip, 0)
+        val basePose = ProceduralRigRenderer.computePose(clip.animationPresetType, 0f)
+        val draggedClamped = com.example.engine.IkRigSolver.solveIkDragToOffsets(
+            handleId = IkHandleId.HEAD,
+            targetNx = 0.95f,
+            targetNy = 0.95f,
+            clip = clip,
+            rig = rig,
+            transform = eval,
+            basePose = basePose,
+            currentOffsets = PoseKeyframeOffsets(),
+            stageWidth = 1000f,
+            stageHeight = 1000f,
+            enforceJointLimits = true
+        )
+        assertTrue("IK drag with limits ON clamps neck", draggedClamped.headNodOffset in -42f..42f)
+        assertTrue("IK drag with limits ON clamps torso", draggedClamped.torsoTiltOffset in -38f..38f)
+    }
+
+    @Test
+    fun `Phase 3 - deterministic spring-damper prop sway respects custom stiffness, damping, maxAngleDeg, and reproduces identically on scrub and export`() {
+        val rig = BuiltInCatalog.builtInCharacters.first()
+        val fastRunClip = TimelineClip(
+            id = "c_sway_p3",
+            layerId = "l_char",
+            name = "Fast Lantern Sprint",
+            characterId = rig.id,
+            animationPresetType = AnimationPresetType.WALK,
+            speedMultiplier = 1.6f,
+            propType = CharacterPropType.LANTERN,
+            propAttachment = PropAttachmentPoint.HEAD,
+            propSwayEnabled = true,
+            propSwayStrength = 1.4f,
+            propSwayStiffness = 28f,
+            propSwayDamping = 2.4f,
+            propSwayMaxAngleDeg = 42f,
+            keyframes = listOf(
+                TransformKeyframe(frame = 0, x = 0.12f, y = 0.72f),
+                TransformKeyframe(frame = 18, x = 0.88f, y = 0.72f)
+            )
+        )
+
+        // Frame-reproducible determinism: jumping out of order gives exact bit-for-bit same state
+        val f12a = com.example.engine.PropSwayPhysics.evaluate(fastRunClip, rig, frame = 12, fps = 24)
+        com.example.engine.PropSwayPhysics.evaluate(fastRunClip, rig, frame = 3, fps = 24)
+        val f12b = com.example.engine.PropSwayPhysics.evaluate(fastRunClip, rig, frame = 12, fps = 24)
+        assertEquals(f12a, f12b)
+
+        // Higher damping noticeably reduces peak oscillation compared to low damping
+        val heavilyDamped = com.example.engine.PropSwayPhysics.evaluate(
+            fastRunClip.copy(propSwayDamping = 13.5f), rig, frame = 12, fps = 24
+        )
+        assertTrue(
+            "Heavier damping (${heavilyDamped.angleDeg}) should damp sway vs loose damping (${f12a.angleDeg})",
+            kotlin.math.abs(heavilyDamped.angleDeg) < kotlin.math.abs(f12a.angleDeg)
+        )
+
+        // Custom maxAngleDeg strictly caps output angle
+        val tightCap = com.example.engine.PropSwayPhysics.evaluate(
+            fastRunClip.copy(propSwayMaxAngleDeg = 9f, propSwayStrength = 2.0f), rig, frame = 12, fps = 24
+        )
+        assertTrue("Custom maxAngleDeg=9 must clamp angle, got ${tightCap.angleDeg}", kotlin.math.abs(tightCap.angleDeg) <= 9.01f)
+
+        // Moshi JSON round-trip preserves stiffness, damping, maxAngleDeg
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(TimelineClip::class.java)
+        val restored = adapter.fromJson(adapter.toJson(fastRunClip))
+        assertNotNull(restored)
+        assertEquals(28f, restored!!.propSwayStiffness, 0.001f)
+        assertEquals(2.4f, restored.propSwayDamping, 0.001f)
+        assertEquals(42f, restored.propSwayMaxAngleDeg, 0.001f)
+    }
+
+    @Test
+    fun `Phase 4 - 2_5D multi-plane parallax scales camera pan and zoom accurately for Far, Mid, Stage, and Near planes`() {
+        val baseCam = com.example.engine.EvaluatedCamera(x = 0.70f, y = 0.40f, zoom = 1.50f, rotation = 10f)
+
+        // Stage plane (1.0f) stays 100% identical to base camera
+        val stageCam = com.example.engine.ParallaxCameraMath.computeLayerCamera(baseCam, ParallaxDepthPreset.STAGE.depth)
+        assertEquals(baseCam.x, stageCam.x, 0.0001f)
+        assertEquals(baseCam.y, stageCam.y, 0.0001f)
+        assertEquals(baseCam.zoom, stageCam.zoom, 0.0001f)
+
+        // Far plane (0.2f) drifts 5x slower and zooms gently
+        val farCam = com.example.engine.ParallaxCameraMath.computeLayerCamera(baseCam, ParallaxDepthPreset.FAR.depth)
+        assertEquals(0.54f, farCam.x, 0.001f)
+        assertEquals(0.48f, farCam.y, 0.001f)
+        assertEquals(1.10f, farCam.zoom, 0.001f)
+
+        // Mid plane (0.6f) scales proportionally
+        val midCam = com.example.engine.ParallaxCameraMath.computeLayerCamera(baseCam, ParallaxDepthPreset.MID.depth)
+        assertEquals(0.62f, midCam.x, 0.001f)
+        assertEquals(1.30f, midCam.zoom, 0.001f)
+
+        // Near foreground plane (1.35f) sweeps past faster and looms larger than stage
+        val nearCam = com.example.engine.ParallaxCameraMath.computeLayerCamera(baseCam, ParallaxDepthPreset.NEAR.depth)
+        assertEquals(0.77f, nearCam.x, 0.001f)
+        assertEquals(1.675f, nearCam.zoom, 0.001f)
+        assertTrue(farCam.x < midCam.x && midCam.x < stageCam.x && stageCam.x < nearCam.x)
+
+        // ProjectMutator.updateLayerParallaxDepth updates layer & Moshi round-trips it cleanly
+        val proj = BuiltInCatalog.sceneTemplates.first().buildProject("Parallax Test")
+        val targetLayer = proj.activeScene.layers.first { it.type != LayerType.AUDIO }
+        val updated = ProjectMutator.updateLayerParallaxDepth(proj, targetLayer.id, ParallaxDepthPreset.FAR.depth)
+        assertEquals(0.2f, updated.activeScene.layers.first { it.id == targetLayer.id }.parallaxDepth, 0.001f)
+
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(updated))
+        assertEquals(0.2f, restored!!.activeScene.layers.first { it.id == targetLayer.id }.parallaxDepth, 0.001f)
+    }
+
+    @Test
+    fun `Phase 5 - deterministic offline weather engine evaluates all 7 styles identically per frame, respects wind angle and start-end time window`() {
+        val activeStyles = WeatherParticleStyle.entries.filter { it != WeatherParticleStyle.NONE }
+        assertEquals("Expected 7 weather styles", 7, activeStyles.size)
+
+        for (style in activeStyles) {
+            val cfg = WeatherParticleConfig(
+                enabled = true,
+                style = style,
+                density = 0.65f,
+                windSpeed = 1.1f,
+                windAngleDeg = 22f,
+                sizeScale = 1.2f,
+                opacity = 0.85f,
+                startSec = 1.0f,
+                endSec = 4.0f,
+                seed = 7711
+            )
+            // Outside time window -> zero particles
+            assertTrue(
+                "$style should be empty before startSec",
+                com.example.engine.WeatherParticleEngine.sampleParticles(cfg, frameIndex = 10, fps = 24, width = 1280f, height = 720f).isEmpty()
+            )
+            assertTrue(
+                "$style should be empty after endSec",
+                com.example.engine.WeatherParticleEngine.sampleParticles(cfg, frameIndex = 120, fps = 24, width = 1280f, height = 720f).isEmpty()
+            )
+
+            // Inside window -> deterministic identical output on repeated calls
+            val s1 = com.example.engine.WeatherParticleEngine.sampleParticles(cfg, frameIndex = 48, fps = 24, width = 1280f, height = 720f)
+            val s2 = com.example.engine.WeatherParticleEngine.sampleParticles(cfg, frameIndex = 48, fps = 24, width = 1280f, height = 720f)
+            assertTrue("$style must emit particles inside window", s1.isNotEmpty())
+            assertEquals("$style must be 100% deterministic for same frame & seed", s1, s2)
+        }
+
+        // Changing wind angle measurably shifts rain X trajectory
+        val calmRain = WeatherParticleConfig(enabled = true, style = WeatherParticleStyle.RAIN, windSpeed = 1.4f, windAngleDeg = 0f, seed = 42)
+        val windyRain = calmRain.copy(windAngleDeg = 45f)
+        val pCalm = com.example.engine.WeatherParticleEngine.sampleParticles(calmRain, frameIndex = 36, fps = 24, width = 1280f, height = 720f)
+        val pWindy = com.example.engine.WeatherParticleEngine.sampleParticles(windyRain, frameIndex = 36, fps = 24, width = 1280f, height = 720f)
+        assertNotEquals(pCalm.first().x, pWindy.first().x)
+
+        // Moshi round-trip on AnimationScene.weatherLayers
+        val scene = AnimationScene(weatherLayers = listOf(windyRain))
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(AnimationScene::class.java)
+        val restored = adapter.fromJson(adapter.toJson(scene))
+        assertEquals(1, restored!!.weatherLayers.size)
+        assertEquals(WeatherParticleStyle.RAIN, restored.weatherLayers.first().style)
+        assertEquals(45f, restored.weatherLayers.first().windAngleDeg, 0.001f)
+    }
+
+    @Test
+    fun `Phase 6 - optional dialogue overlays default to OFF and preserve Odia, Hindi, and English Unicode text with pop-in and fade animations`() {
+        val defaultBeat = DialogueOverlayBeat(
+            speakerName = "Arjun",
+            text = "ନମସ୍କାର! ଆଜି ବହୁତ ସୁନ୍ଦର ଦିନ।",
+            language = "or",
+            startFrame = 10,
+            endFrame = 70
+        )
+        // Strictly OFF by default!
+        assertFalse(defaultBeat.showSpeechBubble)
+        assertFalse(defaultBeat.showSubtitle)
+        assertFalse(defaultBeat.isOptedIn)
+        assertTrue(
+            "Default OFF overlay must never activate",
+            com.example.engine.DialogueOverlayRenderer.selectActiveOverlays(listOf(defaultBeat), frame = 25).isEmpty()
+        )
+
+        // Opt-in Odia Speech Bubble + Hindi Subtitle + English Subtitle
+        val odiaBubble = defaultBeat.copy(showSpeechBubble = true)
+        val hindiSubtitle = DialogueOverlayBeat(
+            speakerName = "Maya",
+            text = "नमस्ते! आज बहुत सुंदर दिन है।",
+            language = "hi",
+            startFrame = 10,
+            endFrame = 70,
+            showSubtitle = true
+        )
+        val englishBoth = DialogueOverlayBeat(
+            speakerName = "Hero",
+            text = "Let's start the adventure!",
+            language = "en",
+            startFrame = 10,
+            endFrame = 70,
+            showSpeechBubble = true,
+            showSubtitle = true
+        )
+
+        val active = com.example.engine.DialogueOverlayRenderer.selectActiveOverlays(
+            listOf(defaultBeat, odiaBubble, hindiSubtitle, englishBoth),
+            frame = 25
+        )
+        assertEquals(3, active.size)
+        assertTrue(com.example.engine.DialogueOverlayRenderer.selectActiveOverlays(listOf(odiaBubble), frame = 5).isEmpty())
+        assertTrue(com.example.engine.DialogueOverlayRenderer.selectActiveOverlays(listOf(odiaBubble), frame = 70).isEmpty())
+
+        // Verify pop-in overshoot & settled scale + subtitle fade/slide
+        val peakPop = (10..18).maxOf { f ->
+            com.example.engine.DialogueOverlayRenderer.evaluateOverlayAnimation(odiaBubble, frame = f, fps = 24).bubbleScale
+        }
+        assertTrue("Expected comic pop-in overshoot > 1.0, got $peakPop", peakPop > 1.01f)
+        val settled = com.example.engine.DialogueOverlayRenderer.evaluateOverlayAnimation(odiaBubble, frame = 40, fps = 24)
+        assertEquals(1.0f, settled.bubbleScale, 0.01f)
+        assertEquals(1.0f, settled.subtitleAlpha, 0.01f)
+        assertEquals(0.0f, settled.subtitleSlideOffsetRatio, 0.01f)
+
+        // Moshi JSON round-trip preserves exact Odia & Hindi Unicode strings
+        val scene = AnimationScene(dialogueOverlays = listOf(odiaBubble, hindiSubtitle, englishBoth))
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(AnimationScene::class.java)
+        val restored = adapter.fromJson(adapter.toJson(scene))
+        assertEquals(3, restored!!.dialogueOverlays.size)
+        assertEquals("ନମସ୍କାର! ଆଜି ବହୁତ ସୁନ୍ଦର ଦିନ।", restored.dialogueOverlays[0].text)
+        assertEquals("or", restored.dialogueOverlays[0].language)
+        assertEquals("नमस्ते! आज बहुत सुंदर दिन है।", restored.dialogueOverlays[1].text)
+        assertEquals("hi", restored.dialogueOverlays[1].language)
+        assertEquals("Let's start the adventure!", restored.dialogueOverlays[2].text)
+    }
+
+    @Test
+    fun `Phase 7 - smart auto audio ducking smoothly attenuates BGM during active dialogue, recovers on release, and scales PCM16 audio`() {
+        val bgmClip = TimelineClip(
+            id = "aud_bgm",
+            layerId = "l_audio",
+            name = "Village Flute BGM",
+            audioPath = "/tmp/bgm.mp3",
+            audioTrackRole = AudioTrackRole.BGM,
+            startFrame = 0,
+            durationFrames = 144
+        )
+        val dialogueClip = TimelineClip(
+            id = "aud_dlg",
+            layerId = "l_audio",
+            name = "Hero Dialogue",
+            audioPath = "/tmp/voice.wav",
+            audioTrackRole = AudioTrackRole.DIALOGUE,
+            startFrame = 24, // 1.0s at 24fps
+            durationFrames = 48 // 1.0s..3.0s
+        )
+        // Voice is loud from 1.0s..2.5s (local 0..1500ms), silent after 1600ms
+        val syncMeta = AudioSyncMetadata(
+            clipId = "aud_dlg",
+            clipName = "Hero Dialogue",
+            fps = 24,
+            durationMs = 2000L,
+            volumeCurve = listOf(
+                VolumeCurvePoint(timeMs = 100L, frame = 2, gain = 0.65f),
+                VolumeCurvePoint(timeMs = 600L, frame = 14, gain = 0.72f),
+                VolumeCurvePoint(timeMs = 1200L, frame = 28, gain = 0.58f),
+                VolumeCurvePoint(timeMs = 1700L, frame = 40, gain = 0.03f),
+                VolumeCurvePoint(timeMs = 1950L, frame = 46, gain = 0.02f)
+            )
+        )
+        val cfg = AudioDuckingConfig(
+            duckingEnabled = true,
+            duckTargetVolume = 0.25f,
+            attackMs = 150,
+            releaseMs = 350,
+            voiceThreshold = 0.12f
+        )
+
+        val env = com.example.engine.AudioDuckingEngine.computeBgmGainEnvelope(
+            sceneClips = listOf(bgmClip, dialogueClip),
+            audioSyncTracks = listOf(syncMeta),
+            config = cfg,
+            totalDurationMs = 5000L,
+            fps = 24
+        )
+
+        // Before dialogue starts (500ms) -> full volume 1.0f
+        val gainBefore = com.example.engine.AudioDuckingEngine.sampleGainAtMs(env, 500L)
+        assertEquals(1.0f, gainBefore, 0.02f)
+
+        // Deep inside active dialogue (1800ms) -> smoothly ducked close to 0.25f
+        val gainDuring = com.example.engine.AudioDuckingEngine.sampleGainAtMs(env, 1800L)
+        assertTrue("Expected BGM ducked near 0.25f during speech, got $gainDuring", gainDuring in 0.24f..0.34f)
+
+        // After dialogue finishes + release window (4400ms) -> smoothly recovered near 1.0f
+        val gainAfter = com.example.engine.AudioDuckingEngine.sampleGainAtMs(env, 4400L)
+        assertTrue("Expected BGM recovered near 1.0f after release, got $gainAfter", gainAfter > 0.92f)
+
+        // When duckingEnabled = false -> BGM stays at 1.0f throughout dialogue
+        val envOff = com.example.engine.AudioDuckingEngine.computeBgmGainEnvelope(
+            sceneClips = listOf(bgmClip, dialogueClip),
+            audioSyncTracks = listOf(syncMeta),
+            config = cfg.copy(duckingEnabled = false),
+            totalDurationMs = 5000L,
+            fps = 24
+        )
+        assertEquals(1.0f, com.example.engine.AudioDuckingEngine.sampleGainAtMs(envOff, 1800L), 0.001f)
+
+        // Verify PCM16 offline attenuation during dialogue window
+        val rawBgmPcm = ShortArray(4410) { 20000.toShort() } // 100ms at 44.1kHz
+        val duckedPcm = com.example.engine.AudioDuckingEngine.applyDuckingEnvelopeToPcm16(
+            pcmSamples = rawBgmPcm,
+            sampleRateHz = 44100,
+            channelCount = 1,
+            startTimeMs = 1800L,
+            envelope = env
+        )
+        assertTrue("Ducked PCM should be attenuated ~75%, got ${duckedPcm[2000]}", duckedPcm[2000] in 4500..7000)
+
+        // Moshi JSON round-trip of AudioDuckingConfig + TimelineClip.audioTrackRole
+        val proj = ProjectDocument(
+            name = "Ducking Roundtrip",
+            audioDucking = cfg.copy(duckTargetVolume = 0.18f, attackMs = 120, releaseMs = 500)
+        )
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(proj))
+        assertEquals(0.18f, restored!!.audioDucking.duckTargetVolume, 0.001f)
+        assertEquals(120, restored.audioDucking.attackMs)
+        assertEquals(500, restored.audioDucking.releaseMs)
+    }
+
+    @Test
+    fun `Phase 8 blueprint and director script dynamically wire all 7 pro features and preserve opt-in dialogue defaults`() {
+        // 1. Dynamic StudioCapabilityRegistry + AIBlueprintExporter verification
+        val caps = com.example.engine.StudioCapabilityRegistry.introspect()
+        assertEquals(ArmGestureTrackPreset.entries.size, caps.armGesturePresets.size)
+        assertEquals(SimultaneousTrackType.entries.size, caps.simultaneousTrackTypes.size)
+        assertTrue(caps.ikJointLimits.containsKey("leftElbow"))
+        assertTrue(caps.ikJointLimits.containsKey("neck"))
+        assertEquals(ParallaxDepthPreset.entries.size, caps.parallaxDepthPresets.size)
+        assertEquals(WeatherParticleStyle.entries.size, caps.weatherParticleStyles.size)
+        assertEquals(DialogueLanguage.entries.size, caps.dialogueOverlayLanguages.size)
+        assertEquals(AudioTrackRole.entries.size, caps.audioTrackRoles.size)
+        assertEquals(0.25f, caps.audioDuckingDefaults.duckTargetVolume, 0.001f)
+
+        val baseProject = BuiltInCatalog.sceneTemplates.first().buildProject("Phase 8 Full Pipeline")
+        val bp = com.example.engine.AIBlueprintExporter.buildBlueprint(
+            project = baseProject.copy(audioDucking = AudioDuckingConfig(duckTargetVolume = 0.22f)),
+            characters = BuiltInCatalog.builtInCharacters.take(1),
+            mediaAssets = emptyList()
+        )
+        assertEquals(0.22f, bp.projectMeta.audioDucking.duckTargetVolume, 0.001f)
+        assertTrue(bp.capabilities.weatherParticleStyles.contains("FALLING_LEAVES"))
+        assertTrue(bp.capabilities.dialogueOverlayLanguages.containsAll(listOf("en", "hi", "or")))
+        assertTrue(bp.capabilities.armGesturePresets.contains("WAVE"))
+        assertTrue(bp.capabilities.audioTrackRoles.containsAll(listOf("DIALOGUE", "BGM", "SFX")))
+        assertEquals(45f, bp.capabilities.propSwayDefaults.stiffness, 0.01f)
+
+        val heroId = BuiltInCatalog.builtInCharacters.first().id
+
+        // 2. Director Script (.fcscript.json) exercising all 7 pro offline features simultaneously
+        val scriptJson = """
+            {
+              "format": "framecraft.director_script",
+              "schemaVersion": 3,
+              "fps": 24,
+              "audioDucking": {
+                "duckingEnabled": true,
+                "duckTargetVolume": 0.20,
+                "attackMs": 140,
+                "releaseMs": 380,
+                "voiceThreshold": 0.10
+              },
+              "scenes": [
+                {
+                  "name": "Monsoon Village Scene",
+                  "durationSec": 4.0,
+                  "weatherLayers": [
+                    { "style": "RAIN", "density": 0.85, "windSpeed": 1.1, "windAngleDeg": 18.0, "startSec": 0.5, "endSec": 3.5 },
+                    { "style": "FALLING_LEAVES", "density": 0.45, "windSpeed": 0.7 }
+                  ],
+                  "dialogueOverlays": [
+                    {
+                      "id": "dlg_odia",
+                      "speakerCharacterId": "$heroId",
+                      "speakerClipId": "clip_hero",
+                      "speakerName": "Arjun",
+                      "text": "ନମସ୍କାର! ବର୍ଷା ଆସୁଛି।",
+                      "language": "or",
+                      "startSec": 0.5,
+                      "endSec": 2.5,
+                      "showSpeechBubble": true,
+                      "showSubtitle": true
+                    },
+                    {
+                      "id": "dlg_opt_out_default",
+                      "speakerClipId": "clip_hero",
+                      "text": "नमस्ते दुनिया",
+                      "language": "hi",
+                      "startSec": 2.5,
+                      "endSec": 3.8
+                    }
+                  ],
+                  "layers": [
+                    { "id": "l_far", "name": "Far Mountains", "type": "IMAGE", "zIndex": 0, "parallaxDepth": 0.2 },
+                    { "id": "l_stage", "name": "Hero Stage", "type": "CHARACTER", "zIndex": 1, "parallaxDepth": 1.0 },
+                    { "id": "l_near", "name": "Near Grass", "type": "IMAGE", "zIndex": 2, "parallaxDepth": 1.35 },
+                    { "id": "l_audio", "name": "Audio", "type": "AUDIO", "zIndex": 3 }
+                  ],
+                  "clips": [
+                    {
+                      "id": "clip_hero",
+                      "layerId": "l_stage",
+                      "name": "Hero",
+                      "characterId": "$heroId",
+                      "startSec": 0.0,
+                      "durationSec": 4.0,
+                      "animationPreset": "WALK",
+                      "armGesturePreset": "WAVE",
+                      "facialOverridesEnabled": true,
+                      "mouthShapeOverride": "SMILE",
+                      "enforceJointLimits": true,
+                      "propType": "LANTERN",
+                      "propAttachment": "RIGHT_HAND",
+                      "propSwayEnabled": true,
+                      "propSwayStiffness": 62.0,
+                      "propSwayDamping": 7.5,
+                      "propSwayMaxAngleDeg": 34.0,
+                      "keyframes": [
+                        {
+                          "tSec": 0.0,
+                          "x": 0.4,
+                          "y": 0.82,
+                          "armGesture": "POINT",
+                          "ikPose": { "headNod": 95.0, "leftForearm": 60.0, "rightForearm": 210.0 }
+                        }
+                      ]
+                    },
+                    {
+                      "id": "clip_voice",
+                      "layerId": "l_audio",
+                      "name": "Odia Voiceover",
+                      "audioAssetId": "aud_voice_test",
+                      "audioTrackRole": "DIALOGUE",
+                      "audioVolume": 1.15,
+                      "startSec": 0.5,
+                      "durationSec": 2.0
+                    }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val result = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = scriptJson,
+            currentProject = baseProject,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = listOf(
+                LocalMediaAsset(
+                    id = "aud_voice_test",
+                    name = "Odia Voiceover",
+                    category = "Audio",
+                    type = MediaAssetType.AUDIO,
+                    localFilePath = "/tmp/odia_voice.wav"
+                )
+            ),
+            importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE
+        )
+        assertTrue("Director Script failed: ${result.exceptionOrNull()?.message}", result.isSuccess)
+        val compiled = result.getOrThrow()
+
+        // Dry-run report counts
+        assertEquals(2, compiled.report.weatherLayerCount)
+        assertEquals(2, compiled.report.dialogueOverlayCount)
+        assertTrue(compiled.report.audioDuckingConfigured)
+
+        // Phase 7 audio ducking + audio role
+        assertEquals(0.20f, compiled.project.audioDucking.duckTargetVolume, 0.001f)
+        assertEquals(140, compiled.project.audioDucking.attackMs)
+        assertEquals(380, compiled.project.audioDucking.releaseMs)
+
+        val scene = compiled.project.activeScene
+        // Phase 4 parallax depths
+        assertEquals(0.2f, scene.layers.first { it.id == "l_far" }.parallaxDepth, 0.001f)
+        assertEquals(1.35f, scene.layers.first { it.id == "l_near" }.parallaxDepth, 0.001f)
+
+        // Phase 5 weather layers
+        assertEquals(2, scene.weatherLayers.size)
+        assertEquals(WeatherParticleStyle.RAIN, scene.weatherLayers[0].style)
+        assertEquals(0.85f, scene.weatherLayers[0].density, 0.001f)
+        assertEquals(WeatherParticleStyle.FALLING_LEAVES, scene.weatherLayers[1].style)
+
+        // Phase 6 dialogue overlays (Odia opted-in, Hindi defaults strictly OFF)
+        assertEquals(2, scene.dialogueOverlays.size)
+        val odiaBeat = scene.dialogueOverlays.first { it.id == "dlg_odia" }
+        assertEquals("or", odiaBeat.language)
+        assertTrue(odiaBeat.showSpeechBubble)
+        assertTrue(odiaBeat.showSubtitle)
+        assertTrue(odiaBeat.isOptedIn)
+
+        val defaultOffBeat = scene.dialogueOverlays.first { it.id == "dlg_opt_out_default" }
+        assertEquals("hi", defaultOffBeat.language)
+        assertFalse("showSpeechBubble MUST default to false when omitted", defaultOffBeat.showSpeechBubble)
+        assertFalse("showSubtitle MUST default to false when omitted", defaultOffBeat.showSubtitle)
+        assertFalse("Dialogue overlay with omitted flags MUST NOT render", defaultOffBeat.isOptedIn)
+
+        // Phase 1 + 2 + 3 character clip
+        val heroClip = scene.clips.first { it.id == "clip_hero" }
+        assertEquals(ArmGestureTrackPreset.WAVE, heroClip.armGesturePreset)
+        assertTrue(heroClip.facialOverridesEnabled)
+        assertEquals(MouthShapeOverride.SMILE, heroClip.mouthShapeOverride)
+        assertEquals(62f, heroClip.propSwayStiffness, 0.01f)
+        assertEquals(7.5f, heroClip.propSwayDamping, 0.01f)
+        assertEquals(34f, heroClip.propSwayMaxAngleDeg, 0.01f)
+        // Clamped IK limits (headNod <= 42, leftForearm <= 0, rightForearm <= 142)
+        val kf0 = heroClip.keyframes.first()
+        assertEquals(ArmGestureTrackPreset.POINT, kf0.armGestureOverride)
+        assertTrue("Expected headNod clamped <= 42, got ${kf0.poseOffsets.headNodOffset}", kf0.poseOffsets.headNodOffset <= 42f)
+        assertTrue("Expected leftForearm clamped <= 0, got ${kf0.poseOffsets.leftForearmOffset}", kf0.poseOffsets.leftForearmOffset <= 0f)
+        assertTrue("Expected rightForearm clamped <= 142, got ${kf0.poseOffsets.rightForearmOffset}", kf0.poseOffsets.rightForearmOffset <= 142f)
+
+        // Phase 7 audio clip role & volume
+        val voiceClip = scene.clips.first { it.id == "clip_voice" }
+        assertEquals(AudioTrackRole.DIALOGUE, voiceClip.audioTrackRole)
+        assertEquals(1.15f, voiceClip.audioVolume, 0.01f)
+    }
+
+    @Test
+    fun `Phase 8 multi-select bulk delete works atomically in PoseLibraryStorage and ProjectMutator timeline`() {
+        // 1. PoseLibraryStorage bulk delete
+        val tmpDir = java.nio.file.Files.createTempDirectory("fc_pose_bulk_test").toFile()
+        try {
+            val storageFile = java.io.File(tmpDir, "pose_library.json")
+            val thumbsDir = java.io.File(tmpDir, "pose_thumbnails").apply { mkdirs() }
+            val thumb1 = java.io.File(thumbsDir, "p1.png").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+            val thumb2 = java.io.File(thumbsDir, "p2.png").apply { writeBytes(byteArrayOf(4, 5, 6)) }
+            val thumb3 = java.io.File(thumbsDir, "p3.png").apply { writeBytes(byteArrayOf(7, 8, 9)) }
+
+            val storage = com.example.data.PoseLibraryStorage(storageFile, thumbsDir)
+            storage.writePosesBlocking(
+                listOf(
+                    SavedPose(id = "p1", name = "Wave", category = PoseCategory.ACTION, thumbnailPath = thumb1.absolutePath),
+                    SavedPose(id = "p2", name = "Sit", category = PoseCategory.SITTING, thumbnailPath = thumb2.absolutePath),
+                    SavedPose(id = "p3", name = "Hero", category = PoseCategory.STANDING, thumbnailPath = thumb3.absolutePath)
+                )
+            )
+            assertEquals(3, storage.loadPosesBlocking().size)
+
+            // Bulk-delete p1 and p3 in one atomic operation
+            val afterBulk = storage.deletePosesBlocking(setOf("p1", "p3"))
+            assertEquals(1, afterBulk.size)
+            assertEquals("p2", afterBulk.first().id)
+            assertFalse("Thumb1 should be deleted", thumb1.exists())
+            assertTrue("Thumb2 should remain", thumb2.exists())
+            assertFalse("Thumb3 should be deleted", thumb3.exists())
+            // Reload from disk to verify persistence
+            assertEquals(listOf("p2"), storage.loadPosesBlocking().map { it.id })
+        } finally {
+            tmpDir.deleteRecursively()
+        }
+
+        // 2. ProjectMutator.deleteClips multi-select timeline bulk delete
+        val layerUnlocked = AnimationLayer(id = "l1", name = "Chars", type = LayerType.CHARACTER, isLocked = false)
+        val layerLocked = AnimationLayer(id = "l2", name = "Locked BG", type = LayerType.IMAGE, isLocked = true)
+        val c1 = TimelineClip(id = "c1", layerId = "l1", name = "Hero 1", startFrame = 0, durationFrames = 48)
+        val c2 = TimelineClip(id = "c2", layerId = "l1", name = "Hero 2", startFrame = 12, durationFrames = 48)
+        val c3 = TimelineClip(id = "c3", layerId = "l1", name = "Hero 3", startFrame = 24, durationFrames = 48)
+        val cLocked = TimelineClip(id = "c_locked", layerId = "l2", name = "Locked BG", startFrame = 0, durationFrames = 96)
+
+        val proj = ProjectDocument(
+            name = "Timeline Bulk Delete",
+            scenes = listOf(
+                AnimationScene(
+                    name = "Scene 1",
+                    layers = listOf(layerUnlocked, layerLocked),
+                    clips = listOf(c1, c2, c3, cLocked),
+                    cameraFocusClipId = "c2"
+                )
+            )
+        )
+
+        val updated = ProjectMutator.deleteClips(proj, setOf("c1", "c2", "c_locked"))
+        val remainingIds = updated.activeScene.clips.map { it.id }.toSet()
+        assertEquals(setOf("c3", "c_locked"), remainingIds)
+        assertNull("cameraFocusClipId should be cleared when focused clip is bulk-deleted", updated.activeScene.cameraFocusClipId)
+    }
+
+    // ────────────────────────── UNIVERSAL ADVANCE KEYFRAME ENGINE TESTS ──────────────────────────
+
+    @Test
+    fun `universal keyframe engine evaluates cubic bezier hold spring elastic bounce and all loop modes accurately`() {
+        // 1. Custom Cubic Bezier exact parametric verification: B(0.5) for (0.25, 0.1, 0.25, 1.0)
+        val p1x = 0.25f; val p1y = 0.1f; val p2x = 0.25f; val p2y = 1.0f
+        val uTrue = 0.5f
+        val oneMinusU = 1f - uTrue
+        val exactX = 3f * oneMinusU * oneMinusU * uTrue * p1x + 3f * oneMinusU * uTrue * uTrue * p2x + uTrue * uTrue * uTrue
+        val exactY = 3f * oneMinusU * oneMinusU * uTrue * p1y + 3f * oneMinusU * uTrue * uTrue * p2y + uTrue * uTrue * uTrue
+        val solvedY = com.example.engine.UniversalKeyframeEngine.evaluateCubicBezier(exactX, p1x, p1y, p2x, p2y)
+        assertEquals("Cubic Bezier Newton-Raphson + bisection should match exact B_y(u)", exactY, solvedY, 0.001f)
+
+        // 2. HOLD step curve: stays strictly at start value until exact next keyframe
+        val holdTrack = UniversalKeyframeTrack(
+            targetId = "clip_1",
+            propertyPath = "transform.x",
+            valueType = UniversalValueType.FLOAT,
+            keyframes = listOf(
+                UniversalKeyframe(frame = 0, floatValue = 0.2f, curve = UniversalCurveType.HOLD),
+                UniversalKeyframe(frame = 10, floatValue = 0.8f, curve = UniversalCurveType.LINEAR)
+            )
+        )
+        assertEquals(0.2f, com.example.engine.UniversalKeyframeEngine.evaluateFloat(holdTrack, 0), 0.0001f)
+        assertEquals(0.2f, com.example.engine.UniversalKeyframeEngine.evaluateFloat(holdTrack, 9), 0.0001f)
+        assertEquals(0.8f, com.example.engine.UniversalKeyframeEngine.evaluateFloat(holdTrack, 10), 0.0001f)
+
+        // 3. Analytical damped SPRING: underdamped spring overshoots > 1.0 mid-flight and lands cleanly on 1.0 at t=1
+        val spring0 = com.example.engine.UniversalKeyframeEngine.evaluateCurve(0f, UniversalCurveType.SPRING, springStiffness = 220f, springDamping = 8f)
+        val springEnd = com.example.engine.UniversalKeyframeEngine.evaluateCurve(1f, UniversalCurveType.SPRING, springStiffness = 220f, springDamping = 8f)
+        val springSamples = (1..20).map { i ->
+            com.example.engine.UniversalKeyframeEngine.evaluateCurve(i / 20f, UniversalCurveType.SPRING, springStiffness = 220f, springDamping = 8f)
+        }
+        assertEquals(0f, spring0, 0.0001f)
+        assertEquals(1f, springEnd, 0.0001f)
+        assertTrue("Underdamped spring should exhibit realistic overshoot > 1.02", springSamples.max() > 1.02f)
+
+        // 4. Loop modes: LOOP, PING_PONG, and OFFSET_REPEAT (infinite accumulation)
+        val baseKfs = listOf(
+            UniversalKeyframe(frame = 0, floatValue = 0f, curve = UniversalCurveType.LINEAR),
+            UniversalKeyframe(frame = 10, floatValue = 10f, curve = UniversalCurveType.LINEAR)
+        )
+        val loopTrack = UniversalKeyframeTrack(targetId = "t", propertyPath = "p", loopMode = UniversalLoopMode.LOOP, keyframes = baseKfs)
+        assertEquals(5f, com.example.engine.UniversalKeyframeEngine.evaluateFloat(loopTrack, 15), 0.01f)
+        assertEquals(2f, com.example.engine.UniversalKeyframeEngine.evaluateFloat(loopTrack, 22), 0.01f)
+
+        val pingPongTrack = UniversalKeyframeTrack(targetId = "t", propertyPath = "p", loopMode = UniversalLoopMode.PING_PONG, keyframes = baseKfs)
+        assertEquals(7f, com.example.engine.UniversalKeyframeEngine.evaluateFloat(pingPongTrack, 13), 0.01f)
+        assertEquals(3f, com.example.engine.UniversalKeyframeEngine.evaluateFloat(pingPongTrack, 23), 0.01f)
+
+        val offsetRepeatTrack = UniversalKeyframeTrack(targetId = "bg", propertyPath = "bg.scrollX", loopMode = UniversalLoopMode.OFFSET_REPEAT, keyframes = baseKfs)
+        assertEquals(15f, com.example.engine.UniversalKeyframeEngine.evaluateFloat(offsetRepeatTrack, 15), 0.01f)
+        assertEquals(34f, com.example.engine.UniversalKeyframeEngine.evaluateFloat(offsetRepeatTrack, 34), 0.01f)
+    }
+
+    @Test
+    fun `universal keyframe engine evaluates curved bezier motionPath with autoOrientToPath tangent angles`() {
+        // Parabolic arc rising from (0.1, 0.8) through peak (0.5, 0.2) down to (0.9, 0.8)
+        val pathTrack = UniversalKeyframeTrack(
+            targetId = "clip_bird",
+            propertyPath = "transform.position",
+            domain = UniversalPropertyDomain.CHARACTER,
+            valueType = UniversalValueType.VEC2,
+            motionPath = UniversalMotionPathSpec(
+                controlPoints = listOf(
+                    NormalizedPoint(0.1f, 0.8f),
+                    NormalizedPoint(0.5f, 0.2f),
+                    NormalizedPoint(0.9f, 0.8f)
+                ),
+                autoOrientToPath = true,
+                orientOffsetDeg = 0f
+            ),
+            keyframes = listOf(
+                UniversalKeyframe(frame = 0, vec2X = 0.1f, vec2Y = 0.8f, curve = UniversalCurveType.LINEAR),
+                UniversalKeyframe(frame = 20, vec2X = 0.9f, vec2Y = 0.8f, curve = UniversalCurveType.LINEAR)
+            )
+        )
+
+        val startEval = com.example.engine.UniversalKeyframeEngine.evaluateTrack(pathTrack, 2)!!
+        val peakEval = com.example.engine.UniversalKeyframeEngine.evaluateTrack(pathTrack, 10)!!
+        val descendEval = com.example.engine.UniversalKeyframeEngine.evaluateTrack(pathTrack, 18)!!
+
+        // At peak (u=0.5), Bezier midpoint y = 0.25*0.8 + 0.5*0.2 + 0.25*0.8 = 0.50, tangent is horizontal (0 deg)
+        assertEquals(0.50f, peakEval.vec2X!!, 0.01f)
+        assertEquals(0.50f, peakEval.vec2Y!!, 0.01f)
+        assertNotNull(peakEval.autoOrientDeg)
+        assertEquals(0f, peakEval.autoOrientDeg!!, 1.5f)
+
+        // Ascending tangent points up-right (negative angle in screen coords y-down)
+        assertTrue("Ascending bird should tilt upward (< -20deg), got ${startEval.autoOrientDeg}", startEval.autoOrientDeg!! < -20f)
+        // Descending tangent points down-right (positive angle in screen coords y-down)
+        assertTrue("Descending bird should tilt downward (> 20deg), got ${descendEval.autoOrientDeg}", descendEval.autoOrientDeg!! > 20f)
+    }
+
+    @Test
+    fun `universal keyframe engine resolves 2_5D parallax depth seamless background scroll blur and colour grading`() {
+        val layerFar = AnimationLayer(id = "layer_sky", name = "Far Sky", type = LayerType.BACKGROUND, parallaxDepth = 0.25f)
+        val tracks = listOf(
+            UniversalKeyframeTrack(
+                targetId = "layer_sky",
+                propertyPath = "bg.parallaxDepth",
+                domain = UniversalPropertyDomain.BACKGROUND_PARALLAX,
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = 0.15f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = 1.35f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "background",
+                propertyPath = "bg.scrollX",
+                domain = UniversalPropertyDomain.BACKGROUND_PARALLAX,
+                loopMode = UniversalLoopMode.OFFSET_REPEAT,
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = 0f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 24, floatValue = 1f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "background",
+                propertyPath = "bg.blur",
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = 0f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = 0.8f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "background",
+                propertyPath = "bg.dayNightBlend",
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = 0f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = 1f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "background",
+                propertyPath = "bg.ambientLightColor",
+                valueType = UniversalValueType.COLOR,
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, colorHex = "#FF000000", curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, colorHex = "#FFFF8040", curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "scene",
+                propertyPath = "colourGrading.exposure",
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = -0.4f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = 0.4f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "scene",
+                propertyPath = "colourGrading.temperature",
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = -0.5f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = 0.5f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "scene",
+                propertyPath = "colourGrading.vignette",
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = 0.2f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = 0.8f, curve = UniversalCurveType.LINEAR)
+                )
+            )
+        )
+
+        val snap10 = com.example.engine.UniversalKeyframeEngine.evaluateAllTracks(tracks, frameIndex = 10)
+        assertEquals(0.75f, com.example.engine.UniversalKeyframeEngine.resolveLayerParallaxDepth(snap10, layerFar), 0.01f)
+
+        val grading10 = com.example.engine.UniversalKeyframeEngine.resolveBackgroundAndGrading(snap10)
+        assertEquals(0.4f, grading10.bgDepthBlur, 0.01f)
+        assertEquals(0.5f, grading10.dayNightBlend, 0.01f)
+        assertEquals(0.0f, grading10.exposure, 0.01f)
+        assertEquals(0.0f, grading10.temperature, 0.01f)
+        assertEquals(0.5f, grading10.vignette, 0.01f)
+        assertNotNull(grading10.ambientLightColorArgb)
+        assertTrue(grading10.hasBackgroundTransform)
+        assertTrue(grading10.hasColorGrading)
+
+        // Verify OFFSET_REPEAT infinite scrolling at frame 60 (2.5 full background wraps)
+        val snap60 = com.example.engine.UniversalKeyframeEngine.evaluateAllTracks(tracks, frameIndex = 60)
+        val grading60 = com.example.engine.UniversalKeyframeEngine.resolveBackgroundAndGrading(snap60)
+        assertEquals(2.5f, grading60.bgScrollX, 0.02f)
+    }
+
+    @Test
+    fun `universal keyframe engine layers full character overrides cleanly over manual KeyframeEvaluator tracks`() {
+        val clip = TimelineClip(
+            id = "clip_hero",
+            layerId = "layer_char",
+            name = "Hero",
+            startFrame = 0,
+            durationFrames = 60,
+            characterId = "char_hero",
+            animationPresetType = AnimationPresetType.IDLE,
+            orientation = CharacterOrientation.FRONT,
+            keyframes = listOf(
+                TransformKeyframe(frame = 0, x = 0.25f, y = 0.82f, rotation = 0f),
+                TransformKeyframe(frame = 30, x = 0.55f, y = 0.82f, rotation = 0f)
+            )
+        )
+
+        val tracks = listOf(
+            UniversalKeyframeTrack(
+                targetId = "clip_hero",
+                propertyPath = "character.preset",
+                valueType = UniversalValueType.STRING,
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, stringValue = "WALK"),
+                    UniversalKeyframe(frame = 15, stringValue = "FLYING")
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "clip_hero",
+                propertyPath = "character.orientation",
+                valueType = UniversalValueType.STRING,
+                keyframes = listOf(UniversalKeyframe(frame = 0, stringValue = "THREE_QUARTER_FRONT"))
+            ),
+            UniversalKeyframeTrack(
+                targetId = "clip_hero",
+                propertyPath = "expression.mouth",
+                valueType = UniversalValueType.STRING,
+                keyframes = listOf(UniversalKeyframe(frame = 0, stringValue = "SHOCK_O"))
+            ),
+            UniversalKeyframeTrack(
+                targetId = "clip_hero",
+                propertyPath = "character.gazeTarget",
+                valueType = UniversalValueType.VEC2,
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, vec2X = -0.6f, vec2Y = 0.0f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, vec2X = 0.6f, vec2Y = -0.4f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "clip_hero",
+                propertyPath = "character.headTilt",
+                keyframes = listOf(UniversalKeyframe(frame = 0, floatValue = 12f))
+            ),
+            UniversalKeyframeTrack(
+                targetId = "clip_hero",
+                propertyPath = "ik.leftElbow",
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = 0f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = -60f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "clip_hero",
+                propertyPath = "propSway.stiffness",
+                keyframes = listOf(UniversalKeyframe(frame = 0, floatValue = 88f))
+            ),
+            UniversalKeyframeTrack(
+                targetId = "clip_hero",
+                propertyPath = "transform.flipX",
+                valueType = UniversalValueType.BOOLEAN,
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, boolValue = false),
+                    UniversalKeyframe(frame = 15, boolValue = true)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "clip_hero",
+                propertyPath = "character.tint",
+                valueType = UniversalValueType.COLOR,
+                keyframes = listOf(UniversalKeyframe(frame = 0, colorHex = "#80FFAA00"))
+            )
+        )
+
+        val frame = 20
+        val baseEval = KeyframeEvaluator.evaluate(clip, frame)
+        val baseMulti = KeyframeEvaluator.evaluateSimultaneousCharacterTracks(clip, baseEval, frame, 24)
+        val snap = com.example.engine.UniversalKeyframeEngine.evaluateAllTracks(tracks, frame)
+        val resolved = com.example.engine.UniversalKeyframeEngine.resolveCharacterOverrides(snap, clip, baseEval, baseMulti)
+
+        // Existing manual X/Y position remains intact when not overridden by universal tracks!
+        assertEquals(baseEval.x, resolved.transform.x, 0.001f)
+        assertEquals(AnimationPresetType.FLYING, resolved.animationPreset)
+        assertEquals(CharacterOrientation.THREE_QUARTER_FRONT, resolved.orientation)
+        assertEquals(MouthShapeOverride.SHOCK_O, resolved.mouthOverride)
+        assertTrue(resolved.flipHorizontal)
+        assertEquals(0.6f, resolved.gazeTargetX!!, 0.01f)
+        assertEquals(-0.4f, resolved.gazeTargetY!!, 0.01f)
+        assertEquals(12f, resolved.poseOffsets.headNodOffset, 0.1f)
+        assertEquals(-60f, resolved.poseOffsets.leftForearmOffset, 0.1f)
+        assertEquals(88f, resolved.propSwayConfig.stiffness, 0.1f)
+        assertEquals(0x80FFAA00.toInt(), resolved.tintArgb)
+    }
+
+    @Test
+    fun `universal keyframe engine animates inline SVG sub-parts custom transitions masks and VFX weather deterministically`() {
+        val tracks = listOf(
+            // Inline SVG sub-part via "svg.<nodeId>.rotation"
+            UniversalKeyframeTrack(
+                targetId = "clip_tree",
+                propertyPath = "svg.tree_canopy.rotation",
+                domain = UniversalPropertyDomain.INLINE_SVG,
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = -10f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = 10f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            // Inline SVG sub-part via direct node targetId
+            UniversalKeyframeTrack(
+                targetId = "bird_wing_l",
+                propertyPath = "rotation",
+                domain = UniversalPropertyDomain.INLINE_SVG,
+                loopMode = UniversalLoopMode.PING_PONG,
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = -35f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 6, floatValue = 35f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            // Custom Transition overrides
+            UniversalKeyframeTrack(
+                targetId = "whip_iris",
+                propertyPath = "transition.progress",
+                domain = UniversalPropertyDomain.TRANSITION,
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = 0f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = 1f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "whip_iris",
+                propertyPath = "transition.wipeAngle",
+                keyframes = listOf(UniversalKeyframe(frame = 0, floatValue = 45f))
+            ),
+            UniversalKeyframeTrack(
+                targetId = "whip_iris",
+                propertyPath = "transition.flashAlpha",
+                keyframes = listOf(UniversalKeyframe(frame = 0, floatValue = 0.65f))
+            ),
+            // Weather & VFX overrides
+            UniversalKeyframeTrack(
+                targetId = "weather",
+                propertyPath = "weather.density",
+                keyframes = listOf(
+                    UniversalKeyframe(frame = 0, floatValue = 0.2f, curve = UniversalCurveType.LINEAR),
+                    UniversalKeyframe(frame = 20, floatValue = 0.9f, curve = UniversalCurveType.LINEAR)
+                )
+            ),
+            UniversalKeyframeTrack(
+                targetId = "weather",
+                propertyPath = "weather.windSpeed",
+                keyframes = listOf(UniversalKeyframe(frame = 0, floatValue = 1.8f))
+            )
+        )
+
+        val snap10 = com.example.engine.UniversalKeyframeEngine.evaluateAllTracks(tracks, 10)
+        val baseNodes = mapOf("tree_canopy" to com.example.engine.EvaluatedNodeTransform(rotation = 5f))
+        val mergedNodes = com.example.engine.UniversalKeyframeEngine.resolveInlineSvgNodeTransforms(
+            snapshot = snap10,
+            clipId = "clip_tree",
+            inlineSvgAssetId = "svg_tree",
+            knownNodeIds = listOf("tree_canopy", "bird_wing_l"),
+            baseNodeTransforms = baseNodes
+        )
+        // At frame 10, tree_canopy universal rotation is 0f + base 5f = 5f
+        assertEquals(5f, mergedNodes["tree_canopy"]!!.rotation, 0.1f)
+        // At frame 10 (PING_PONG period 6: cycle 1 reversed at local 4 -> frame 2), bird_wing_l = -35 + (2/6)*70 = -11.67
+        assertEquals(-11.67f, mergedNodes["bird_wing_l"]!!.rotation, 0.5f)
+
+        // Custom transition evaluation with keyframed progress + flashAlpha override
+        val tOverrides = com.example.engine.UniversalKeyframeEngine.resolveTransitionOverrides(snap10, "whip_iris", isEntering = true)
+        assertEquals(0.5f, tOverrides.progressOverride!!, 0.01f)
+        assertEquals(45f, tOverrides.wipeAngleOverrideDeg!!, 0.01f)
+        assertEquals(0.65f, tOverrides.flashAlphaOverride!!, 0.01f)
+        val transDef = CustomTransitionDef(id = "whip_iris", clipPathType = CustomTransitionClipType.WIPE_ANGLE)
+        val evalTrans = com.example.engine.UniversalCustomTransitionEngine.evaluate(
+            def = transDef,
+            rawProgress = tOverrides.progressOverride!!,
+            flashAlphaOverride = tOverrides.flashAlphaOverride
+        )
+        assertEquals(0.65f, evalTrans.flashAlpha, 0.01f)
+
+        // Weather override evaluation
+        val (_, weatherLayers) = com.example.engine.UniversalKeyframeEngine.resolveVfxAndWeather(
+            snapshot = snap10,
+            baseVfx = SceneVfxConfig(),
+            baseWeatherLayers = listOf(WeatherParticleConfig(enabled = true, style = WeatherParticleStyle.RAIN, density = 0.1f))
+        )
+        assertEquals(0.55f, weatherLayers.first().density, 0.01f)
+        assertEquals(1.8f, weatherLayers.first().windSpeed, 0.01f)
+    }
+
+    @Test
+    fun `studio capability registry blueprint exporter and director script receiver compile universal keyframeTracks end to end`() {
+        // 1. Dynamic Registry & Blueprint v3 exposure
+        val caps = com.example.engine.StudioCapabilityRegistry.introspect()
+        assertEquals(UniversalCurveType.entries.size, caps.universalCurveTypes.size)
+        assertEquals(UniversalLoopMode.entries.size, caps.universalLoopModes.size)
+        assertTrue(caps.universalKeyframeChannels.any { it.id == "bg.parallaxDepth" })
+        assertTrue(caps.universalKeyframeChannels.any { it.id == "svg.<nodeId>.rotation" })
+
+        val baseProject = BuiltInCatalog.sceneTemplates.first().buildProject("Universal Blueprint Test")
+        val blueprintJson = com.example.engine.AIBlueprintExporter.exportToJson(
+            project = baseProject,
+            characters = BuiltInCatalog.builtInCharacters.take(2),
+            mediaAssets = emptyList()
+        )
+        assertTrue(blueprintJson.contains("\"universalCurveTypes\""))
+        assertTrue(blueprintJson.contains("\"OFFSET_REPEAT\""))
+        assertTrue(blueprintJson.contains("\"universalKeyframeChannels\""))
+        assertTrue(blueprintJson.contains("\"universalKeyframeTrackExample\""))
+
+        // 2. Director Script Receiver compiles keyframeTracks[] into AnimationScene.universalKeyframeTracks
+        val scriptJson = """
+            {
+              "format": "framecraft.director_script",
+              "schemaVersion": 3,
+              "fps": 24,
+              "scenes": [
+                {
+                  "name": "Parallax Sky Scene",
+                  "durationSec": 4.0,
+                  "keyframeTracks": [
+                    {
+                      "targetId": "background",
+                      "propertyPath": "bg.scrollX",
+                      "loopMode": "OFFSET_REPEAT",
+                      "keyframes": [
+                        { "tSec": 0.0, "value": 0.0, "curve": "LINEAR" },
+                        { "tSec": 2.0, "value": 1.0, "curve": "LINEAR" }
+                      ]
+                    },
+                    {
+                      "targetId": "clip_hero",
+                      "propertyPath": "transform.position",
+                      "motionPath": {
+                        "controlPoints": [
+                          { "x": 0.1, "y": 0.8 },
+                          { "x": 0.5, "y": 0.3 },
+                          { "x": 0.9, "y": 0.8 }
+                        ],
+                        "autoOrientToPath": true
+                      },
+                      "keyframes": [
+                        { "tSec": 0.0, "vec2": [0.1, 0.8], "cubicBezier": [0.22, 1.0, 0.36, 1.0] },
+                        { "tSec": 2.0, "vec2": [0.9, 0.8], "curve": "SPRING", "springStiffness": 200.0, "springDamping": 12.0 }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val (_, dryRun) = com.example.engine.DirectorScriptReceiver.validateAndDryRun(
+            scriptJson = scriptJson,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = emptyList()
+        )
+        assertTrue("Director script with keyframeTracks should validate cleanly", dryRun.isValid)
+        assertEquals(2, dryRun.universalKeyframeTrackCount)
+        assertEquals(4, dryRun.universalKeyframeCount)
+
+        val compiled = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = scriptJson,
+            currentProject = baseProject,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = emptyList(),
+            importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE
+        ).getOrThrow()
+
+        val compiledTracks = compiled.project.activeScene.universalKeyframeTracks
+        assertEquals(2, compiledTracks.size)
+        assertEquals(UniversalLoopMode.OFFSET_REPEAT, compiledTracks[0].loopMode)
+        assertEquals(UniversalPropertyDomain.BACKGROUND_PARALLAX, compiledTracks[0].domain)
+        assertTrue(compiledTracks[1].motionPath?.autoOrientToPath == true)
+        assertEquals(UniversalCurveType.CUSTOM_CUBIC, compiledTracks[1].keyframes[0].curve)
+        assertEquals(UniversalCurveType.SPRING, compiledTracks[1].keyframes[1].curve)
+
+        // 3. Full Moshi JSON round-trip persistence verification
+        val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ProjectDocument::class.java)
+        val restored = adapter.fromJson(adapter.toJson(compiled.project))
+        assertNotNull(restored)
+        assertEquals(2, restored!!.activeScene.universalKeyframeTracks.size)
+        assertEquals("bg.scrollX", restored.activeScene.universalKeyframeTracks[0].propertyPath)
+        assertEquals(UniversalLoopMode.OFFSET_REPEAT, restored.activeScene.universalKeyframeTracks[0].loopMode)
+    }
 }
+
+
+
+
+
+
+
 

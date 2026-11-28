@@ -569,7 +569,8 @@ object PropAndModularChartRenderer {
         currentOffsets: PoseKeyframeOffsets,
         stageWidth: Float,
         stageHeight: Float,
-        bendFlip: Boolean = false
+        bendFlip: Boolean = false,
+        enforceJointLimits: Boolean = true
     ): PoseKeyframeOffsets = IkRigSolver.solveIkDragToOffsets(
         handleId = handleId,
         targetNx = targetNx,
@@ -581,6 +582,7 @@ object PropAndModularChartRenderer {
         currentOffsets = currentOffsets,
         stageWidth = stageWidth,
         stageHeight = stageHeight,
-        bendFlip = bendFlip
+        bendFlip = bendFlip,
+        enforceJointLimits = enforceJointLimits
     )
 }

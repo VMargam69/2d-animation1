@@ -200,6 +200,36 @@ object UniversalCustomAnimationEngine {
             }?.value
     }
 
+    /**
+     * Merges evaluated [UniversalKeyframeEngine] sub-part/bone node transforms cleanly on top of
+     * base [CustomAnimationDef] tracks (additive dx/dy/rotation, multiplicative scale/opacity).
+     */
+    fun mergeUniversalNodeTransforms(
+        baseNodes: Map<String, EvaluatedNodeTransform>,
+        universalNodes: Map<String, EvaluatedNodeTransform>
+    ): Map<String, EvaluatedNodeTransform> {
+        if (universalNodes.isEmpty()) return baseNodes
+        if (baseNodes.isEmpty()) return universalNodes
+        val merged = LinkedHashMap<String, EvaluatedNodeTransform>(baseNodes)
+        for ((key, u) in universalNodes) {
+            val matchKey = merged.keys.firstOrNull { it.equals(key, ignoreCase = true) } ?: key
+            val cur = merged[matchKey]
+            merged[matchKey] = if (cur == null) {
+                u
+            } else {
+                EvaluatedNodeTransform(
+                    dx = cur.dx + u.dx,
+                    dy = cur.dy + u.dy,
+                    rotation = cur.rotation + u.rotation,
+                    scaleX = (cur.scaleX * u.scaleX).coerceIn(0.05f, 8f),
+                    scaleY = (cur.scaleY * u.scaleY).coerceIn(0.05f, 8f),
+                    opacity = (cur.opacity * u.opacity).coerceIn(0f, 1f)
+                )
+            }
+        }
+        return merged
+    }
+
     private fun CustomAnimKeyframe.toEvaluated() = EvaluatedNodeTransform(
         dx = dx,
         dy = dy,

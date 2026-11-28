@@ -28,6 +28,11 @@ data class DirectorScriptDryRunReport(
     val cameraShotCount: Int = 0,
     val lipSyncTrackCount: Int = 0,
     val clipOperationCount: Int = 0,
+    val weatherLayerCount: Int = 0,
+    val dialogueOverlayCount: Int = 0,
+    val universalKeyframeTrackCount: Int = 0,
+    val universalKeyframeCount: Int = 0,
+    val audioDuckingConfigured: Boolean = false,
     val requestedAspectRatio: String? = null,
     val warnings: List<String> = emptyList(),
     val errors: List<String> = emptyList()
@@ -67,7 +72,90 @@ object DirectorScriptReceiver {
         val inlineSvgAssets: List<ScriptInlineSvgDto>? = null,
         val customAnimations: Map<String, ScriptCustomAnimationDto>? = null,
         val customTransitions: Map<String, ScriptCustomTransitionDto>? = null,
+        val audioDucking: ScriptAudioDuckingDto? = null,
+        val keyframeTracks: List<ScriptUniversalKeyframeTrackDto>? = null,
         val scenes: List<ScriptSceneDto>? = null
+    )
+
+    data class ScriptUniversalMotionPathDto(
+        val controlPoints: List<ScriptPointDto>? = null,
+        val points: List<ScriptPointDto>? = null,
+        val autoOrientToPath: Boolean? = false,
+        val orientOffsetDeg: Float? = 0f
+    )
+
+    data class ScriptUniversalKeyframeDto(
+        val frame: Int? = null,
+        val tSec: Float? = null,
+        val value: Float? = null,
+        val floatValue: Float? = null,
+        val vec2: List<Float>? = null,
+        val x: Float? = null,
+        val y: Float? = null,
+        val colorHex: String? = null,
+        val boolValue: Boolean? = null,
+        val stringValue: String? = null,
+        val curve: String? = null,
+        val easing: String? = null,
+        val cubicBezier: List<Float>? = null,
+        val springStiffness: Float? = null,
+        val springDamping: Float? = null
+    )
+
+    data class ScriptUniversalKeyframeTrackDto(
+        val id: String? = null,
+        val targetId: String? = null,
+        val propertyPath: String? = null,
+        val domain: String? = null,
+        val valueType: String? = null,
+        val loopMode: String? = null,
+        val enabled: Boolean? = true,
+        val motionPath: ScriptUniversalMotionPathDto? = null,
+        val motionPoints: List<ScriptPointDto>? = null,
+        val autoOrientToPath: Boolean? = null,
+        val orientOffsetDeg: Float? = null,
+        val keyframes: List<ScriptUniversalKeyframeDto>? = null
+    )
+
+    data class ScriptAudioDuckingDto(
+        val duckingEnabled: Boolean? = null,
+        val duckTargetVolume: Float? = null,
+        val attackMs: Int? = null,
+        val releaseMs: Int? = null,
+        val voiceThreshold: Float? = null
+    )
+
+    data class ScriptWeatherLayerDto(
+        val enabled: Boolean? = true,
+        val style: String? = null,
+        val density: Float? = 0.6f,
+        val windSpeed: Float? = 0.5f,
+        val windAngleDeg: Float? = 12f,
+        val sizeScale: Float? = 1.0f,
+        val opacity: Float? = 0.78f,
+        val startSec: Float? = 0f,
+        val endSec: Float? = -1f,
+        val seed: Int? = 104729
+    )
+
+    data class ScriptDialogueOverlayDto(
+        val id: String? = null,
+        val speakerCharacterId: String? = null,
+        val speakerClipId: String? = null,
+        val speakerName: String? = null,
+        val text: String? = null,
+        val language: String? = "en",
+        val startSec: Float? = null,
+        val endSec: Float? = null,
+        val startFrame: Int? = null,
+        val endFrame: Int? = null,
+        val showSpeechBubble: Boolean? = null,
+        val showSubtitle: Boolean? = null,
+        val bubbleStyle: String? = null,
+        val bubbleFillHex: String? = null,
+        val textColorHex: String? = null,
+        val subtitleBgHex: String? = null,
+        val subtitleTextHex: String? = null
     )
 
     data class ScriptInlineSvgDto(
@@ -143,7 +231,8 @@ object DirectorScriptReceiver {
         val locked: Boolean? = false,
         val blendMode: String? = "NORMAL",
         val parentLayerId: String? = null,
-        val colorHex: String? = null
+        val colorHex: String? = null,
+        val parallaxDepth: Float? = null
     )
 
     data class ScriptMaskDto(
@@ -186,8 +275,10 @@ object DirectorScriptReceiver {
         val eyeShape: String? = null,
         val eyebrowShape: String? = null,
         val handPose: String? = null,
+        val armGesture: String? = null,
         val blink: Boolean? = null,
         val ikPose: ScriptIkPoseDto? = null,
+        val enforceJointLimits: Boolean? = null,
         val savedPoseId: String? = null
     )
 
@@ -222,13 +313,23 @@ object DirectorScriptReceiver {
         val customAnimationId: String? = null,
         val orientation: String? = null,
         val animationPreset: String? = null,
+        val armGesturePreset: String? = null,
+        val armGesture: String? = null,
         val facialExpression: String? = null,
+        val facialOverridesEnabled: Boolean? = null,
         val mouthShapeOverride: String? = null,
         val eyeShapeOverride: String? = null,
         val eyebrowShapeOverride: String? = null,
         val handPose: String? = null,
+        val enforceJointLimits: Boolean? = null,
         val propType: String? = null,
         val propAttachment: String? = null,
+        val propSwayEnabled: Boolean? = null,
+        val propSwayStrength: Float? = null,
+        val propSwayStiffness: Float? = null,
+        val propSwayDamping: Float? = null,
+        val propSwayMaxAngleDeg: Float? = null,
+        val parallaxDepth: Float? = null,
         val speed: Float? = null,
         val loopAnimation: Boolean? = true,
         val transitionIn: String? = null,
@@ -244,6 +345,8 @@ object DirectorScriptReceiver {
         val shapeFillHex: String? = null,
         val audioTrimStartMs: Long? = null,
         val audioTrimEndMs: Long? = null,
+        val audioTrackRole: String? = null,
+        val audioVolume: Float? = null,
         val depthOrder: Int? = 0,
         val keyframes: List<ScriptKeyframeDto>? = null
     )
@@ -274,12 +377,15 @@ object DirectorScriptReceiver {
         val colourGrading: String? = null,
         val colorGrading: String? = null,
         val vfx: ScriptVfxDto? = null,
+        val weatherLayers: List<ScriptWeatherLayerDto>? = null,
+        val dialogueOverlays: List<ScriptDialogueOverlayDto>? = null,
         val customTransitionInId: String? = null,
         val customTransitionOutId: String? = null,
         val layers: List<ScriptLayerDto>? = null,
         val clips: List<ScriptClipDto>? = null,
         val clipOperations: List<ScriptClipOperationDto>? = null,
-        val cameraShots: List<ScriptCameraShotDto>? = null
+        val cameraShots: List<ScriptCameraShotDto>? = null,
+        val keyframeTracks: List<ScriptUniversalKeyframeTrackDto>? = null
     )
 
     private val moshi: Moshi by lazy {
@@ -341,8 +447,9 @@ object DirectorScriptReceiver {
         val customAnims = parsed.customAnimations.orEmpty()
         val customTrans = parsed.customTransitions.orEmpty()
         val scenes = parsed.scenes.orEmpty()
-        if (scenes.isEmpty() && validInlineCount == 0 && customAnims.isEmpty() && customTrans.isEmpty()) {
-            errors.add("Script contains no scenes, inline SVGs, custom animations, or custom transitions.")
+        val docUniversalTracks = parsed.keyframeTracks.orEmpty()
+        if (scenes.isEmpty() && validInlineCount == 0 && customAnims.isEmpty() && customTrans.isEmpty() && docUniversalTracks.isEmpty()) {
+            errors.add("Script contains no scenes, inline SVGs, custom animations, custom transitions, or universal keyframeTracks.")
         }
 
         val knownCharIds = existingCharacters.map { it.id }.toSet() + inlineIds
@@ -354,6 +461,29 @@ object DirectorScriptReceiver {
         var totalCameraShots = 0
         var totalLipSync = 0
         var totalOps = 0
+        var totalWeatherLayers = 0
+        var totalDialogueOverlays = 0
+        var totalUniversalTracks = 0
+        var totalUniversalKeyframes = 0
+
+        fun validateUniversalTracks(tracks: List<ScriptUniversalKeyframeTrackDto>, scopeLabel: String) {
+            for ((tIdx, tDto) in tracks.withIndex()) {
+                val tid = tDto.targetId?.trim()
+                val prop = tDto.propertyPath?.trim()
+                val kfs = tDto.keyframes.orEmpty()
+                if (tid.isNullOrBlank() || prop.isNullOrBlank()) {
+                    warnings.add("$scopeLabel keyframeTracks[$tIdx] missing targetId or propertyPath — will be skipped.")
+                    continue
+                }
+                if (kfs.isEmpty()) {
+                    warnings.add("$scopeLabel keyframeTracks['$tid.$prop'] has no keyframes — will be skipped.")
+                    continue
+                }
+                totalUniversalTracks++
+                totalUniversalKeyframes += kfs.size
+            }
+        }
+        validateUniversalTracks(docUniversalTracks, "Document")
 
         for ((sIdx, scene) in scenes.withIndex()) {
             totalLayers += scene.layers.orEmpty().size
@@ -361,6 +491,9 @@ object DirectorScriptReceiver {
             totalClips += clips.size
             totalOps += scene.clipOperations.orEmpty().size
             totalCameraShots += scene.cameraShots.orEmpty().size
+            totalWeatherLayers += scene.weatherLayers.orEmpty().size
+            totalDialogueOverlays += scene.dialogueOverlays.orEmpty().size
+            validateUniversalTracks(scene.keyframeTracks.orEmpty(), "Scene ${sIdx + 1}")
             for (clip in clips) {
                 totalKeyframes += max(1, clip.keyframes.orEmpty().size)
                 if (!clip.lipSyncAudioId.isNullOrBlank()) totalLipSync++
@@ -405,6 +538,11 @@ object DirectorScriptReceiver {
             cameraShotCount = totalCameraShots,
             lipSyncTrackCount = totalLipSync,
             clipOperationCount = totalOps,
+            weatherLayerCount = totalWeatherLayers,
+            dialogueOverlayCount = totalDialogueOverlays,
+            universalKeyframeTrackCount = totalUniversalTracks,
+            universalKeyframeCount = totalUniversalKeyframes,
+            audioDuckingConfigured = parsed.audioDucking != null,
             requestedAspectRatio = reqRatio,
             warnings = warnings,
             errors = errors
@@ -600,7 +738,8 @@ object DirectorScriptReceiver {
                         colorHex = lDto.colorHex ?: layerType.defaultColorHex,
                         orderIndex = lDto.zIndex ?: lIdx,
                         blendMode = parseEnumIgnoreCase<LayerBlendMode>(lDto.blendMode) ?: LayerBlendMode.NORMAL,
-                        parentLayerId = lDto.parentLayerId
+                        parentLayerId = lDto.parentLayerId,
+                        parallaxDepth = ParallaxCameraMath.clampDepth(lDto.parallaxDepth ?: 1.0f)
                     )
                 }
 
@@ -629,6 +768,14 @@ object DirectorScriptReceiver {
                     ?: cDto.inlineSvgAssetId
                     ?: "Clip ${cIdx + 1}"
                 val layerId = ensureLayer(cDto.layerId, inferredType, clipName)
+                if (cDto.parallaxDepth != null) {
+                    val existingLayer = layersById[layerId]
+                    if (existingLayer != null) {
+                        layersById[layerId] = existingLayer.copy(
+                            parallaxDepth = ParallaxCameraMath.clampDepth(cDto.parallaxDepth)
+                        )
+                    }
+                }
 
                 val startFrame = (cDto.startFrame
                     ?: cDto.startSec?.let { (it * fps).roundToInt() }
@@ -652,8 +799,18 @@ object DirectorScriptReceiver {
                     existingAudioPathById[clipId] = resolvedAudioPath
                 }
 
-                // Compile keyframes (including custom cubicBezier, expressions, overrides, and IK pose!)
-                val compiledKfs = compileKeyframes(cDto.keyframes, fps, durationFrames)
+                val resolvedOrientation = parseEnumIgnoreCase<CharacterOrientation>(cDto.orientation)
+                    ?: CharacterOrientation.FRONT
+                val clipEnforceLimits = cDto.enforceJointLimits ?: true
+
+                // Compile keyframes (including custom cubicBezier, expressions, overrides, arm gestures, and clamped IK pose!)
+                val compiledKfs = compileKeyframes(
+                    rawKfs = cDto.keyframes,
+                    fps = fps,
+                    durationFrames = durationFrames,
+                    defaultEnforceJointLimits = clipEnforceLimits,
+                    orientation = resolvedOrientation
+                )
 
                 // Compile curved Bezier motionPath control points
                 val motionPoints = cDto.motionPath.orEmpty().map {
@@ -674,6 +831,12 @@ object DirectorScriptReceiver {
                     compiledKfs
                 }
 
+                val resolvedArmGesture = parseEnumIgnoreCase<ArmGestureTrackPreset>(
+                    cDto.armGesturePreset ?: cDto.armGesture
+                ) ?: ArmGestureTrackPreset.NONE
+                val resolvedAudioRole = parseEnumIgnoreCase<AudioTrackRole>(cDto.audioTrackRole)
+                    ?: AudioTrackRole.BGM
+
                 val clip = TimelineClip(
                     id = clipId,
                     layerId = layerId,
@@ -681,16 +844,23 @@ object DirectorScriptReceiver {
                     startFrame = startFrame,
                     durationFrames = durationFrames,
                     characterId = resolvedCharId,
-                    orientation = parseEnumIgnoreCase<CharacterOrientation>(cDto.orientation) ?: CharacterOrientation.FRONT,
+                    orientation = resolvedOrientation,
                     animationPresetType = parseEnumIgnoreCase<AnimationPresetType>(cDto.animationPreset)
                         ?: if (!cDto.lipSyncAudioId.isNullOrBlank()) AnimationPresetType.TALKING else AnimationPresetType.IDLE,
                     facialExpression = parseEnumIgnoreCase<FacialExpression>(cDto.facialExpression) ?: FacialExpression.AUTO,
+                    facialOverridesEnabled = cDto.facialOverridesEnabled ?: true,
                     mouthShapeOverride = parseEnumIgnoreCase<MouthShapeOverride>(cDto.mouthShapeOverride) ?: MouthShapeOverride.AUTO,
                     eyeShapeOverride = parseEnumIgnoreCase<EyeShapeOverride>(cDto.eyeShapeOverride) ?: EyeShapeOverride.AUTO,
                     eyebrowShapeOverride = parseEnumIgnoreCase<EyebrowShapeOverride>(cDto.eyebrowShapeOverride) ?: EyebrowShapeOverride.AUTO,
                     handPose = parseEnumIgnoreCase<HandPoseType>(cDto.handPose) ?: HandPoseType.OPEN,
+                    armGesturePreset = resolvedArmGesture,
                     propType = parseEnumIgnoreCase<CharacterPropType>(cDto.propType) ?: CharacterPropType.NONE,
                     propAttachment = parseEnumIgnoreCase<PropAttachmentPoint>(cDto.propAttachment) ?: PropAttachmentPoint.RIGHT_HAND,
+                    propSwayEnabled = cDto.propSwayEnabled ?: true,
+                    propSwayStrength = (cDto.propSwayStrength ?: 1.0f).coerceIn(0f, 2.0f),
+                    propSwayStiffness = (cDto.propSwayStiffness ?: 45f).coerceIn(10f, 120f),
+                    propSwayDamping = (cDto.propSwayDamping ?: 5.5f).coerceIn(1f, 20f),
+                    propSwayMaxAngleDeg = (cDto.propSwayMaxAngleDeg ?: 42f).coerceIn(5f, 80f),
                     speedMultiplier = (cDto.speed ?: 1.0f).coerceIn(0.25f, 4.0f),
                     loopAnimation = cDto.loopAnimation ?: true,
                     transitionIn = parseEnumIgnoreCase<TransitionType>(cDto.transitionIn) ?: TransitionType.NONE,
@@ -706,6 +876,8 @@ object DirectorScriptReceiver {
                     audioLabel = audioAsset?.name ?: clipName,
                     audioTrimStartMs = (cDto.audioTrimStartMs ?: 0L).coerceAtLeast(0L),
                     audioTrimEndMs = (cDto.audioTrimEndMs ?: 0L).coerceAtLeast(0L),
+                    audioTrackRole = resolvedAudioRole,
+                    audioVolume = (cDto.audioVolume ?: 1.0f).coerceIn(0f, 1.5f),
                     keyframes = finalKeyframes,
                     flipHorizontal = cDto.flipX ?: false,
                     flipVertical = cDto.flipY ?: false,
@@ -742,6 +914,69 @@ object DirectorScriptReceiver {
             val orderedLayers = layersById.values.sortedBy { it.orderIndex }
                 .mapIndexed { i, l -> l.copy(orderIndex = i) }
 
+            // Compile Deterministic Weather Particle Layers (Phase 5)
+            val compiledWeatherLayers = sceneDto.weatherLayers.orEmpty().mapNotNull { wDto ->
+                val style = parseEnumIgnoreCase<WeatherParticleStyle>(wDto.style) ?: return@mapNotNull null
+                if (style == WeatherParticleStyle.NONE) return@mapNotNull null
+                WeatherParticleConfig(
+                    enabled = wDto.enabled ?: true,
+                    style = style,
+                    density = (wDto.density ?: 0.6f).coerceIn(0f, 1f),
+                    windSpeed = (wDto.windSpeed ?: 0.5f).coerceIn(0f, 2.5f),
+                    windAngleDeg = (wDto.windAngleDeg ?: 12f).coerceIn(-65f, 65f),
+                    sizeScale = (wDto.sizeScale ?: 1.0f).coerceIn(0.4f, 2.4f),
+                    opacity = (wDto.opacity ?: 0.78f).coerceIn(0f, 1f),
+                    startSec = (wDto.startSec ?: 0f).coerceAtLeast(0f),
+                    endSec = wDto.endSec ?: -1f,
+                    seed = wDto.seed ?: 104729
+                )
+            }
+
+            // Compile Opt-In Dialogue Overlays (Phase 6: OFF by default unless explicitly set true!)
+            val compiledDialogueOverlays = sceneDto.dialogueOverlays.orEmpty().mapNotNull { dDto ->
+                val text = dDto.text?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val startF = (dDto.startFrame
+                    ?: dDto.startSec?.let { (it * fps).roundToInt() }
+                    ?: 0).coerceIn(0, (sceneDurationFrames - 1).coerceAtLeast(0))
+                val endF = (dDto.endFrame
+                    ?: dDto.endSec?.let { (it * fps).roundToInt() }
+                    ?: (startF + fps * 2)).coerceIn(startF + 1, sceneDurationFrames)
+                val normalizedLang = when (dDto.language?.trim()?.lowercase()) {
+                    "or", "odia", "oriya" -> DialogueLanguage.ODIA.code
+                    "hi", "hindi" -> DialogueLanguage.HINDI.code
+                    else -> DialogueLanguage.ENGLISH.code
+                }
+                DialogueOverlayBeat(
+                    id = dDto.id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
+                    speakerCharacterId = dDto.speakerCharacterId,
+                    speakerClipId = dDto.speakerClipId,
+                    speakerName = dDto.speakerName.orEmpty(),
+                    text = text,
+                    language = normalizedLang,
+                    startFrame = startF,
+                    endFrame = endF,
+                    showSpeechBubble = dDto.showSpeechBubble ?: false,
+                    showSubtitle = dDto.showSubtitle ?: false,
+                    bubbleStyle = parseEnumIgnoreCase<TextBubbleStyle>(dDto.bubbleStyle) ?: TextBubbleStyle.SPEECH,
+                    bubbleFillHex = dDto.bubbleFillHex ?: "#FFFFFF",
+                    textColorHex = dDto.textColorHex ?: "#0F172A",
+                    subtitleBgHex = dDto.subtitleBgHex ?: "#0F172A",
+                    subtitleTextHex = dDto.subtitleTextHex ?: "#F8FAFC"
+                )
+            }
+
+            // Compile Universal Advance Keyframe Tracks (scene-level + top-level document tracks on scene 0)
+            val rawUniversalTracks = if (idx == 0) {
+                dto.keyframeTracks.orEmpty() + sceneDto.keyframeTracks.orEmpty()
+            } else {
+                sceneDto.keyframeTracks.orEmpty()
+            }
+            val compiledUniversalTracks = compileUniversalKeyframeTracks(
+                rawTracks = rawUniversalTracks,
+                fps = fps,
+                sceneDurationFrames = sceneDurationFrames
+            )
+
             compiledScenes.add(
                 AnimationScene(
                     id = UUID.randomUUID().toString(),
@@ -752,16 +987,31 @@ object DirectorScriptReceiver {
                     cameraKeyframes = cameraKeyframes,
                     cameraLayerEnabled = true,
                     vfxConfig = sceneVfx,
+                    weatherLayers = compiledWeatherLayers,
+                    dialogueOverlays = compiledDialogueOverlays,
                     durationFrames = sceneDurationFrames,
                     layers = orderedLayers,
                     clips = clips,
                     customTransitionInId = sceneDto.customTransitionInId?.takeIf { mergedCustomTrans.containsKey(it) },
-                    customTransitionOutId = sceneDto.customTransitionOutId?.takeIf { mergedCustomTrans.containsKey(it) }
+                    customTransitionOutId = sceneDto.customTransitionOutId?.takeIf { mergedCustomTrans.containsKey(it) },
+                    universalKeyframeTracks = compiledUniversalTracks
                 )
             )
         }
 
         val finalScenes = when {
+            compiledScenes.isEmpty() && !dto.keyframeTracks.isNullOrEmpty() && currentProject.scenes.isNotEmpty() -> {
+                val activeIdx = currentProject.activeSceneIndex.coerceIn(0, currentProject.scenes.lastIndex)
+                val targetScene = currentProject.scenes[activeIdx]
+                val extraTracks = compileUniversalKeyframeTracks(
+                    rawTracks = dto.keyframeTracks,
+                    fps = fps,
+                    sceneDurationFrames = targetScene.durationFrames
+                )
+                currentProject.scenes.mapIndexed { sIdx, sc ->
+                    if (sIdx == activeIdx) sc.copy(universalKeyframeTracks = sc.universalKeyframeTracks + extraTracks) else sc
+                }
+            }
             compiledScenes.isEmpty() -> currentProject.scenes
             importMode == DirectorScriptImportMode.REPLACE_TIMELINE -> compiledScenes
             else -> currentProject.scenes + compiledScenes
@@ -771,6 +1021,18 @@ object DirectorScriptReceiver {
             importMode == DirectorScriptImportMode.REPLACE_TIMELINE -> 0
             else -> currentProject.scenes.size
         }.coerceIn(0, (finalScenes.size - 1).coerceAtLeast(0))
+
+        // Compile Smart Auto Audio Ducking Config (Phase 7)
+        val compiledDucking = dto.audioDucking?.let { d ->
+            val base = currentProject.audioDucking
+            base.copy(
+                duckingEnabled = d.duckingEnabled ?: base.duckingEnabled,
+                duckTargetVolume = (d.duckTargetVolume ?: base.duckTargetVolume).coerceIn(0.05f, 0.85f),
+                attackMs = (d.attackMs ?: base.attackMs).coerceIn(30, 800),
+                releaseMs = (d.releaseMs ?: base.releaseMs).coerceIn(80, 1500),
+                voiceThreshold = (d.voiceThreshold ?: base.voiceThreshold).coerceIn(0.03f, 0.50f)
+            )
+        } ?: currentProject.audioDucking
 
         val updatedProject = currentProject.copy(
             name = dto.projectName?.takeIf { it.isNotBlank() } ?: currentProject.name,
@@ -783,6 +1045,7 @@ object DirectorScriptReceiver {
             inlineSvgAssets = mergedInlineSvgs,
             customAnimations = mergedCustomAnims,
             customTransitions = mergedCustomTrans,
+            audioDucking = compiledDucking,
             updatedAt = System.currentTimeMillis()
         )
 
@@ -820,7 +1083,9 @@ object DirectorScriptReceiver {
     private fun compileKeyframes(
         rawKfs: List<ScriptKeyframeDto>?,
         fps: Int,
-        durationFrames: Int
+        durationFrames: Int,
+        defaultEnforceJointLimits: Boolean = true,
+        orientation: CharacterOrientation = CharacterOrientation.FRONT
     ): List<TransformKeyframe> {
         if (rawKfs.isNullOrEmpty()) {
             return listOf(TransformKeyframe(frame = 0, x = 0.5f, y = AIBlueprintExporter.GROUND_Y_NORMALIZED))
@@ -848,7 +1113,7 @@ object DirectorScriptReceiver {
                 else -> parseEnumIgnoreCase<EasingType>(dto.easing) ?: EasingType.EASE_IN_OUT
             }
             val resolvedSavedPose = dto.savedPoseId?.let { StudioCapabilityRegistry.findSavedPose(it) }
-            val poseOffsets = dto.ikPose?.let { ik ->
+            val rawPoseOffsets = dto.ikPose?.let { ik ->
                 PoseKeyframeOffsets(
                     headNodOffset = ik.headNod,
                     torsoTiltOffset = ik.torsoTilt,
@@ -865,7 +1130,17 @@ object DirectorScriptReceiver {
                 sp.ikJointOffsets.copy(
                     headNodOffset = (sp.ikJointOffsets.headNodOffset + sp.headTilt).coerceIn(-65f, 65f)
                 )
-            } ?: PoseKeyframeOffsets()
+            }
+            val enforceLimits = dto.enforceJointLimits ?: defaultEnforceJointLimits
+            val poseOffsets = if (rawPoseOffsets != null) {
+                IkRigSolver.clampPoseOffsets(
+                    offsets = rawPoseOffsets,
+                    enforceJointLimits = enforceLimits,
+                    orientation = orientation
+                )
+            } else {
+                PoseKeyframeOffsets()
+            }
 
             TransformKeyframe(
                 frame = f,
@@ -889,6 +1164,7 @@ object DirectorScriptReceiver {
                 eyebrowShapeOverride = parseEnumIgnoreCase<EyebrowShapeOverride>(dto.eyebrowShape),
                 handPoseOverride = parseEnumIgnoreCase<HandPoseType>(dto.handPose)
                     ?: resolvedSavedPose?.handPose,
+                armGestureOverride = parseEnumIgnoreCase<ArmGestureTrackPreset>(dto.armGesture),
                 blinkOverride = dto.blink
             )
         }.sortedBy { it.frame }
@@ -1184,6 +1460,100 @@ object DirectorScriptReceiver {
         }
 
         return byFrame.values.sortedBy { it.frame } to peakCameraShake
+    }
+
+    private fun compileUniversalKeyframeTracks(
+        rawTracks: List<ScriptUniversalKeyframeTrackDto>,
+        fps: Int,
+        sceneDurationFrames: Int
+    ): List<UniversalKeyframeTrack> {
+        if (rawTracks.isEmpty()) return emptyList()
+        val maxFrame = (sceneDurationFrames * 4).coerceAtLeast(fps * 30)
+        return rawTracks.mapNotNull { tDto ->
+            val targetId = tDto.targetId?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val propertyPath = tDto.propertyPath?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val rawKfs = tDto.keyframes.orEmpty()
+            if (rawKfs.isEmpty()) return@mapNotNull null
+
+            val inferredValueType = parseEnumIgnoreCase<UniversalValueType>(tDto.valueType) ?: run {
+                val sample = rawKfs.first()
+                when {
+                    sample.colorHex != null -> UniversalValueType.COLOR
+                    sample.boolValue != null -> UniversalValueType.BOOLEAN
+                    sample.stringValue != null -> UniversalValueType.STRING
+                    (sample.vec2 != null && sample.vec2.size >= 2) ||
+                        (sample.x != null && sample.y != null) ||
+                        tDto.motionPath != null || !tDto.motionPoints.isNullOrEmpty() -> UniversalValueType.VEC2
+                    else -> UniversalValueType.FLOAT
+                }
+            }
+
+            val inferredDomain = parseEnumIgnoreCase<UniversalPropertyDomain>(tDto.domain) ?: run {
+                val pLow = propertyPath.lowercase()
+                val tLow = targetId.lowercase()
+                when {
+                    pLow.startsWith("bg.") || pLow.startsWith("colourgrading.") || pLow.startsWith("colorgrading.") ||
+                        pLow.contains("parallax") || tLow == "bg" || tLow == "background" -> UniversalPropertyDomain.BACKGROUND_PARALLAX
+                    pLow.startsWith("camera.") || tLow == "camera" -> UniversalPropertyDomain.CAMERA
+                    pLow.startsWith("transition.") || tLow.startsWith("transition") -> UniversalPropertyDomain.TRANSITION
+                    pLow.startsWith("vfx.") || pLow.startsWith("weather.") || tLow == "vfx" || tLow.startsWith("weather") -> UniversalPropertyDomain.VFX_WEATHER
+                    pLow.startsWith("mask.") -> UniversalPropertyDomain.MASK
+                    pLow.startsWith("svg.") -> UniversalPropertyDomain.INLINE_SVG
+                    pLow.startsWith("transform.") || pLow.startsWith("character.") ||
+                        pLow.startsWith("expression.") || pLow.startsWith("ik.") ||
+                        pLow.startsWith("propsway.") -> UniversalPropertyDomain.CHARACTER
+                    else -> UniversalPropertyDomain.CUSTOM
+                }
+            }
+
+            val loopMode = parseEnumIgnoreCase<UniversalLoopMode>(tDto.loopMode) ?: UniversalLoopMode.ONCE
+
+            val compiledKfs = rawKfs.map { k ->
+                val f = (k.frame ?: k.tSec?.let { (it * fps).roundToInt() } ?: 0).coerceIn(0, maxFrame)
+                val bez = k.cubicBezier
+                val curve = when {
+                    bez != null && bez.size >= 4 -> UniversalCurveType.CUSTOM_CUBIC
+                    else -> parseEnumIgnoreCase<UniversalCurveType>(k.curve ?: k.easing) ?: UniversalCurveType.EASE_IN_OUT
+                }
+                UniversalKeyframe(
+                    frame = f,
+                    floatValue = k.floatValue ?: k.value,
+                    vec2X = k.vec2?.getOrNull(0) ?: k.x,
+                    vec2Y = k.vec2?.getOrNull(1) ?: k.y,
+                    colorHex = k.colorHex,
+                    boolValue = k.boolValue,
+                    stringValue = k.stringValue,
+                    curve = curve,
+                    bezierP1X = (bez?.getOrNull(0) ?: 0.42f).coerceIn(0f, 1f),
+                    bezierP1Y = (bez?.getOrNull(1) ?: 0f).coerceIn(-2f, 3f),
+                    bezierP2X = (bez?.getOrNull(2) ?: 0.58f).coerceIn(0f, 1f),
+                    bezierP2Y = (bez?.getOrNull(3) ?: 1f).coerceIn(-2f, 3f),
+                    springStiffness = (k.springStiffness ?: 180f).coerceIn(10f, 2000f),
+                    springDamping = (k.springDamping ?: 14f).coerceIn(0.5f, 200f)
+                )
+            }.sortedBy { it.frame }.distinctBy { it.frame }
+
+            val rawPts = tDto.motionPath?.controlPoints ?: tDto.motionPath?.points ?: tDto.motionPoints
+            val motionSpec = if (!rawPts.isNullOrEmpty() && rawPts.size >= 2) {
+                UniversalMotionPathSpec(
+                    controlPoints = rawPts.map { NormalizedPoint(it.x.coerceIn(-1f, 2f), it.y.coerceIn(-1f, 2f)) },
+                    autoOrientToPath = tDto.motionPath?.autoOrientToPath ?: tDto.autoOrientToPath ?: false,
+                    orientOffsetDeg = tDto.motionPath?.orientOffsetDeg ?: tDto.orientOffsetDeg ?: 0f
+                )
+            } else null
+
+            UniversalKeyframeTrack(
+                id = tDto.id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
+                targetId = targetId,
+                propertyPath = propertyPath,
+                domain = inferredDomain,
+                valueType = inferredValueType,
+                loopMode = loopMode,
+                enabled = tDto.enabled ?: true,
+                motionPath = motionSpec,
+                keyframes = compiledKfs
+            )
+        }
     }
 
     private inline fun <reified T : Enum<T>> parseEnumIgnoreCase(raw: String?): T? {

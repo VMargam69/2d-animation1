@@ -124,7 +124,8 @@ class AnimationExporter(
                     isPlaying = true,
                     inlineSvgAssets = project.inlineSvgAssets,
                     customAnimations = project.customAnimations,
-                    customTransitions = project.customTransitions
+                    customTransitions = project.customTransitions,
+                    audioSyncTracks = project.audioSyncTracks
                 )
                 val frameFile = File(rootDir, String.format(Locale.US, "frame_%04d.png", frame + 1))
                 BufferedOutputStream(FileOutputStream(frameFile), 32 * 1024).use { bos ->
@@ -184,7 +185,8 @@ class AnimationExporter(
                     isPlaying = true,
                     inlineSvgAssets = project.inlineSvgAssets,
                     customAnimations = project.customAnimations,
-                    customTransitions = project.customTransitions
+                    customTransitions = project.customTransitions,
+                    audioSyncTracks = project.audioSyncTracks
                 )
                 encoder.addFrame(bitmap)
                 onProgress(frame + 1, totalFrames)
@@ -331,7 +333,8 @@ class AnimationExporter(
                         isPlaying = true,
                         inlineSvgAssets = project.inlineSvgAssets,
                         customAnimations = project.customAnimations,
-                        customTransitions = project.customTransitions
+                        customTransitions = project.customTransitions,
+                        audioSyncTracks = project.audioSyncTracks
                     )
                 } finally {
                     inputSurface.unlockCanvasAndPost(canvas)
@@ -351,9 +354,35 @@ class AnimationExporter(
             runCatching { muxer.release() }
         }
 
+        // Phase 7: Optional offline Smart Auto Audio Ducking mux into MP4 if scene has audio clips
+        val hasAudio = scene.clips.any { !it.audioPath.isNullOrBlank() && File(it.audioPath).exists() }
+        var finalMp4 = localFile
+        if (hasAudio && localFile.exists()) {
+            val muxedFile = File(outDir, "${baseName}_muxed.mp4")
+            val totalDurationMs = ((totalFrames * 1000L) / safeFps.coerceAtLeast(1)).coerceAtLeast(250L)
+            val muxedOk = AudioDuckingEngine.remuxVideoWithDuckedAudio(
+                videoOnlyMp4 = localFile,
+                outputMp4 = muxedFile,
+                sceneClips = scene.clips,
+                audioSyncTracks = project.audioSyncTracks,
+                duckingConfig = project.audioDucking,
+                totalDurationMs = totalDurationMs,
+                fps = safeFps
+            )
+            if (muxedOk && muxedFile.exists() && muxedFile.length() > 0L) {
+                if (localFile.delete() && muxedFile.renameTo(localFile)) {
+                    finalMp4 = localFile
+                } else {
+                    finalMp4 = muxedFile
+                }
+            } else {
+                muxedFile.delete()
+            }
+        }
+
         val displayLocation = withContext(Dispatchers.IO) {
             publishToMediaStoreIfSupported(
-                sourceFile = localFile,
+                sourceFile = finalMp4,
                 fileName = "$baseName.mp4",
                 mimeType = "video/mp4",
                 isVideo = true
@@ -362,10 +391,10 @@ class AnimationExporter(
 
         return ExportOutput(
             displayPath = displayLocation,
-            filePath = localFile.absolutePath,
+            filePath = finalMp4.absolutePath,
             format = ExportFormat.MP4,
             totalFrames = totalFrames,
-            sizeBytes = localFile.length()
+            sizeBytes = finalMp4.length()
         )
     }
 

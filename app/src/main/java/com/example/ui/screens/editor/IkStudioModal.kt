@@ -74,6 +74,7 @@ fun IkStudioModal(
     ) -> Unit,
     onRenameSavedPose: (poseId: String, newName: String, newCategory: PoseCategory) -> Unit,
     onDeleteSavedPose: (poseId: String) -> Unit,
+    onDeleteSavedPoses: (Set<String>) -> Unit = { ids -> ids.forEach(onDeleteSavedPose) },
     onApplySavedPose: (SavedPose) -> Unit,
     onInsertModularAction: (clipId: String, action: ModularActionDef) -> Unit,
     onCommitIkPose: (
@@ -100,6 +101,7 @@ fun IkStudioModal(
         mutableStateOf(evalTransform.handPoseOverride ?: clip.handPose)
     }
     var ikFlipBend by remember { mutableStateOf(false) }
+    var ikJointLimitsEnabled by remember { mutableStateOf(true) }
 
     // Viewport pan / zoom controls
     var viewportZoom by remember { mutableFloatStateOf(1.15f) }
@@ -331,6 +333,7 @@ fun IkStudioModal(
                         activeDragHandle = activeDragHandle,
                         isDraggingGaze = isDraggingGaze,
                         ikFlipBend = ikFlipBend,
+                        ikJointLimitsEnabled = ikJointLimitsEnabled,
                         onPanDelta = { dx, dy ->
                             viewportPanX = (viewportPanX + dx).coerceIn(-0.45f, 0.45f)
                             viewportPanY = (viewportPanY + dy).coerceIn(-0.45f, 0.45f)
@@ -501,10 +504,12 @@ fun IkStudioModal(
                             workingExpression = workingExpression,
                             workingHandPose = workingHandPose,
                             ikFlipBend = ikFlipBend,
+                            ikJointLimitsEnabled = ikJointLimitsEnabled,
                             onStepFrame = onStepFrame,
                             onHeadTiltChange = { workingHeadTilt = it },
                             onResetGaze = { workingGaze = GazeTarget() },
                             onToggleFlipBend = { ikFlipBend = !ikFlipBend },
+                            onToggleJointLimits = { ikJointLimitsEnabled = !ikJointLimitsEnabled },
                             onMirrorPose = { workingOffsets = IkRigSolver.mirrorPoseOffsets(workingOffsets) },
                             onResetPose = {
                                 workingOffsets = PoseKeyframeOffsets()
@@ -567,7 +572,8 @@ fun IkStudioModal(
                                 onApplySavedPose(pose)
                             },
                             onRenamePose = onRenameSavedPose,
-                            onDeletePose = onDeleteSavedPose
+                            onDeletePose = onDeleteSavedPose,
+                            onDeletePoses = onDeleteSavedPoses
                         )
                     }
                 }
@@ -645,6 +651,7 @@ private fun IkStudioInteractiveCanvas(
     activeDragHandle: IkHandleId?,
     isDraggingGaze: Boolean,
     ikFlipBend: Boolean,
+    ikJointLimitsEnabled: Boolean = true,
     onPanDelta: (Float, Float) -> Unit,
     onActiveDragChanged: (IkHandleId?, Boolean) -> Unit,
     onOffsetsDragged: (PoseKeyframeOffsets) -> Unit,
@@ -657,6 +664,7 @@ private fun IkStudioInteractiveCanvas(
     val latestPanMode by rememberUpdatedState(isPanMode)
     val latestPreviewing by rememberUpdatedState(isPreviewingAction)
     val latestFlipBend by rememberUpdatedState(ikFlipBend)
+    val latestJointLimits by rememberUpdatedState(ikJointLimitsEnabled)
 
     val phase = remember(clip, currentFrame) {
         val local = (currentFrame - clip.startFrame).coerceAtLeast(0)
@@ -788,7 +796,8 @@ private fun IkStudioInteractiveCanvas(
                             currentOffsets = localDragOffsets ?: latestDisplayed.poseOffsets,
                             stageWidth = w,
                             stageHeight = h,
-                            bendFlip = latestFlipBend
+                            bendFlip = latestFlipBend,
+                            enforceJointLimits = latestJointLimits
                         )
                         localDragOffsets = solved
                         onOffsetsDragged(solved)
@@ -1243,10 +1252,12 @@ private fun IkTimelineWorkspaceTab(
     workingExpression: FacialExpression,
     workingHandPose: HandPoseType,
     ikFlipBend: Boolean,
+    ikJointLimitsEnabled: Boolean = true,
     onStepFrame: (Int) -> Unit,
     onHeadTiltChange: (Float) -> Unit,
     onResetGaze: () -> Unit,
     onToggleFlipBend: () -> Unit,
+    onToggleJointLimits: () -> Unit = {},
     onMirrorPose: () -> Unit,
     onResetPose: () -> Unit,
     onStampKeyframe: () -> Unit
@@ -1320,23 +1331,41 @@ private fun IkTimelineWorkspaceTab(
             }
         }
 
-        // Quick Pose Rig Utility Row (Flip Bend | Mirror L<->R | Reset Pose)
+        // Quick Pose Rig Utility Row (Flip Bend | Limits | Mirror L<->R | Reset)
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             OutlinedButton(
                 onClick = onToggleFlipBend,
                 border = BorderStroke(1.dp, if (ikFlipBend) AmberKeyframe else StudioBorderSubtle),
+                contentPadding = PaddingValues(horizontal = 6.dp),
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp)
                     .testTag("ik_timeline_flip_bend_btn")
             ) {
                 Text(
-                    text = if (ikFlipBend) "Bend: Flipped" else "Flip Bend",
+                    text = if (ikFlipBend) "Flipped" else "Flip Bend",
                     color = if (ikFlipBend) AmberKeyframe else StudioTextPrimary,
-                    fontSize = 11.5.sp,
+                    fontSize = 11.sp,
+                    maxLines = 1
+                )
+            }
+
+            OutlinedButton(
+                onClick = onToggleJointLimits,
+                border = BorderStroke(1.dp, if (ikJointLimitsEnabled) ElectricCyan else AmberKeyframe),
+                contentPadding = PaddingValues(horizontal = 6.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .testTag("ik_timeline_joint_limits_btn")
+            ) {
+                Text(
+                    text = if (ikJointLimitsEnabled) "Limits: ON" else "Limits: Free",
+                    color = if (ikJointLimitsEnabled) ElectricCyan else AmberKeyframe,
+                    fontSize = 11.sp,
                     maxLines = 1
                 )
             }
@@ -1344,23 +1373,25 @@ private fun IkTimelineWorkspaceTab(
             OutlinedButton(
                 onClick = onMirrorPose,
                 border = BorderStroke(1.dp, StudioBorderSubtle),
+                contentPadding = PaddingValues(horizontal = 6.dp),
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp)
                     .testTag("ik_timeline_mirror_btn")
             ) {
-                Text("Mirror L↔R", color = StudioTextPrimary, fontSize = 11.5.sp, maxLines = 1)
+                Text("Mirror", color = StudioTextPrimary, fontSize = 11.sp, maxLines = 1)
             }
 
             OutlinedButton(
                 onClick = onResetPose,
                 border = BorderStroke(1.dp, CoralPlayhead.copy(alpha = 0.6f)),
+                contentPadding = PaddingValues(horizontal = 6.dp),
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp)
                     .testTag("ik_timeline_reset_btn")
             ) {
-                Text("Reset Pose", color = CoralPlayhead, fontSize = 11.5.sp, maxLines = 1)
+                Text("Reset", color = CoralPlayhead, fontSize = 11.sp, maxLines = 1)
             }
         }
 

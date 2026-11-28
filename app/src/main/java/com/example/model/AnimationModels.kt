@@ -350,19 +350,80 @@ enum class SceneLightingMood(val displayName: String, val swatchHex: String) {
     WARM_CINEMA("Warm Cinema", "#EA580C")
 }
 
+enum class WeatherParticleStyle(val displayName: String, val accentHex: String) {
+    NONE("Off", "#64748B"),
+    RAIN("Rain", "#38BDF8"),
+    FOG("Fog", "#CBD5E1"),
+    FALLING_LEAVES("Falling Leaves", "#F97316"),
+    FIRE_SPARKS("Fire Sparks", "#FB923C"),
+    SMOKE("Smoke", "#94A3B8"),
+    DUST_MOTES("Dust Motes", "#FDE047"),
+    SNOW("Snow", "#E0F2FE")
+}
+
+data class WeatherParticleConfig(
+    val enabled: Boolean = false,
+    val style: WeatherParticleStyle = WeatherParticleStyle.NONE,
+    val density: Float = 0.6f,
+    val windSpeed: Float = 0.5f,
+    val windAngleDeg: Float = 12f,
+    val sizeScale: Float = 1.0f,
+    val opacity: Float = 0.78f,
+    val startSec: Float = 0f,
+    val endSec: Float = -1f, // < 0 means active through end of scene
+    val seed: Int = 104729
+) {
+    val isActive: Boolean
+        get() = enabled && style != WeatherParticleStyle.NONE && density > 0.01f && opacity > 0.01f
+}
+
+enum class DialogueLanguage(val code: String, val displayName: String, val badge: String) {
+    ENGLISH("en", "English", "EN"),
+    HINDI("hi", "हिन्दी (Hindi)", "हिन्दी"),
+    ODIA("or", "ଓଡ଼ିଆ (Odia)", "ଓଡ଼ିଆ")
+}
+
+/**
+ * Optional, opt-in animated comic Speech Bubble & Cinema Subtitle beat.
+ * Both [showSpeechBubble] and [showSubtitle] default to `false` so nothing renders unless
+ * the animator or Director Script explicitly enables them. Supports full Unicode Odia, Hindi, and English.
+ */
+data class DialogueOverlayBeat(
+    val id: String = UUID.randomUUID().toString(),
+    val speakerCharacterId: String? = null,
+    val speakerClipId: String? = null,
+    val speakerName: String = "",
+    val text: String = "",
+    val language: String = "en",
+    val startFrame: Int = 0,
+    val endFrame: Int = 72,
+    val showSpeechBubble: Boolean = false,
+    val showSubtitle: Boolean = false,
+    val bubbleStyle: TextBubbleStyle = TextBubbleStyle.SPEECH,
+    val bubbleFillHex: String = "#FFFFFF",
+    val textColorHex: String = "#0F172A",
+    val subtitleBgHex: String = "#0F172A",
+    val subtitleTextHex: String = "#F8FAFC"
+) {
+    val isOptedIn: Boolean
+        get() = (showSpeechBubble || showSubtitle) && text.isNotBlank()
+}
+
 data class SceneVfxConfig(
     val particleType: SceneParticleType = SceneParticleType.NONE,
     val particleIntensity: Float = 0.65f,
     val particleSpeed: Float = 1.0f,
     val lightingMood: SceneLightingMood = SceneLightingMood.NONE,
     val vignetteIntensity: Float = 0f,
-    val cameraShakeIntensity: Float = 0f
+    val cameraShakeIntensity: Float = 0f,
+    val weatherConfig: WeatherParticleConfig = WeatherParticleConfig()
 ) {
     val hasActiveVfx: Boolean
         get() = particleType != SceneParticleType.NONE ||
             lightingMood != SceneLightingMood.NONE ||
             vignetteIntensity > 0.01f ||
-            cameraShakeIntensity > 0.01f
+            cameraShakeIntensity > 0.01f ||
+            weatherConfig.isActive
 }
 
 enum class TransitionType(val displayName: String) {
@@ -526,6 +587,45 @@ data class DrawingStroke(
     val brushStyle: BrushStyle = BrushStyle.SOLID
 )
 
+enum class ArmGestureTrackPreset(
+    val displayName: String,
+    val defaultHandPose: HandPoseType
+) {
+    NONE("None (Body Default)", HandPoseType.OPEN),
+    WAVE("Wave", HandPoseType.OPEN),
+    POINT("Point Forward", HandPoseType.POINT),
+    HOLD_PROP("Hold / Carry", HandPoseType.PROP_GRIP),
+    OPEN_WELCOME("Open Welcome", HandPoseType.OPEN),
+    FIST_PUMP("Fist Pump", HandPoseType.FIST),
+    THINK_CHIN("Think (Chin)", HandPoseType.POINT),
+    CLAP("Clap Beat", HandPoseType.OPEN)
+}
+
+enum class SimultaneousTrackType(val displayName: String) {
+    HAND_GESTURE("Hand/Arm Gesture"),
+    FACIAL_OVERRIDE("Facial Override"),
+    LIP_SYNC("Auto Audio Lip-Sync")
+}
+
+/**
+ * Non-destructive simultaneous character sub-track layered over a single character clip's
+ * base body/legs preset without overwriting unrelated channels.
+ */
+data class SimultaneousTrackClip(
+    val id: String = UUID.randomUUID().toString(),
+    val trackType: SimultaneousTrackType,
+    val startLocalFrame: Int = 0,
+    val durationFrames: Int = 24,
+    val armGesturePreset: ArmGestureTrackPreset = ArmGestureTrackPreset.NONE,
+    val handPoseOverride: HandPoseType? = null,
+    val expressionOverride: FacialExpression? = null,
+    val facialPresetId: String? = null,
+    val mouthOverride: MouthShapeOverride? = null,
+    val eyeOverride: EyeShapeOverride? = null,
+    val eyebrowOverride: EyebrowShapeOverride? = null,
+    val weight: Float = 1.0f
+)
+
 data class TransformKeyframe(
     val frame: Int,
     val x: Float = 0.5f,          // Normalized 0..1 of canvas width
@@ -546,6 +646,7 @@ data class TransformKeyframe(
     val eyeShapeOverride: EyeShapeOverride? = null,
     val eyebrowShapeOverride: EyebrowShapeOverride? = null,
     val handPoseOverride: HandPoseType? = null,
+    val armGestureOverride: ArmGestureTrackPreset? = null,
     val blinkOverride: Boolean? = null
 )
 
@@ -559,16 +660,22 @@ data class TimelineClip(
     val orientation: CharacterOrientation = CharacterOrientation.FRONT,
     val animationPresetType: AnimationPresetType = AnimationPresetType.IDLE,
     val facialExpression: FacialExpression = FacialExpression.AUTO,
+    val facialOverridesEnabled: Boolean = true,
     val mouthShapeOverride: MouthShapeOverride = MouthShapeOverride.AUTO,
     val eyeShapeOverride: EyeShapeOverride = EyeShapeOverride.AUTO,
     val eyebrowShapeOverride: EyebrowShapeOverride = EyebrowShapeOverride.AUTO,
     val handPose: HandPoseType = HandPoseType.OPEN,
+    val armGesturePreset: ArmGestureTrackPreset = ArmGestureTrackPreset.NONE,
+    val simultaneousTracks: List<SimultaneousTrackClip> = emptyList(),
     val forceBlink: Boolean = false,
     val propType: CharacterPropType = CharacterPropType.NONE,
     val propAttachment: PropAttachmentPoint = PropAttachmentPoint.RIGHT_HAND,
     val customPropImagePath: String? = null,
     val propSwayEnabled: Boolean = true,
     val propSwayStrength: Float = 1.0f,
+    val propSwayStiffness: Float = 45f,
+    val propSwayDamping: Float = 5.5f,
+    val propSwayMaxAngleDeg: Float = 42f,
     val propScale: Float = 1.0f,
     val speedMultiplier: Float = 1.0f,
     val loopAnimation: Boolean = true,
@@ -587,6 +694,8 @@ data class TimelineClip(
     val shapeStrokeHex: String = "#F8FAFC",
     val audioPath: String? = null,
     val audioLabel: String? = null,
+    val audioTrackRole: AudioTrackRole = AudioTrackRole.BGM,
+    val audioVolume: Float = 1.0f,
     val audioTrimStartMs: Long = 0L,
     val audioTrimEndMs: Long = 0L,
     val drawingStrokes: List<DrawingStroke> = emptyList(),
@@ -605,6 +714,13 @@ data class TimelineClip(
     val endFrame: Int get() = startFrame + durationFrames
 }
 
+enum class ParallaxDepthPreset(val displayName: String, val depth: Float) {
+    FAR("Far", 0.2f),
+    MID("Mid", 0.6f),
+    STAGE("Stage", 1.0f),
+    NEAR("Near", 1.35f)
+}
+
 data class AnimationLayer(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
@@ -614,7 +730,8 @@ data class AnimationLayer(
     val colorHex: String = type.defaultColorHex,
     val orderIndex: Int = 0,
     val blendMode: LayerBlendMode = LayerBlendMode.NORMAL,
-    val parentLayerId: String? = null
+    val parentLayerId: String? = null,
+    val parallaxDepth: Float = 1.0f
 )
 
 data class AnimationScene(
@@ -630,11 +747,14 @@ data class AnimationScene(
     val cameraLayerLocked: Boolean = false,
     val cameraLayerName: String = "Camera Control",
     val vfxConfig: SceneVfxConfig = SceneVfxConfig(),
+    val weatherLayers: List<WeatherParticleConfig> = emptyList(),
+    val dialogueOverlays: List<DialogueOverlayBeat> = emptyList(),
     val durationFrames: Int = 144,
     val layers: List<AnimationLayer> = emptyList(),
     val clips: List<TimelineClip> = emptyList(),
     val customTransitionInId: String? = null,
-    val customTransitionOutId: String? = null
+    val customTransitionOutId: String? = null,
+    val universalKeyframeTracks: List<UniversalKeyframeTrack> = emptyList()
 )
 
 /**
@@ -674,6 +794,24 @@ data class AudioSyncMetadata(
     val volumeCurve: List<VolumeCurvePoint> = emptyList()
 )
 
+enum class AudioTrackRole(val displayName: String) {
+    DIALOGUE("Dialogue"),
+    BGM("BGM"),
+    SFX("SFX")
+}
+
+/**
+ * Smart Auto Audio Ducking configuration for offline playback and MP4 audio mixing.
+ * Automatically ducks BGM tracks smoothly whenever any DIALOGUE track exceeds [voiceThreshold].
+ */
+data class AudioDuckingConfig(
+    val duckingEnabled: Boolean = true,
+    val duckTargetVolume: Float = 0.25f, // 0.05f..0.85f
+    val attackMs: Int = 180,             // 20..1000 ms
+    val releaseMs: Int = 420,            // 50..2000 ms
+    val voiceThreshold: Float = 0.12f    // 0.02f..0.60f
+)
+
 data class ProjectDocument(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Untitled Animation",
@@ -687,6 +825,7 @@ data class ProjectDocument(
     val activeSceneIndex: Int = 0,
     val scenes: List<AnimationScene> = listOf(AnimationScene()),
     val audioSyncTracks: List<AudioSyncMetadata> = emptyList(),
+    val audioDucking: AudioDuckingConfig = AudioDuckingConfig(),
     val inlineSvgAssets: Map<String, InlineSvgAssetDef> = emptyMap(),
     val customAnimations: Map<String, CustomAnimationDef> = emptyMap(),
     val customTransitions: Map<String, CustomTransitionDef> = emptyMap(),

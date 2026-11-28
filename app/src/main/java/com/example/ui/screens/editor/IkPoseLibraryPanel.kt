@@ -2,9 +2,11 @@ package com.example.ui.screens.editor
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -45,12 +47,25 @@ fun IkPoseLibraryPanel(
     onApplyPose: (SavedPose) -> Unit,
     onRenamePose: (poseId: String, newName: String, newCategory: PoseCategory) -> Unit,
     onDeletePose: (poseId: String) -> Unit,
+    onDeletePoses: (Set<String>) -> Unit = { ids -> ids.forEach(onDeletePose) },
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<PoseCategory?>(null) }
     var posePendingRename by remember { mutableStateOf<SavedPose?>(null) }
     var posePendingDelete by remember { mutableStateOf<SavedPose?>(null) }
+    var isMultiSelectMode by remember { mutableStateOf(false) }
+    var selectedPoseIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showBulkDeleteConfirm by remember { mutableStateOf(false) }
+
+    // Keep selectedPoseIds pruned to existing poses and auto-exit if library becomes empty
+    LaunchedEffect(savedPoses) {
+        val validIds = savedPoses.map { it.id }.toSet()
+        selectedPoseIds = selectedPoseIds.intersect(validIds)
+        if (savedPoses.isEmpty()) {
+            isMultiSelectMode = false
+        }
+    }
 
     val filteredPoses = remember(savedPoses, searchQuery, selectedCategory) {
         val q = searchQuery.trim().lowercase()
@@ -69,7 +84,7 @@ fun IkPoseLibraryPanel(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Primary "+ Save Current Pose" CTA + Search Box
+        // Primary "+ Save Current Pose" CTA + Search Box + Multi-Select Toggle
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -82,7 +97,7 @@ fun IkPoseLibraryPanel(
                     contentColor = StudioObsidian
                 ),
                 shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 modifier = Modifier
                     .height(48.dp)
                     .testTag("pose_library_save_current_btn")
@@ -94,7 +109,7 @@ fun IkPoseLibraryPanel(
                 )
                 Spacer(Modifier.width(4.dp))
                 Text(
-                    text = "Save Current Pose",
+                    text = "Save Pose",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1
@@ -142,6 +157,117 @@ fun IkPoseLibraryPanel(
                     .height(48.dp)
                     .testTag("pose_library_search_input")
             )
+
+            if (savedPoses.isNotEmpty()) {
+                OutlinedButton(
+                    onClick = {
+                        isMultiSelectMode = !isMultiSelectMode
+                        if (!isMultiSelectMode) selectedPoseIds = emptySet()
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (isMultiSelectMode) ElectricCyan else StudioBorderSubtle
+                    ),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (isMultiSelectMode) ElectricCyanDim else StudioPanel,
+                        contentColor = if (isMultiSelectMode) ElectricCyan else StudioTextPrimary
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("pose_library_multi_select_toggle_btn")
+                ) {
+                    Icon(
+                        imageVector = if (isMultiSelectMode) Icons.Rounded.Done else Icons.Rounded.Checklist,
+                        contentDescription = if (isMultiSelectMode) "Exit multi-select" else "Select multiple poses",
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = if (isMultiSelectMode) "Done" else "Select",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        // Bulk Selection Action Bar when Multi-Select Mode is active
+        if (isMultiSelectMode) {
+            val visibleIds = remember(filteredPoses) { filteredPoses.map { it.id }.toSet() }
+            val allVisibleSelected = visibleIds.isNotEmpty() && visibleIds.all { it in selectedPoseIds }
+            Surface(
+                color = StudioPanel,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.5f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("pose_library_multi_select_bar")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "${selectedPoseIds.size} selected",
+                        color = ElectricCyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = {
+                            selectedPoseIds = if (allVisibleSelected) {
+                                selectedPoseIds - visibleIds
+                            } else {
+                                selectedPoseIds + visibleIds
+                            }
+                        },
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("pose_library_select_all_btn")
+                    ) {
+                        Text(
+                            text = if (allVisibleSelected) "Clear" else "Select All",
+                            color = StudioTextPrimary,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Button(
+                        onClick = { showBulkDeleteConfirm = true },
+                        enabled = selectedPoseIds.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = CoralPlayhead,
+                            contentColor = Color.White,
+                            disabledContainerColor = StudioCard,
+                            disabledContentColor = StudioTextMuted
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("pose_library_bulk_delete_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.DeleteOutline,
+                            contentDescription = "Delete selected poses",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "Delete (${selectedPoseIds.size})",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
         }
 
         // Category Filter Row
@@ -235,10 +361,27 @@ fun IkPoseLibraryPanel(
                     .testTag("pose_library_grid")
             ) {
                 items(filteredPoses, key = { it.id }) { pose ->
+                    val isChecked = pose.id in selectedPoseIds
                     SavedPoseGridCard(
                         pose = pose,
                         thumbnailLoader = thumbnailLoader,
-                        onApply = { onApplyPose(pose) },
+                        isMultiSelectMode = isMultiSelectMode,
+                        isSelected = isChecked,
+                        onApply = {
+                            if (isMultiSelectMode) {
+                                selectedPoseIds = if (isChecked) selectedPoseIds - pose.id else selectedPoseIds + pose.id
+                            } else {
+                                onApplyPose(pose)
+                            }
+                        },
+                        onLongPress = {
+                            if (!isMultiSelectMode) {
+                                isMultiSelectMode = true
+                                selectedPoseIds = setOf(pose.id)
+                            } else {
+                                selectedPoseIds = if (isChecked) selectedPoseIds - pose.id else selectedPoseIds + pose.id
+                            }
+                        },
                         onRename = { posePendingRename = pose },
                         onDelete = { posePendingDelete = pose }
                     )
@@ -294,13 +437,61 @@ fun IkPoseLibraryPanel(
             }
         )
     }
+    if (showBulkDeleteConfirm && selectedPoseIds.isNotEmpty()) {
+        val count = selectedPoseIds.size
+        AlertDialog(
+            onDismissRequest = { showBulkDeleteConfirm = false },
+            containerColor = StudioCharcoal,
+            title = {
+                Text(
+                    text = if (count == 1) "Delete 1 Pose?" else "Delete $count Poses?",
+                    color = StudioTextPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "Remove $count selected ${if (count == 1) "pose" else "poses"} from your local IK Pose Library? This cannot be undone.",
+                    color = StudioTextSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val toDelete = selectedPoseIds
+                        showBulkDeleteConfirm = false
+                        isMultiSelectMode = false
+                        selectedPoseIds = emptySet()
+                        onDeletePoses(toDelete)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CoralPlayhead),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("pose_library_bulk_delete_confirm_btn")
+                ) {
+                    Text("Delete ($count)", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showBulkDeleteConfirm = false },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Cancel", color = StudioTextSecondary)
+                }
+            }
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SavedPoseGridCard(
     pose: SavedPose,
     thumbnailLoader: (String?) -> Bitmap?,
+    isMultiSelectMode: Boolean = false,
+    isSelected: Boolean = false,
     onApply: () -> Unit,
+    onLongPress: () -> Unit = {},
     onRename: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -308,13 +499,19 @@ private fun SavedPoseGridCard(
     val thumbBitmap = remember(pose.thumbnailPath) { thumbnailLoader(pose.thumbnailPath) }
 
     Surface(
-        color = StudioPanel,
+        color = if (isSelected) ElectricCyanDim.copy(alpha = 0.25f) else StudioPanel,
         shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, StudioBorderSubtle),
+        border = BorderStroke(
+            width = if (isSelected) 2.dp else 1.dp,
+            color = if (isSelected) ElectricCyan else StudioBorderSubtle
+        ),
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onApply)
+            .combinedClickable(
+                onClick = onApply,
+                onLongClick = onLongPress
+            )
             .testTag("saved_pose_card_${pose.id}")
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -363,64 +560,83 @@ private fun SavedPoseGridCard(
                     )
                 }
 
-                // Overflow menu for Rename / Delete (48dp touch target)
-                Box(modifier = Modifier.align(Alignment.TopEnd)) {
-                    IconButton(
-                        onClick = { menuExpanded = true },
+                // Multi-select checkbox badge OR overflow menu for Rename / Delete (48dp touch target)
+                if (isMultiSelectMode) {
+                    Box(
+                        contentAlignment = Alignment.Center,
                         modifier = Modifier
-                            .size(48.dp)
-                            .testTag("saved_pose_menu_${pose.id}")
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .background(if (isSelected) ElectricCyan else StudioObsidian.copy(alpha = 0.8f))
                     ) {
-                        Box(
-                            contentAlignment = Alignment.Center,
+                        Icon(
+                            imageVector = if (isSelected) Icons.Rounded.Check else Icons.Rounded.RadioButtonUnchecked,
+                            contentDescription = if (isSelected) "Selected pose ${pose.name}" else "Unselected pose ${pose.name}",
+                            tint = if (isSelected) StudioObsidian else StudioTextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                } else {
+                    Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                        IconButton(
+                            onClick = { menuExpanded = true },
                             modifier = Modifier
-                                .size(26.dp)
-                                .clip(CircleShape)
-                                .background(StudioObsidian.copy(alpha = 0.78f))
+                                .size(48.dp)
+                                .testTag("saved_pose_menu_${pose.id}")
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.MoreVert,
-                                contentDescription = "Pose options for ${pose.name}",
-                                tint = StudioTextPrimary,
-                                modifier = Modifier.size(16.dp)
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(StudioObsidian.copy(alpha = 0.78f))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.MoreVert,
+                                    contentDescription = "Pose options for ${pose.name}",
+                                    tint = StudioTextPrimary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false },
+                            containerColor = StudioCharcoal
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Apply Pose", color = ElectricCyan) },
+                                leadingIcon = {
+                                    Icon(Icons.Rounded.Check, contentDescription = null, tint = ElectricCyan)
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onApply()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Rename", color = StudioTextPrimary) },
+                                leadingIcon = {
+                                    Icon(Icons.Rounded.Edit, contentDescription = null, tint = StudioTextPrimary)
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onRename()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete", color = CoralPlayhead) },
+                                leadingIcon = {
+                                    Icon(Icons.Rounded.DeleteOutline, contentDescription = null, tint = CoralPlayhead)
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onDelete()
+                                }
                             )
                         }
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false },
-                        containerColor = StudioCharcoal
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Apply Pose", color = ElectricCyan) },
-                            leadingIcon = {
-                                Icon(Icons.Rounded.Check, contentDescription = null, tint = ElectricCyan)
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onApply()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Rename", color = StudioTextPrimary) },
-                            leadingIcon = {
-                                Icon(Icons.Rounded.Edit, contentDescription = null, tint = StudioTextPrimary)
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onRename()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Delete", color = CoralPlayhead) },
-                            leadingIcon = {
-                                Icon(Icons.Rounded.DeleteOutline, contentDescription = null, tint = CoralPlayhead)
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onDelete()
-                            }
-                        )
                     }
                 }
             }
@@ -443,8 +659,12 @@ private fun SavedPoseGridCard(
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = "Tap",
-                    color = ElectricCyan,
+                    text = when {
+                        isMultiSelectMode && isSelected -> "Selected"
+                        isMultiSelectMode -> "Select"
+                        else -> "Tap"
+                    },
+                    color = if (isSelected) ElectricCyan else if (isMultiSelectMode) StudioTextSecondary else ElectricCyan,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
                 )

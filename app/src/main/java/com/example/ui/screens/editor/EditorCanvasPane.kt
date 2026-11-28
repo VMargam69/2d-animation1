@@ -57,6 +57,7 @@ fun EditorCanvasPane(
     isDrawingMode: Boolean,
     isIkPosingMode: Boolean = false,
     ikFlipBend: Boolean = false,
+    ikJointLimitsEnabled: Boolean = true,
     isCameraKeyMode: Boolean = false,
     showGridOverlay: Boolean = false,
     brushColorHex: String,
@@ -72,6 +73,7 @@ fun EditorCanvasPane(
     onResetCamera: () -> Unit = {},
     onExitCameraKeyMode: () -> Unit = {},
     onToggleIkFlipBend: () -> Unit = {},
+    onToggleIkJointLimits: () -> Unit = {},
     onMirrorIkPose: () -> Unit = {},
     onStampPoseKey: () -> Unit = {},
     onResetPoseAtFrame: () -> Unit = {},
@@ -193,6 +195,7 @@ fun EditorCanvasPane(
                 isDrawingMode = isDrawingMode,
                 isIkPosingMode = isIkPosingMode,
                 ikFlipBend = ikFlipBend,
+                ikJointLimitsEnabled = ikJointLimitsEnabled,
                 isCameraKeyMode = isCameraKeyMode,
                 brushColorHex = brushColorHex,
                 brushWidthRatio = brushWidthRatio,
@@ -406,6 +409,36 @@ fun EditorCanvasPane(
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (ikFlipBend) AmberKeyframe else StudioTextSecondary
+                            )
+                        }
+                    }
+
+                    // Anatomical Joint Limits Toggle (ON = natural limits, OFF = cartoon rubber-hose)
+                    Surface(
+                        color = if (ikJointLimitsEnabled) EmeraldLayer.copy(alpha = 0.2f) else StudioPanel,
+                        shape = RoundedCornerShape(7.dp),
+                        border = BorderStroke(1.dp, if (ikJointLimitsEnabled) EmeraldLayer else StudioBorderSubtle),
+                        modifier = Modifier
+                            .height(26.dp)
+                            .clickable(onClick = onToggleIkJointLimits)
+                            .testTag("ik_hud_joint_limits_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (ikJointLimitsEnabled) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                                contentDescription = "Toggle anatomical IK joint limits",
+                                tint = if (ikJointLimitsEnabled) EmeraldLayer else StudioTextSecondary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = if (ikJointLimitsEnabled) "Limits" else "Free",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (ikJointLimitsEnabled) EmeraldLayer else StudioTextSecondary
                             )
                         }
                     }

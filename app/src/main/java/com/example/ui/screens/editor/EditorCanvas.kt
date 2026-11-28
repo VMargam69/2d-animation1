@@ -47,6 +47,7 @@ fun EditorCanvas(
     isDrawingMode: Boolean,
     isIkPosingMode: Boolean = false,
     ikFlipBend: Boolean = false,
+    ikJointLimitsEnabled: Boolean = true,
     isCameraKeyMode: Boolean = false,
     brushColorHex: String,
     brushWidthRatio: Float,
@@ -81,6 +82,7 @@ fun EditorCanvas(
     val latestDrawingMode by rememberUpdatedState(isDrawingMode)
     val latestIkPosingMode by rememberUpdatedState(isIkPosingMode)
     val latestIkFlipBend by rememberUpdatedState(ikFlipBend)
+    val latestIkJointLimits by rememberUpdatedState(ikJointLimitsEnabled)
     val latestCameraKeyMode by rememberUpdatedState(isCameraKeyMode)
     val latestIsPlaying by rememberUpdatedState(isPlaying)
     val latestOnActiveIkHandleChanged by rememberUpdatedState(onActiveIkHandleChanged)
@@ -258,7 +260,8 @@ fun EditorCanvas(
                                     currentOffsets = currentOffsets,
                                     stageWidth = w,
                                     stageHeight = h,
-                                    bendFlip = latestIkFlipBend
+                                    bendFlip = latestIkFlipBend,
+                                    enforceJointLimits = latestIkJointLimits
                                 )
                                 gesturePreviewState.value = StageGesturePreview(
                                     ikClipId = clip.id,
@@ -374,7 +377,8 @@ fun EditorCanvas(
                 gesturePreview = if (preview.isActive) preview else null,
                 inlineSvgAssets = project.inlineSvgAssets,
                 customAnimations = project.customAnimations,
-                customTransitions = project.customTransitions
+                customTransitions = project.customTransitions,
+                audioSyncTracks = project.audioSyncTracks
             )
         }
 

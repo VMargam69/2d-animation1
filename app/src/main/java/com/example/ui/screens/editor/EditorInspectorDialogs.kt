@@ -295,15 +295,23 @@ fun TransformInspectorDialog(
 @Composable
 fun SpeedAndDurationDialog(
     clip: TimelineClip,
+    audioDucking: AudioDuckingConfig = AudioDuckingConfig(),
     onUpdateClip: ((TimelineClip) -> TimelineClip) -> Unit,
+    onUpdateAudioDucking: ((AudioDuckingConfig) -> AudioDuckingConfig) -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val isAudioClip = !clip.audioPath.isNullOrBlank() || clip.audioLabel != null
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = StudioPanel,
-        title = { Text("Speed & Clip Timing", color = StudioTextPrimary) },
+        title = { Text(if (isAudioClip) "Audio Timing & Auto Ducking" else "Speed & Clip Timing", color = StudioTextPrimary) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 LabeledSlider(
                     "Playback Speed",
                     clip.speedMultiplier,
@@ -338,6 +346,86 @@ fun SpeedAndDurationDialog(
                         checked = clip.loopAnimation,
                         onCheckedChange = { checked -> onUpdateClip { it.copy(loopAnimation = checked) } }
                     )
+                }
+
+                if (isAudioClip) {
+                    HorizontalDivider(color = StudioBorderSubtle)
+                    Text("Audio Track Classification", style = MaterialTheme.typography.labelLarge, color = ElectricCyan)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        AudioTrackRole.entries.forEach { role ->
+                            FilterChip(
+                                selected = clip.audioTrackRole == role,
+                                onClick = { onUpdateClip { it.copy(audioTrackRole = role) } },
+                                label = { Text(role.displayName, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.testTag("audio_role_${role.name.lowercase()}")
+                            )
+                        }
+                    }
+                    LabeledSlider(
+                        "Clip Volume",
+                        clip.audioVolume,
+                        0.0f..1.5f,
+                        "${(clip.audioVolume * 100).toInt()}%"
+                    ) { v ->
+                        onUpdateClip { it.copy(audioVolume = v) }
+                    }
+
+                    HorizontalDivider(color = StudioBorderSubtle)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Smart Auto Audio Ducking", style = MaterialTheme.typography.labelLarge, color = AmberKeyframe)
+                            Text(
+                                "Auto-ducks BGM smoothly during Dialogue",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioTextMuted
+                            )
+                        }
+                        Switch(
+                            checked = audioDucking.duckingEnabled,
+                            onCheckedChange = { enabled ->
+                                onUpdateAudioDucking { it.copy(duckingEnabled = enabled) }
+                            },
+                            modifier = Modifier.testTag("audio_ducking_enabled_switch")
+                        )
+                    }
+                    if (audioDucking.duckingEnabled) {
+                        LabeledSlider(
+                            "BGM Duck Target Volume",
+                            audioDucking.duckTargetVolume,
+                            0.05f..0.85f,
+                            "${(audioDucking.duckTargetVolume * 100).toInt()}%"
+                        ) { v ->
+                            onUpdateAudioDucking { it.copy(duckTargetVolume = v) }
+                        }
+                        LabeledSlider(
+                            "Attack Speed",
+                            audioDucking.attackMs.toFloat(),
+                            20f..800f,
+                            "${audioDucking.attackMs} ms"
+                        ) { v ->
+                            onUpdateAudioDucking { it.copy(attackMs = v.toInt()) }
+                        }
+                        LabeledSlider(
+                            "Release Speed",
+                            audioDucking.releaseMs.toFloat(),
+                            60f..1600f,
+                            "${audioDucking.releaseMs} ms"
+                        ) { v ->
+                            onUpdateAudioDucking { it.copy(releaseMs = v.toInt()) }
+                        }
+                        LabeledSlider(
+                            "Voice Threshold",
+                            audioDucking.voiceThreshold,
+                            0.02f..0.60f,
+                            "${(audioDucking.voiceThreshold * 100).toInt()}%"
+                        ) { v ->
+                            onUpdateAudioDucking { it.copy(voiceThreshold = v) }
+                        }
+                    }
                 }
             }
         },
@@ -411,6 +499,7 @@ fun LayerManagerDialog(
     onAddLayer: (LayerType, String) -> Unit,
     onRenameLayer: (String, String) -> Unit,
     onReorderLayer: (String, Boolean) -> Unit,
+    onUpdateLayerParallaxDepth: (String, Float) -> Unit = { _, _ -> },
     onToggleVisibility: (String) -> Unit,
     onToggleLock: (String) -> Unit,
     onDeleteLayer: (String) -> Unit,
@@ -473,46 +562,76 @@ fun LayerManagerDialog(
                         border = BorderStroke(1.dp, StudioBorderSubtle),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable { renamingLayer = layer }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
-                                Text(layer.name, style = MaterialTheme.typography.titleSmall, color = StudioTextPrimary)
-                                Text(layer.type.displayName, style = MaterialTheme.typography.labelSmall, color = StudioTextMuted)
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { renamingLayer = layer }
+                                ) {
+                                    Text(layer.name, style = MaterialTheme.typography.titleSmall, color = StudioTextPrimary)
+                                    val depthLabel = if (layer.type != LayerType.AUDIO) {
+                                        " • Depth ${String.format(java.util.Locale.US, "%.2fx", layer.parallaxDepth)}"
+                                    } else ""
+                                    Text(
+                                        "${layer.type.displayName}$depthLabel",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (kotlin.math.abs(layer.parallaxDepth - 1f) > 0.02f) ElectricCyan else StudioTextMuted
+                                    )
+                                }
+                                IconButton(onClick = { onReorderLayer(layer.id, true) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(Icons.Rounded.KeyboardArrowUp, "Move layer up", tint = StudioTextSecondary, modifier = Modifier.size(18.dp))
+                                }
+                                IconButton(onClick = { onReorderLayer(layer.id, false) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(Icons.Rounded.KeyboardArrowDown, "Move layer down", tint = StudioTextSecondary, modifier = Modifier.size(18.dp))
+                                }
+                                IconButton(onClick = { onToggleVisibility(layer.id) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(
+                                        if (layer.isVisible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                                        "Toggle visibility",
+                                        tint = if (layer.isVisible) ElectricCyan else StudioTextMuted,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
+                                IconButton(onClick = { onToggleLock(layer.id) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(
+                                        if (layer.isLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                                        "Toggle lock",
+                                        tint = if (layer.isLocked) AmberKeyframe else StudioTextMuted,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                if (layers.size > 1) {
+                                    IconButton(onClick = { onDeleteLayer(layer.id) }, modifier = Modifier.size(30.dp)) {
+                                        Icon(Icons.Rounded.DeleteOutline, "Delete layer", tint = CoralPlayhead, modifier = Modifier.size(17.dp))
+                                    }
+                                }
                             }
-                            IconButton(onClick = { onReorderLayer(layer.id, true) }, modifier = Modifier.size(30.dp)) {
-                                Icon(Icons.Rounded.KeyboardArrowUp, "Move layer up", tint = StudioTextSecondary, modifier = Modifier.size(18.dp))
-                            }
-                            IconButton(onClick = { onReorderLayer(layer.id, false) }, modifier = Modifier.size(30.dp)) {
-                                Icon(Icons.Rounded.KeyboardArrowDown, "Move layer down", tint = StudioTextSecondary, modifier = Modifier.size(18.dp))
-                            }
-                            IconButton(onClick = { onToggleVisibility(layer.id) }, modifier = Modifier.size(30.dp)) {
-                                Icon(
-                                    if (layer.isVisible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
-                                    "Toggle visibility",
-                                    tint = if (layer.isVisible) ElectricCyan else StudioTextMuted,
-                                    modifier = Modifier.size(17.dp)
-                                )
-                            }
-                            IconButton(onClick = { onToggleLock(layer.id) }, modifier = Modifier.size(30.dp)) {
-                                Icon(
-                                    if (layer.isLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
-                                    "Toggle lock",
-                                    tint = if (layer.isLocked) AmberKeyframe else StudioTextMuted,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                            if (layers.size > 1) {
-                                IconButton(onClick = { onDeleteLayer(layer.id) }, modifier = Modifier.size(30.dp)) {
-                                    Icon(Icons.Rounded.DeleteOutline, "Delete layer", tint = CoralPlayhead, modifier = Modifier.size(17.dp))
+                            if (layer.type != LayerType.AUDIO) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("2.5D:", style = MaterialTheme.typography.labelSmall, color = StudioTextMuted)
+                                    ParallaxDepthPreset.entries.forEach { preset ->
+                                        val isMatch = kotlin.math.abs(layer.parallaxDepth - preset.depth) < 0.08f
+                                        FilterChip(
+                                            selected = isMatch,
+                                            onClick = { onUpdateLayerParallaxDepth(layer.id, preset.depth) },
+                                            label = { Text(preset.displayName, style = MaterialTheme.typography.labelSmall) },
+                                            modifier = Modifier.testTag("layer_parallax_${layer.id}_${preset.name.lowercase()}")
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -553,9 +672,13 @@ fun LayerManagerDialog(
 fun CharacterActingAndPropsDialog(
     clip: TimelineClip,
     currentFrame: Int,
+    fps: Int = 24,
+    dialogueOverlays: List<DialogueOverlayBeat> = emptyList(),
     isIkPosingMode: Boolean,
     onUpdateClip: ((TimelineClip) -> TimelineClip) -> Unit,
     onUpdateTransform: ((TransformKeyframe) -> TransformKeyframe) -> Unit,
+    onUpsertDialogueOverlay: (DialogueOverlayBeat) -> Unit = {},
+    onRemoveDialogueOverlay: (String) -> Unit = {},
     onResetPoseAtFrame: () -> Unit,
     onToggleIkPosingMode: () -> Unit,
     onImportCustomPropPng: ((String) -> Unit) -> Unit,
@@ -698,34 +821,50 @@ fun CharacterActingAndPropsDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        "Facial Shape Overrides (Mouth • Eyes • Brows)",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = AmberKeyframe
-                    )
-                    if (hasAnyPartOverride) {
-                        TextButton(
-                            onClick = {
-                                onUpdateClip {
-                                    it.copy(
-                                        mouthShapeOverride = MouthShapeOverride.AUTO,
-                                        eyeShapeOverride = EyeShapeOverride.AUTO,
-                                        eyebrowShapeOverride = EyebrowShapeOverride.AUTO
-                                    )
-                                }
-                                onUpdateTransform {
-                                    it.copy(
-                                        mouthShapeOverride = MouthShapeOverride.AUTO,
-                                        eyeShapeOverride = EyeShapeOverride.AUTO,
-                                        eyebrowShapeOverride = EyebrowShapeOverride.AUTO
-                                    )
-                                }
-                            },
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                            modifier = Modifier.testTag("dialog_reset_facial_overrides_btn")
-                        ) {
-                            Text("Reset", color = CoralPlayhead, style = MaterialTheme.typography.labelSmall)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Facial Expression Overrides",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = AmberKeyframe
+                        )
+                        Text(
+                            "Layer Mouth • Eyes • Brows over any running preset",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StudioTextSecondary
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (hasAnyPartOverride) {
+                            TextButton(
+                                onClick = {
+                                    onUpdateClip {
+                                        it.copy(
+                                            mouthShapeOverride = MouthShapeOverride.AUTO,
+                                            eyeShapeOverride = EyeShapeOverride.AUTO,
+                                            eyebrowShapeOverride = EyebrowShapeOverride.AUTO
+                                        )
+                                    }
+                                    onUpdateTransform {
+                                        it.copy(
+                                            mouthShapeOverride = MouthShapeOverride.AUTO,
+                                            eyeShapeOverride = EyeShapeOverride.AUTO,
+                                            eyebrowShapeOverride = EyebrowShapeOverride.AUTO
+                                        )
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                modifier = Modifier.testTag("dialog_reset_facial_overrides_btn")
+                            ) {
+                                Text("Reset", color = CoralPlayhead, style = MaterialTheme.typography.labelSmall)
+                            }
                         }
+                        Switch(
+                            checked = clip.facialOverridesEnabled,
+                            onCheckedChange = { enabled ->
+                                onUpdateClip { it.copy(facialOverridesEnabled = enabled) }
+                            },
+                            modifier = Modifier.testTag("dialog_toggle_facial_overrides_switch")
+                        )
                     }
                 }
                 Text("Mouth Shape", style = MaterialTheme.typography.labelSmall, color = PinkLayer)
@@ -819,6 +958,27 @@ fun CharacterActingAndPropsDialog(
                     }
                 }
 
+                // 1D. Independent Simultaneous Arm/Hand Gesture Track (runs alongside Walk/Run/Sit)
+                Text(
+                    "Simultaneous Arm Gesture Track (Layered over Body Preset)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = ElectricCyan
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(ArmGestureTrackPreset.entries) { gesture ->
+                        val activeGesture = eval.armGestureOverride ?: clip.armGesturePreset
+                        FilterChip(
+                            selected = activeGesture == gesture,
+                            onClick = {
+                                onUpdateClip { it.copy(armGesturePreset = gesture) }
+                                onUpdateTransform { it.copy(armGestureOverride = gesture) }
+                            },
+                            label = { Text(gesture.displayName) },
+                            modifier = Modifier.testTag("arm_gesture_chip_${gesture.name.lowercase()}")
+                        )
+                    }
+                }
+
                 HorizontalDivider(color = StudioBorderSubtle)
 
                 // 2. Hand & Head Prop Attachment System
@@ -908,6 +1068,30 @@ fun CharacterActingAndPropsDialog(
                         ) { v ->
                             onUpdateClip { it.copy(propSwayStrength = v) }
                         }
+                        LabeledSlider(
+                            "Spring Stiffness",
+                            clip.propSwayStiffness,
+                            12f..120f,
+                            "${clip.propSwayStiffness.toInt()}"
+                        ) { v ->
+                            onUpdateClip { it.copy(propSwayStiffness = v) }
+                        }
+                        LabeledSlider(
+                            "Spring Damping",
+                            clip.propSwayDamping,
+                            1.5f..14f,
+                            String.format(java.util.Locale.US, "%.1f", clip.propSwayDamping)
+                        ) { v ->
+                            onUpdateClip { it.copy(propSwayDamping = v) }
+                        }
+                        LabeledSlider(
+                            "Max Sway Angle",
+                            clip.propSwayMaxAngleDeg,
+                            8f..68f,
+                            "${clip.propSwayMaxAngleDeg.toInt()}°"
+                        ) { v ->
+                            onUpdateClip { it.copy(propSwayMaxAngleDeg = v) }
+                        }
                     }
                 }
 
@@ -973,6 +1157,143 @@ fun CharacterActingAndPropsDialog(
                 }
                 LabeledSlider("Left Knee Bend", pose.leftKneeOffset, -135f..135f, "${pose.leftKneeOffset.toInt()}°") { v ->
                     onUpdateTransform { it.copy(poseOffsets = it.poseOffsets.copy(leftKneeOffset = v)) }
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 4. Optional Dialogue Bubble & Subtitle Overlay (Opt-In, OFF by default; Odia / Hindi / English)
+                val existingBeat = remember(dialogueOverlays, clip.id, currentFrame) {
+                    dialogueOverlays.firstOrNull {
+                        it.speakerClipId == clip.id && currentFrame in it.startFrame until it.endFrame
+                    } ?: dialogueOverlays.firstOrNull { it.speakerClipId == clip.id }
+                }
+                var dlgText by remember(existingBeat?.id) { mutableStateOf(existingBeat?.text ?: "") }
+                var dlgLang by remember(existingBeat?.id) { mutableStateOf(existingBeat?.language ?: "en") }
+                var dlgShowBubble by remember(existingBeat?.id) { mutableStateOf(existingBeat?.showSpeechBubble ?: false) }
+                var dlgShowSubtitle by remember(existingBeat?.id) { mutableStateOf(existingBeat?.showSubtitle ?: false) }
+                var dlgDurationSec by remember(existingBeat?.id) {
+                    val dSec = if (existingBeat != null) {
+                        ((existingBeat.endFrame - existingBeat.startFrame).toFloat() / fps.coerceAtLeast(1)).coerceIn(0.8f, 12f)
+                    } else 3.0f
+                    mutableStateOf(dSec)
+                }
+
+                Text(
+                    "Dialogue Bubble & Subtitle (Optional • OFF by Default)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = ElectricCyan
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    DialogueLanguage.entries.forEach { lang ->
+                        FilterChip(
+                            selected = dlgLang == lang.code,
+                            onClick = { dlgLang = lang.code },
+                            label = { Text(lang.badge, style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.testTag("dialogue_lang_${lang.code}")
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = dlgText,
+                    onValueChange = { dlgText = it },
+                    label = { Text("Dialogue line (English / हिन्दी / ଓଡ଼ିଆ)") },
+                    placeholder = {
+                        Text(
+                            when (dlgLang) {
+                                "or" -> "ନମସ୍କାର! ଆସନ୍ତୁ ଆରମ୍ଭ କରିବା..."
+                                "hi" -> "नमस्ते! चलिए शुरू करते हैं..."
+                                else -> "Hello! Let's go..."
+                            }
+                        )
+                    },
+                    singleLine = false,
+                    maxLines = 2,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("dialogue_overlay_text_input")
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Show Speech Bubble", style = MaterialTheme.typography.bodySmall, color = StudioTextPrimary)
+                    Switch(
+                        checked = dlgShowBubble,
+                        onCheckedChange = { dlgShowBubble = it },
+                        modifier = Modifier.testTag("dialogue_show_bubble_switch")
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Show Cinema Subtitle", style = MaterialTheme.typography.bodySmall, color = StudioTextPrimary)
+                    Switch(
+                        checked = dlgShowSubtitle,
+                        onCheckedChange = { dlgShowSubtitle = it },
+                        modifier = Modifier.testTag("dialogue_show_subtitle_switch")
+                    )
+                }
+                if (dlgShowBubble || dlgShowSubtitle) {
+                    LabeledSlider(
+                        "Overlay Duration",
+                        dlgDurationSec,
+                        0.8f..10f,
+                        String.format(java.util.Locale.US, "%.1fs", dlgDurationSec)
+                    ) { dlgDurationSec = it }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            if (dlgText.isNotBlank()) {
+                                val startF = existingBeat?.startFrame ?: currentFrame
+                                val endF = startF + (dlgDurationSec * fps.coerceAtLeast(1)).toInt().coerceAtLeast(12)
+                                onUpsertDialogueOverlay(
+                                    DialogueOverlayBeat(
+                                        id = existingBeat?.id ?: java.util.UUID.randomUUID().toString(),
+                                        speakerCharacterId = clip.characterId,
+                                        speakerClipId = clip.id,
+                                        speakerName = clip.name,
+                                        text = dlgText.trim(),
+                                        language = dlgLang,
+                                        startFrame = startF,
+                                        endFrame = endF,
+                                        showSpeechBubble = dlgShowBubble,
+                                        showSubtitle = dlgShowSubtitle
+                                    )
+                                )
+                            }
+                        },
+                        enabled = dlgText.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = StudioObsidian),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .testTag("dialogue_save_overlay_btn")
+                    ) {
+                        Text(if (existingBeat != null) "Update Overlay" else "Add Overlay")
+                    }
+                    if (existingBeat != null) {
+                        OutlinedButton(
+                            onClick = {
+                                onRemoveDialogueOverlay(existingBeat.id)
+                                dlgText = ""
+                                dlgShowBubble = false
+                                dlgShowSubtitle = false
+                            },
+                            border = BorderStroke(1.dp, CoralPlayhead),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("dialogue_remove_overlay_btn")
+                        ) {
+                            Text("Clear", color = CoralPlayhead)
+                        }
+                    }
                 }
             }
         },

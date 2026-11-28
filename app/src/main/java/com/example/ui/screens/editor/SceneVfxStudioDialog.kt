@@ -28,6 +28,7 @@ import com.example.engine.ProceduralRigRenderer
 import com.example.model.SceneLightingMood
 import com.example.model.SceneParticleType
 import com.example.model.SceneVfxConfig
+import com.example.model.WeatherParticleStyle
 import com.example.ui.theme.*
 import java.util.Locale
 
@@ -187,6 +188,123 @@ fun SceneVfxStudioDialog(
                             accent = ElectricCyan,
                             testTag = "vfx_particle_speed_slider",
                             onValueChange = { v -> onUpdateVfx { it.copy(particleSpeed = v) } }
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 1B. Deterministic Pro Weather & Wind Particle Engine (7 Styles)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val wc = vfxConfig.weatherConfig
+                    Text(
+                        text = "WEATHER & WIND ENGINE (FRAME-SYNCED)",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp,
+                        color = StudioTextMuted
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        WeatherParticleStyle.entries.forEach { style ->
+                            val isSelected = (wc.enabled && wc.style == style) || (!wc.enabled && style == WeatherParticleStyle.NONE)
+                            val accent = Color(ProceduralRigRenderer.parseColorSafe(style.accentHex, 0xFF38BDF8.toInt()))
+                            Surface(
+                                color = if (isSelected) accent.copy(alpha = 0.22f) else StudioCard,
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(
+                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                    color = if (isSelected) accent else StudioBorderSubtle
+                                ),
+                                modifier = Modifier
+                                    .widthIn(min = 74.dp)
+                                    .heightIn(min = 48.dp)
+                                    .clickable {
+                                        onUpdateVfx {
+                                            it.copy(
+                                                weatherConfig = it.weatherConfig.copy(
+                                                    enabled = style != WeatherParticleStyle.NONE,
+                                                    style = style
+                                                )
+                                            )
+                                        }
+                                    }
+                                    .testTag("weather_style_${style.name.lowercase()}")
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        text = style.displayName,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) accent else StudioTextPrimary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (wc.isActive) {
+                        VfxSliderRow(
+                            label = "Weather Density",
+                            valueText = "${(wc.density * 100).toInt()}%",
+                            value = wc.density,
+                            range = 0.1f..1.0f,
+                            accent = ElectricCyan,
+                            testTag = "weather_density_slider",
+                            onValueChange = { v ->
+                                onUpdateVfx { it.copy(weatherConfig = it.weatherConfig.copy(density = v)) }
+                            }
+                        )
+                        VfxSliderRow(
+                            label = "Wind Speed",
+                            valueText = String.format(Locale.US, "%.1fx", wc.windSpeed),
+                            value = wc.windSpeed,
+                            range = 0f..2.5f,
+                            accent = ElectricCyan,
+                            testTag = "weather_wind_speed_slider",
+                            onValueChange = { v ->
+                                onUpdateVfx { it.copy(weatherConfig = it.weatherConfig.copy(windSpeed = v)) }
+                            }
+                        )
+                        VfxSliderRow(
+                            label = "Wind Angle",
+                            valueText = "${wc.windAngleDeg.toInt()}°",
+                            value = wc.windAngleDeg,
+                            range = -60f..60f,
+                            accent = AmberKeyframe,
+                            testTag = "weather_wind_angle_slider",
+                            onValueChange = { v ->
+                                onUpdateVfx { it.copy(weatherConfig = it.weatherConfig.copy(windAngleDeg = v)) }
+                            }
+                        )
+                        VfxSliderRow(
+                            label = "Size Scale",
+                            valueText = String.format(Locale.US, "%.1fx", wc.sizeScale),
+                            value = wc.sizeScale,
+                            range = 0.4f..2.4f,
+                            accent = VioletLayer,
+                            testTag = "weather_size_slider",
+                            onValueChange = { v ->
+                                onUpdateVfx { it.copy(weatherConfig = it.weatherConfig.copy(sizeScale = v)) }
+                            }
+                        )
+                        VfxSliderRow(
+                            label = "Opacity",
+                            valueText = "${(wc.opacity * 100).toInt()}%",
+                            value = wc.opacity,
+                            range = 0.1f..1.0f,
+                            accent = VioletLayer,
+                            testTag = "weather_opacity_slider",
+                            onValueChange = { v ->
+                                onUpdateVfx { it.copy(weatherConfig = it.weatherConfig.copy(opacity = v)) }
+                            }
                         )
                     }
                 }

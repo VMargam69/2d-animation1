@@ -9,6 +9,83 @@ import kotlin.math.*
  */
 object IkRigSolver {
 
+    data class JointAngleLimit(
+        val minDeg: Float,
+        val maxDeg: Float
+    ) {
+        fun clamp(angle: Float): Float = angle.coerceIn(minDeg, maxDeg)
+    }
+
+    /**
+     * Realistic anatomical joint rotation limits (in degrees) preventing backward elbow/knee
+     * hyperextension or unnatural neck/hip inversion when `enforceJointLimits` is enabled.
+     */
+    object AnatomicalJointLimits {
+        val NECK = JointAngleLimit(-42f, 42f)
+        val TORSO = JointAngleLimit(-38f, 38f)
+        val LEFT_SHOULDER = JointAngleLimit(-145f, 135f)
+        val RIGHT_SHOULDER = JointAngleLimit(-135f, 145f)
+        val LEFT_ELBOW_HINGE = JointAngleLimit(-142f, 0f)
+        val RIGHT_ELBOW_HINGE = JointAngleLimit(0f, 142f)
+        val ELBOW_SIDE_HINGE = JointAngleLimit(-142f, 0f)
+        val HIP = JointAngleLimit(-105f, 95f)
+        val KNEE_HINGE = JointAngleLimit(0f, 132f)
+        val RIGHT_KNEE_FRONT_HINGE = JointAngleLimit(-132f, 0f)
+
+        fun asMap(): Map<String, Pair<Float, Float>> = mapOf(
+            "neck" to (NECK.minDeg to NECK.maxDeg),
+            "torso" to (TORSO.minDeg to TORSO.maxDeg),
+            "leftShoulder" to (LEFT_SHOULDER.minDeg to LEFT_SHOULDER.maxDeg),
+            "rightShoulder" to (RIGHT_SHOULDER.minDeg to RIGHT_SHOULDER.maxDeg),
+            "leftElbow" to (LEFT_ELBOW_HINGE.minDeg to LEFT_ELBOW_HINGE.maxDeg),
+            "rightElbow" to (RIGHT_ELBOW_HINGE.minDeg to RIGHT_ELBOW_HINGE.maxDeg),
+            "hip" to (HIP.minDeg to HIP.maxDeg),
+            "knee" to (KNEE_HINGE.minDeg to KNEE_HINGE.maxDeg)
+        )
+    }
+
+    /**
+     * Applies anatomical joint rotation limits to [offsets] when [enforceJointLimits] is true,
+     * or relaxed cartoon-bending limits when false. Used by both on-stage IK dragging and
+     * `.fcscript.json` IK pose compilation.
+     */
+    fun clampPoseOffsets(
+        offsets: PoseKeyframeOffsets,
+        enforceJointLimits: Boolean = true,
+        orientation: CharacterOrientation = CharacterOrientation.FRONT
+    ): PoseKeyframeOffsets {
+        if (!enforceJointLimits) {
+            return PoseKeyframeOffsets(
+                headNodOffset = offsets.headNodOffset.coerceIn(-75f, 75f),
+                torsoTiltOffset = offsets.torsoTiltOffset.coerceIn(-68f, 68f),
+                leftArmOffset = offsets.leftArmOffset.coerceIn(-175f, 175f),
+                leftForearmOffset = offsets.leftForearmOffset.coerceIn(-170f, 170f),
+                rightArmOffset = offsets.rightArmOffset.coerceIn(-175f, 175f),
+                rightForearmOffset = offsets.rightForearmOffset.coerceIn(-170f, 170f),
+                leftLegOffset = offsets.leftLegOffset.coerceIn(-155f, 155f),
+                leftKneeOffset = offsets.leftKneeOffset.coerceIn(-165f, 165f),
+                rightLegOffset = offsets.rightLegOffset.coerceIn(-155f, 155f),
+                rightKneeOffset = offsets.rightKneeOffset.coerceIn(-165f, 165f)
+            )
+        }
+        val isSideOr3Q = orientation == CharacterOrientation.SIDE ||
+            orientation == CharacterOrientation.THREE_QUARTER_FRONT
+        val rightElbowLimit = if (isSideOr3Q) AnatomicalJointLimits.ELBOW_SIDE_HINGE else AnatomicalJointLimits.RIGHT_ELBOW_HINGE
+        val rightKneeLimit = if (isSideOr3Q) AnatomicalJointLimits.KNEE_HINGE else AnatomicalJointLimits.RIGHT_KNEE_FRONT_HINGE
+        return PoseKeyframeOffsets(
+            headNodOffset = AnatomicalJointLimits.NECK.clamp(offsets.headNodOffset),
+            torsoTiltOffset = AnatomicalJointLimits.TORSO.clamp(offsets.torsoTiltOffset),
+            leftArmOffset = AnatomicalJointLimits.LEFT_SHOULDER.clamp(offsets.leftArmOffset),
+            leftForearmOffset = AnatomicalJointLimits.LEFT_ELBOW_HINGE.clamp(offsets.leftForearmOffset),
+            rightArmOffset = AnatomicalJointLimits.RIGHT_SHOULDER.clamp(offsets.rightArmOffset),
+            rightForearmOffset = rightElbowLimit.clamp(offsets.rightForearmOffset),
+            leftLegOffset = AnatomicalJointLimits.HIP.clamp(offsets.leftLegOffset),
+            leftKneeOffset = AnatomicalJointLimits.KNEE_HINGE.clamp(offsets.leftKneeOffset),
+            rightLegOffset = AnatomicalJointLimits.HIP.clamp(offsets.rightLegOffset),
+            rightKneeOffset = rightKneeLimit.clamp(offsets.rightKneeOffset)
+        )
+    }
+
     data class RigBoneGeometry(
         val shoulderHalf: Float,
         val shoulderY: Float,
@@ -381,7 +458,8 @@ object IkRigSolver {
         currentOffsets: PoseKeyframeOffsets,
         stageWidth: Float,
         stageHeight: Float,
-        bendFlip: Boolean = false
+        bendFlip: Boolean = false,
+        enforceJointLimits: Boolean = true
     ): PoseKeyframeOffsets {
         val w = stageWidth.coerceAtLeast(1f)
         val h = stageHeight.coerceAtLeast(1f)
@@ -423,26 +501,30 @@ object IkRigSolver {
         val isSideOr3Q = clip.orientation == CharacterOrientation.SIDE ||
             clip.orientation == CharacterOrientation.THREE_QUARTER_FRONT
 
-        return when (handleId) {
+        val rawSolved = when (handleId) {
             IkHandleId.HEAD -> {
                 val vx = lx
                 val vy = -(ly - geom.neckY)
-                val worldDeg = (atan2(vx.toDouble(), vy.toDouble()) * 180.0 / PI).toFloat().coerceIn(-55f, 55f)
-                currentOffsets.copy(headNodOffset = (worldDeg - basePose.headNodDeg).coerceIn(-60f, 60f))
+                val maxNeck = if (enforceJointLimits) AnatomicalJointLimits.NECK.maxDeg else 75f
+                val worldDeg = (atan2(vx.toDouble(), vy.toDouble()) * 180.0 / PI).toFloat().coerceIn(-maxNeck, maxNeck)
+                currentOffsets.copy(headNodOffset = (worldDeg - basePose.headNodDeg).coerceIn(-maxNeck, maxNeck))
             }
             IkHandleId.TORSO -> {
                 val vx = lx
                 val vy = -(ly - geom.pelvisPivotY)
-                val tiltDeg = (atan2(vx.toDouble(), vy.toDouble()) * 180.0 / PI).toFloat().coerceIn(-48f, 48f)
-                currentOffsets.copy(torsoTiltOffset = (tiltDeg - basePose.bodyTiltDeg).coerceIn(-48f, 48f))
+                val maxTorso = if (enforceJointLimits) AnatomicalJointLimits.TORSO.maxDeg else 68f
+                val tiltDeg = (atan2(vx.toDouble(), vy.toDouble()) * 180.0 / PI).toFloat().coerceIn(-maxTorso, maxTorso)
+                currentOffsets.copy(torsoTiltOffset = (tiltDeg - basePose.bodyTiltDeg).coerceIn(-maxTorso, maxTorso))
             }
             IkHandleId.LEFT_ELBOW -> {
                 val worldUpper = angleFromDownDeg(lx - (-geom.shoulderHalf), ly - geom.shoulderY)
-                currentOffsets.copy(leftArmOffset = normalizeAngleDeg(worldUpper - basePose.leftArmDeg))
+                val clampedUpper = if (enforceJointLimits) AnatomicalJointLimits.LEFT_SHOULDER.clamp(worldUpper) else worldUpper
+                currentOffsets.copy(leftArmOffset = normalizeAngleDeg(clampedUpper - basePose.leftArmDeg))
             }
             IkHandleId.LEFT_HAND -> {
-                // Natural anatomical elbow bend: inward/upward (-1 for left arm in front, -1 for side facing right)
-                val defaultBend = if (isSideOr3Q) -1f else -1f
+                val defaultBend = -1f
+                val minLower = if (enforceJointLimits && !bendFlip) -142f else -165f
+                val maxLower = if (enforceJointLimits && !bendFlip) 0f else 165f
                 val (upperDeg, lowerRelDeg) = solveTwoBoneIk(
                     originX = -geom.shoulderHalf,
                     originY = geom.shoulderY,
@@ -451,20 +533,24 @@ object IkRigSolver {
                     upperLen = geom.upperArmLen,
                     lowerLen = geom.forearmLen,
                     bendSign = defaultBend * flipMult,
-                    minLowerDeg = -148f,
-                    maxLowerDeg = 148f
+                    minLowerDeg = minLower,
+                    maxLowerDeg = maxLower
                 )
+                val safeUpper = if (enforceJointLimits) AnatomicalJointLimits.LEFT_SHOULDER.clamp(upperDeg) else upperDeg
                 currentOffsets.copy(
-                    leftArmOffset = normalizeAngleDeg(upperDeg - basePose.leftArmDeg),
+                    leftArmOffset = normalizeAngleDeg(safeUpper - basePose.leftArmDeg),
                     leftForearmOffset = normalizeAngleDeg(lowerRelDeg - basePose.leftForearmDeg)
                 )
             }
             IkHandleId.RIGHT_ELBOW -> {
                 val worldUpper = angleFromDownDeg(lx - geom.shoulderHalf, ly - geom.shoulderY)
-                currentOffsets.copy(rightArmOffset = normalizeAngleDeg(worldUpper - basePose.rightArmDeg))
+                val clampedUpper = if (enforceJointLimits) AnatomicalJointLimits.RIGHT_SHOULDER.clamp(worldUpper) else worldUpper
+                currentOffsets.copy(rightArmOffset = normalizeAngleDeg(clampedUpper - basePose.rightArmDeg))
             }
             IkHandleId.RIGHT_HAND -> {
                 val defaultBend = if (isSideOr3Q) -1f else 1f
+                val minLower = if (enforceJointLimits && !bendFlip) (if (isSideOr3Q) -142f else 0f) else -165f
+                val maxLower = if (enforceJointLimits && !bendFlip) (if (isSideOr3Q) 0f else 142f) else 165f
                 val (upperDeg, lowerRelDeg) = solveTwoBoneIk(
                     originX = geom.shoulderHalf,
                     originY = geom.shoulderY,
@@ -473,21 +559,24 @@ object IkRigSolver {
                     upperLen = geom.upperArmLen,
                     lowerLen = geom.forearmLen,
                     bendSign = defaultBend * flipMult,
-                    minLowerDeg = -148f,
-                    maxLowerDeg = 148f
+                    minLowerDeg = minLower,
+                    maxLowerDeg = maxLower
                 )
+                val safeUpper = if (enforceJointLimits) AnatomicalJointLimits.RIGHT_SHOULDER.clamp(upperDeg) else upperDeg
                 currentOffsets.copy(
-                    rightArmOffset = normalizeAngleDeg(upperDeg - basePose.rightArmDeg),
+                    rightArmOffset = normalizeAngleDeg(safeUpper - basePose.rightArmDeg),
                     rightForearmOffset = normalizeAngleDeg(lowerRelDeg - basePose.rightForearmDeg)
                 )
             }
             IkHandleId.LEFT_KNEE -> {
-                val worldThigh = angleFromDownDeg(lx - (-geom.hipHalf), ly - geom.hipY).coerceIn(-125f, 125f)
+                val rawThigh = angleFromDownDeg(lx - (-geom.hipHalf), ly - geom.hipY)
+                val worldThigh = if (enforceJointLimits) AnatomicalJointLimits.HIP.clamp(rawThigh) else rawThigh.coerceIn(-155f, 155f)
                 currentOffsets.copy(leftLegOffset = normalizeAngleDeg(worldThigh - basePose.leftLegDeg))
             }
             IkHandleId.LEFT_FOOT -> {
-                // Knees naturally bend backward (+1 in side view facing right, +1 outward/back)
                 val defaultBend = 1f
+                val minKnee = if (enforceJointLimits && !bendFlip) 0f else -155f
+                val maxKnee = if (enforceJointLimits && !bendFlip) 132f else 155f
                 val (thighDeg, kneeRelDeg) = solveTwoBoneIk(
                     originX = -geom.hipHalf,
                     originY = geom.hipY,
@@ -496,20 +585,24 @@ object IkRigSolver {
                     upperLen = geom.thighLen,
                     lowerLen = geom.calfLen,
                     bendSign = defaultBend * flipMult,
-                    minLowerDeg = -135f,
-                    maxLowerDeg = 135f
+                    minLowerDeg = minKnee,
+                    maxLowerDeg = maxKnee
                 )
+                val safeThigh = if (enforceJointLimits) AnatomicalJointLimits.HIP.clamp(thighDeg) else thighDeg.coerceIn(-155f, 155f)
                 currentOffsets.copy(
-                    leftLegOffset = normalizeAngleDeg(thighDeg.coerceIn(-125f, 125f) - basePose.leftLegDeg),
+                    leftLegOffset = normalizeAngleDeg(safeThigh - basePose.leftLegDeg),
                     leftKneeOffset = normalizeAngleDeg(kneeRelDeg - basePose.leftKneeDeg)
                 )
             }
             IkHandleId.RIGHT_KNEE -> {
-                val worldThigh = angleFromDownDeg(lx - geom.hipHalf, ly - geom.hipY).coerceIn(-125f, 125f)
+                val rawThigh = angleFromDownDeg(lx - geom.hipHalf, ly - geom.hipY)
+                val worldThigh = if (enforceJointLimits) AnatomicalJointLimits.HIP.clamp(rawThigh) else rawThigh.coerceIn(-155f, 155f)
                 currentOffsets.copy(rightLegOffset = normalizeAngleDeg(worldThigh - basePose.rightLegDeg))
             }
             IkHandleId.RIGHT_FOOT -> {
                 val defaultBend = if (isSideOr3Q) 1f else -1f
+                val minKnee = if (enforceJointLimits && !bendFlip) (if (isSideOr3Q) 0f else -132f) else -155f
+                val maxKnee = if (enforceJointLimits && !bendFlip) (if (isSideOr3Q) 132f else 0f) else 155f
                 val (thighDeg, kneeRelDeg) = solveTwoBoneIk(
                     originX = geom.hipHalf,
                     originY = geom.hipY,
@@ -518,14 +611,20 @@ object IkRigSolver {
                     upperLen = geom.thighLen,
                     lowerLen = geom.calfLen,
                     bendSign = defaultBend * flipMult,
-                    minLowerDeg = -135f,
-                    maxLowerDeg = 135f
+                    minLowerDeg = minKnee,
+                    maxLowerDeg = maxKnee
                 )
+                val safeThigh = if (enforceJointLimits) AnatomicalJointLimits.HIP.clamp(thighDeg) else thighDeg.coerceIn(-155f, 155f)
                 currentOffsets.copy(
-                    rightLegOffset = normalizeAngleDeg(thighDeg.coerceIn(-125f, 125f) - basePose.rightLegDeg),
+                    rightLegOffset = normalizeAngleDeg(safeThigh - basePose.rightLegDeg),
                     rightKneeOffset = normalizeAngleDeg(kneeRelDeg - basePose.rightKneeDeg)
                 )
             }
+        }
+        return if (enforceJointLimits && !bendFlip) {
+            clampPoseOffsets(rawSolved, enforceJointLimits = true, orientation = clip.orientation)
+        } else {
+            clampPoseOffsets(rawSolved, enforceJointLimits = false, orientation = clip.orientation)
         }
     }
 

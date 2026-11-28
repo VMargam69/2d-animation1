@@ -760,6 +760,39 @@ object ProjectMutator {
             scene.copy(layers = reindexed)
         }
 
+    fun updateLayerParallaxDepth(
+        project: ProjectDocument,
+        layerId: String,
+        parallaxDepth: Float
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val clamped = com.example.engine.ParallaxCameraMath.clampDepth(parallaxDepth)
+        scene.copy(
+            layers = scene.layers.map { l ->
+                if (l.id == layerId) l.copy(parallaxDepth = clamped) else l
+            }
+        )
+    }
+
+    fun upsertDialogueOverlayBeat(
+        project: ProjectDocument,
+        beat: DialogueOverlayBeat
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        val exists = scene.dialogueOverlays.any { it.id == beat.id }
+        val next = if (exists) {
+            scene.dialogueOverlays.map { if (it.id == beat.id) beat else it }
+        } else {
+            scene.dialogueOverlays + beat
+        }
+        scene.copy(dialogueOverlays = next)
+    }
+
+    fun removeDialogueOverlayBeat(
+        project: ProjectDocument,
+        beatId: String
+    ): ProjectDocument = updateActiveScene(project) { scene ->
+        scene.copy(dialogueOverlays = scene.dialogueOverlays.filterNot { it.id == beatId })
+    }
+
     /**
      * Deep-clones the active scene with fresh UUIDs for scene, layers, and clips,
      * remapping layerId and cameraFocusClipId references, and switches to the copy.
@@ -881,5 +914,28 @@ object ProjectMutator {
         val replacedFrames = keys.map { it.frame }.toSet()
         val merged = (scene.cameraKeyframes.filterNot { it.frame in replacedFrames } + keys).sortedBy { it.frame }
         scene.copy(cameraLayerEnabled = true, cameraKeyframes = merged)
+    }
+
+    /**
+     * Bulk-deletes multiple timeline clips across all unlocked layers in the active scene.
+     * Preserves clips on locked layers and clears [AnimationScene.cameraFocusClipId] if deleted.
+     */
+    fun deleteClips(
+        project: ProjectDocument,
+        clipIds: Set<String>
+    ): ProjectDocument {
+        if (clipIds.isEmpty()) return project
+        return updateActiveScene(project) { scene ->
+            val lockedLayerIds = scene.layers.filter { it.isLocked }.map { it.id }.toSet()
+            val remaining = scene.clips.filterNot { clip ->
+                clip.id in clipIds && clip.layerId !in lockedLayerIds
+            }
+            val remainingIds = remaining.map { it.id }.toSet()
+            val nextFocusId = scene.cameraFocusClipId?.takeIf { it in remainingIds }
+            scene.copy(
+                clips = remaining,
+                cameraFocusClipId = nextFocusId
+            )
+        }
     }
 }

@@ -1,6 +1,8 @@
 package com.example.engine
 
 import com.example.model.AnimationScene
+import com.example.model.ArmGestureTrackPreset
+import com.example.model.AudioSyncMetadata
 import com.example.model.CameraKeyframe
 import com.example.model.EasingType
 import com.example.model.EyeShapeOverride
@@ -10,6 +12,7 @@ import com.example.model.HandPoseType
 import com.example.model.MouthShapeOverride
 import com.example.model.NormalizedPoint
 import com.example.model.PoseKeyframeOffsets
+import com.example.model.SimultaneousTrackType
 import com.example.model.TimelineClip
 import com.example.model.TransformKeyframe
 import com.example.model.TransitionType
@@ -35,7 +38,31 @@ data class EvaluatedTransform(
     val eyeShapeOverride: EyeShapeOverride? = null,
     val eyebrowShapeOverride: EyebrowShapeOverride? = null,
     val handPoseOverride: HandPoseType? = null,
+    val armGestureOverride: ArmGestureTrackPreset? = null,
     val blinkOverride: Boolean? = null
+)
+
+/**
+ * Combined non-destructive 5-track evaluation for a single character at a timestamp:
+ * 1. Base Body/Legs Preset (`clip.animationPresetType`)
+ * 2. Independent Hand/Arm Gesture Track (arm/forearm deltas + handPose without touching legs/torso)
+ * 3. Custom IK Pose Overrides (`poseOffsets` layered additively)
+ * 4. Facial Expression Override Track (independent Mouth/Eyes/Eyebrows when `facialOverridesEnabled`)
+ * 5. Auto Audio Lip-Sync (phoneme-synced mouth shape layered cleanly on top)
+ */
+data class SimultaneousCharacterBlend(
+    val blendedPoseOffsets: PoseKeyframeOffsets,
+    val effectiveExpression: FacialExpression,
+    val effectiveFacialPresetId: String?,
+    val previousFacialPresetId: String?,
+    val framesSinceFacialKey: Int,
+    val effectiveMouthOverride: MouthShapeOverride,
+    val effectiveEyeOverride: EyeShapeOverride,
+    val effectiveEyebrowOverride: EyebrowShapeOverride,
+    val effectiveHandPose: HandPoseType,
+    val activeArmGesture: ArmGestureTrackPreset,
+    val effectiveBlink: Boolean?,
+    val lipSyncActive: Boolean
 )
 
 data class EvaluatedCamera(
@@ -186,6 +213,7 @@ object KeyframeEvaluator {
             eyebrowShapeOverride = exprState.eyebrowShapeOverride
                 ?: if (t >= 1f) (next.eyebrowShapeOverride ?: prev.eyebrowShapeOverride) else prev.eyebrowShapeOverride,
             handPoseOverride = if (t >= 1f) (next.handPoseOverride ?: prev.handPoseOverride) else prev.handPoseOverride,
+            armGestureOverride = if (t >= 1f) (next.armGestureOverride ?: prev.armGestureOverride) else prev.armGestureOverride,
             blinkOverride = if (t >= 1f) (next.blinkOverride ?: prev.blinkOverride) else prev.blinkOverride
         )
     }
@@ -245,6 +273,198 @@ object KeyframeEvaluator {
             eyeShapeOverride = activeEye,
             eyebrowShapeOverride = activeEyebrow
         )
+    }
+
+    /**
+     * Evaluates all 5 simultaneous non-destructive character tracks at [globalFrame]:
+     *   Base Body/Legs Preset -> Independent Hand/Arm Gesture Track -> Custom IK Pose Overrides
+     *   -> Facial Expression Override Track -> Auto Audio Lip-Sync.
+     */
+    fun evaluateSimultaneousCharacterTracks(
+        clip: TimelineClip,
+        eval: EvaluatedTransform,
+        globalFrame: Int,
+        fps: Int = 24,
+        audioSyncTracks: List<AudioSyncMetadata> = emptyList()
+    ): SimultaneousCharacterBlend {
+        val localFrame = (globalFrame - clip.startFrame).coerceAtLeast(0)
+        val safeFps = fps.coerceAtLeast(12)
+
+        // Track 2: Independent Hand/Arm Gesture Track (touches ONLY arms/forearms/handPose)
+        val activeGestureClip = clip.simultaneousTracks.lastOrNull { tr ->
+            tr.trackType == SimultaneousTrackType.HAND_GESTURE &&
+                localFrame in tr.startLocalFrame until (tr.startLocalFrame + tr.durationFrames.coerceAtLeast(1))
+        }
+        val activeGesture = activeGestureClip?.armGesturePreset?.takeIf { it != ArmGestureTrackPreset.NONE }
+            ?: eval.armGestureOverride?.takeIf { it != ArmGestureTrackPreset.NONE }
+            ?: clip.armGesturePreset
+
+        val gestureProgress = if (activeGestureClip != null) {
+            ((localFrame - activeGestureClip.startLocalFrame).toFloat() /
+                activeGestureClip.durationFrames.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+        } else {
+            val cycle = (safeFps * 1.1f).coerceAtLeast(12f)
+            ((localFrame % cycle) / cycle).coerceIn(0f, 1f)
+        }
+        val gestureWeight = (activeGestureClip?.weight ?: 1f).coerceIn(0f, 1f)
+        val gestureArmDeltas = evaluateArmGestureDeltas(activeGesture, gestureProgress, gestureWeight)
+
+        // Track 3: Custom IK Pose Overrides blended cleanly on top of Hand/Arm Gesture Track
+        val blendedOffsets = eval.poseOffsets.copy(
+            leftArmOffset = (eval.poseOffsets.leftArmOffset + gestureArmDeltas.leftArmOffset).coerceIn(-165f, 165f),
+            leftForearmOffset = (eval.poseOffsets.leftForearmOffset + gestureArmDeltas.leftForearmOffset).coerceIn(-148f, 148f),
+            rightArmOffset = (eval.poseOffsets.rightArmOffset + gestureArmDeltas.rightArmOffset).coerceIn(-165f, 165f),
+            rightForearmOffset = (eval.poseOffsets.rightForearmOffset + gestureArmDeltas.rightForearmOffset).coerceIn(-148f, 148f)
+        )
+
+        val resolvedHandPose = activeGestureClip?.handPoseOverride
+            ?: eval.handPoseOverride
+            ?: if (activeGesture != ArmGestureTrackPreset.NONE) activeGesture.defaultHandPose else clip.handPose
+
+        // Track 4: Independent Facial Expression Override Track (Mouth, Eyes, Eyebrows)
+        val activeFacialTrack = clip.simultaneousTracks.lastOrNull { tr ->
+            tr.trackType == SimultaneousTrackType.FACIAL_OVERRIDE &&
+                localFrame in tr.startLocalFrame until (tr.startLocalFrame + tr.durationFrames.coerceAtLeast(1))
+        }
+        val effectiveExpression = if (clip.facialOverridesEnabled) {
+            activeFacialTrack?.expressionOverride ?: eval.expressionOverride ?: clip.facialExpression
+        } else {
+            clip.facialExpression
+        }
+        val effectiveFacialPresetId = if (clip.facialOverridesEnabled) {
+            activeFacialTrack?.facialPresetId ?: eval.facialPresetId
+        } else {
+            null
+        }
+        var effectiveMouth = if (clip.facialOverridesEnabled) {
+            activeFacialTrack?.mouthOverride ?: eval.mouthShapeOverride ?: clip.mouthShapeOverride
+        } else {
+            MouthShapeOverride.AUTO
+        }
+        val effectiveEye = if (clip.facialOverridesEnabled) {
+            activeFacialTrack?.eyeOverride ?: eval.eyeShapeOverride ?: clip.eyeShapeOverride
+        } else {
+            EyeShapeOverride.AUTO
+        }
+        val effectiveEyebrow = if (clip.facialOverridesEnabled) {
+            activeFacialTrack?.eyebrowOverride ?: eval.eyebrowShapeOverride ?: clip.eyebrowShapeOverride
+        } else {
+            EyebrowShapeOverride.AUTO
+        }
+
+        // Track 5: Auto Audio Lip-Sync (overrides mouth cleanly when active dialogue phoneme is speaking)
+        var lipSyncActive = false
+        val syncMeta = clip.lipSyncAudioClipId?.let { id ->
+            audioSyncTracks.firstOrNull { it.clipId == id }
+        }
+        if (syncMeta != null && syncMeta.phonemeMappings.isNotEmpty()) {
+            val phonemeCue = syncMeta.phonemeMappings.firstOrNull { it.frame == globalFrame }
+                ?: syncMeta.phonemeMappings.minByOrNull { abs(it.frame - globalFrame) }
+                    ?.takeIf { abs(it.frame - globalFrame) <= 2 }
+            val mappedMouth = phonemeCue?.let { mapPhonemeToMouthOverride(it.phoneme, it.amplitude) }
+            if (mappedMouth != null) {
+                effectiveMouth = mappedMouth
+                lipSyncActive = true
+            }
+        }
+        val lipSyncTrack = clip.simultaneousTracks.lastOrNull { tr ->
+            tr.trackType == SimultaneousTrackType.LIP_SYNC &&
+                localFrame in tr.startLocalFrame until (tr.startLocalFrame + tr.durationFrames.coerceAtLeast(1))
+        }
+        if (lipSyncTrack?.mouthOverride != null) {
+            effectiveMouth = lipSyncTrack.mouthOverride
+            lipSyncActive = true
+        }
+
+        val effectiveBlink = eval.blinkOverride ?: if (clip.forceBlink) true else null
+
+        return SimultaneousCharacterBlend(
+            blendedPoseOffsets = blendedOffsets,
+            effectiveExpression = effectiveExpression,
+            effectiveFacialPresetId = effectiveFacialPresetId,
+            previousFacialPresetId = eval.previousFacialPresetId,
+            framesSinceFacialKey = eval.framesSinceFacialKey,
+            effectiveMouthOverride = effectiveMouth,
+            effectiveEyeOverride = effectiveEye,
+            effectiveEyebrowOverride = effectiveEyebrow,
+            effectiveHandPose = resolvedHandPose,
+            activeArmGesture = activeGesture,
+            effectiveBlink = effectiveBlink,
+            lipSyncActive = lipSyncActive
+        )
+    }
+
+    private fun evaluateArmGestureDeltas(
+        preset: ArmGestureTrackPreset,
+        progress: Float,
+        weight: Float
+    ): PoseKeyframeOffsets {
+        if (preset == ArmGestureTrackPreset.NONE || weight <= 0.001f) return PoseKeyframeOffsets()
+        val p = progress.coerceIn(0f, 1f)
+        val env = sin(p * PI).toFloat().coerceIn(0f, 1f)
+        val wave2 = sin(p * 4.0 * PI).toFloat()
+        val raw = when (preset) {
+            ArmGestureTrackPreset.NONE -> PoseKeyframeOffsets()
+            ArmGestureTrackPreset.WAVE -> PoseKeyframeOffsets(
+                rightArmOffset = -112f * (0.65f + 0.35f * env),
+                rightForearmOffset = -32f + 24f * wave2
+            )
+            ArmGestureTrackPreset.POINT -> PoseKeyframeOffsets(
+                rightArmOffset = -80f * (0.7f + 0.3f * env),
+                rightForearmOffset = -12f
+            )
+            ArmGestureTrackPreset.HOLD_PROP -> PoseKeyframeOffsets(
+                rightArmOffset = -42f,
+                rightForearmOffset = -52f
+            )
+            ArmGestureTrackPreset.OPEN_WELCOME -> PoseKeyframeOffsets(
+                leftArmOffset = 68f * (0.65f + 0.35f * env),
+                leftForearmOffset = 20f,
+                rightArmOffset = -68f * (0.65f + 0.35f * env),
+                rightForearmOffset = -20f
+            )
+            ArmGestureTrackPreset.FIST_PUMP -> {
+                val pump = 0.5f + 0.5f * sin(p * 4.0 * PI).toFloat()
+                PoseKeyframeOffsets(
+                    leftArmOffset = 52f + 24f * pump,
+                    leftForearmOffset = 62f + 16f * pump,
+                    rightArmOffset = -52f - 24f * pump,
+                    rightForearmOffset = -62f - 16f * pump
+                )
+            }
+            ArmGestureTrackPreset.THINK_CHIN -> PoseKeyframeOffsets(
+                rightArmOffset = -56f,
+                rightForearmOffset = -108f,
+                leftArmOffset = 26f,
+                leftForearmOffset = 64f
+            )
+            ArmGestureTrackPreset.CLAP -> {
+                val clap = abs(sin(p * 3.0 * PI).toFloat())
+                PoseKeyframeOffsets(
+                    leftArmOffset = 32f + 24f * clap,
+                    leftForearmOffset = 52f + 34f * clap,
+                    rightArmOffset = -32f - 24f * clap,
+                    rightForearmOffset = -52f - 34f * clap
+                )
+            }
+        }
+        return PoseKeyframeOffsets(
+            leftArmOffset = raw.leftArmOffset * weight,
+            leftForearmOffset = raw.leftForearmOffset * weight,
+            rightArmOffset = raw.rightArmOffset * weight,
+            rightForearmOffset = raw.rightForearmOffset * weight
+        )
+    }
+
+    private fun mapPhonemeToMouthOverride(phoneme: String, amplitude: Float): MouthShapeOverride? {
+        if (amplitude < 0.06f) return null
+        return when (phoneme.uppercase()) {
+            "AA" -> MouthShapeOverride.TALK_AA
+            "OH" -> MouthShapeOverride.SHOCK_O
+            "EE" -> MouthShapeOverride.TALK_EE
+            "MBP" -> MouthShapeOverride.NEUTRAL
+            else -> null
+        }
     }
 
     /**
@@ -422,6 +642,7 @@ object KeyframeEvaluator {
         eyeShapeOverride = eyeShapeOverride,
         eyebrowShapeOverride = eyebrowShapeOverride,
         handPoseOverride = handPoseOverride,
+        armGestureOverride = armGestureOverride,
         blinkOverride = blinkOverride
     )
 

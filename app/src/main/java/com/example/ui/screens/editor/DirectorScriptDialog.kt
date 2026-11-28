@@ -662,6 +662,25 @@ private fun ImportDirectorScriptTabContent(
                             BlueprintStatChip("Clips / Keys", "${dryRunReport.clipCount} / ${dryRunReport.keyframeCount}", StudioTextPrimary, Modifier.weight(1f))
                             BlueprintStatChip("Cam Shots", "${dryRunReport.cameraShotCount}", ElectricCyan, Modifier.weight(1f))
                         }
+                        if (dryRunReport.universalKeyframeTrackCount > 0) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                BlueprintStatChip(
+                                    "Universal Tracks",
+                                    "${dryRunReport.universalKeyframeTrackCount}",
+                                    EmeraldLayer,
+                                    Modifier.weight(1f)
+                                )
+                                BlueprintStatChip(
+                                    "Universal Keys",
+                                    "${dryRunReport.universalKeyframeCount}",
+                                    AmberKeyframe,
+                                    Modifier.weight(1f)
+                                )
+                            }
+                        }
                     }
 
                     dryRunReport.errors.forEach { err ->

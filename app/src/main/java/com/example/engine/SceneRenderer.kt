@@ -167,7 +167,8 @@ class SceneRenderer(
         gesturePreview: StageGesturePreview? = null,
         inlineSvgAssets: Map<String, InlineSvgAssetDef> = emptyMap(),
         customAnimations: Map<String, CustomAnimationDef> = emptyMap(),
-        customTransitions: Map<String, CustomTransitionDef> = emptyMap()
+        customTransitions: Map<String, CustomTransitionDef> = emptyMap(),
+        audioSyncTracks: List<AudioSyncMetadata> = emptyList()
     ) {
         val w = width.toFloat().coerceAtLeast(1f)
         val h = height.toFloat().coerceAtLeast(1f)
@@ -188,6 +189,14 @@ class SceneRenderer(
         scratch.bgPaint.color = baseBgColor
         canvas.drawRect(0f, 0f, w, h, scratch.bgPaint)
 
+        val universalSnapshot = UniversalKeyframeEngine.evaluateAllTracks(scene.universalKeyframeTracks, frame)
+        val bgGrading = UniversalKeyframeEngine.resolveBackgroundAndGrading(universalSnapshot)
+        val (effectiveVfxConfig, effectiveWeatherLayers) = UniversalKeyframeEngine.resolveVfxAndWeather(
+            snapshot = universalSnapshot,
+            baseVfx = scene.vfxConfig,
+            baseWeatherLayers = scene.weatherLayers
+        )
+
         // Apply Keyframed Stage Camera Transform (Pan, Zoom, Rotation + optional Focus Tracking + live drag preview)
         val rawCamera = KeyframeEvaluator.evaluateCamera(
             scene = scene,
@@ -196,20 +205,21 @@ class SceneRenderer(
             clipDeltaX = gesturePreview?.clipDeltaX ?: 0f,
             clipDeltaY = gesturePreview?.clipDeltaY ?: 0f
         )
+        val universalCamera = UniversalKeyframeEngine.resolveCameraOverrides(universalSnapshot, rawCamera)
         val camera = if (gesturePreview != null && (gesturePreview.cameraDeltaX != 0f || gesturePreview.cameraDeltaY != 0f)) {
-            rawCamera.copy(
-                x = (rawCamera.x - gesturePreview.cameraDeltaX).coerceIn(0.05f, 0.95f),
-                y = (rawCamera.y - gesturePreview.cameraDeltaY).coerceIn(0.05f, 0.95f)
+            universalCamera.copy(
+                x = (universalCamera.x - gesturePreview.cameraDeltaX).coerceIn(0.05f, 0.95f),
+                y = (universalCamera.y - gesturePreview.cameraDeltaY).coerceIn(0.05f, 0.95f)
             )
         } else {
-            rawCamera
+            universalCamera
         }
 
-        val shake = if (!isChromaActive && scene.vfxConfig.cameraShakeIntensity > 0.005f) {
+        val shake = if (!isChromaActive && effectiveVfxConfig.cameraShakeIntensity > 0.005f) {
             SceneVfxEngine.computeCameraShake(
                 frame = frame,
                 fps = fps,
-                intensity = scene.vfxConfig.cameraShakeIntensity,
+                intensity = effectiveVfxConfig.cameraShakeIntensity,
                 seed = scene.id.hashCode()
             )
         } else {
@@ -235,7 +245,28 @@ class SceneRenderer(
 
         val sceneBgBitmap = if (isChromaActive) null else bitmapProvider(scene.backgroundImagePath, scene.backgroundBundledKey)
         if (sceneBgBitmap != null && !sceneBgBitmap.isRecycled) {
-            drawBitmapCenterCropFast(canvas, sceneBgBitmap, width, height, 255, scratch)
+            val bgParallax = bgGrading.parallaxDepth
+            val applyBgParallax = bgParallax != null && !effectiveCamera.isIdentity && !ParallaxCameraMath.isStagePlane(bgParallax)
+            val bgSave = if (applyBgParallax) {
+                val pCam = ParallaxCameraMath.computeLayerCamera(effectiveCamera, bgParallax!!)
+                val sc = canvas.save()
+                canvas.translate(effectiveCamera.x * w, effectiveCamera.y * h)
+                canvas.rotate(effectiveCamera.rotation)
+                val invZoom = 1f / effectiveCamera.zoom.coerceAtLeast(0.05f)
+                canvas.scale(invZoom, invZoom)
+                canvas.translate(-w * 0.5f, -h * 0.5f)
+                canvas.translate(w * 0.5f, h * 0.5f)
+                canvas.scale(pCam.zoom, pCam.zoom)
+                canvas.rotate(-pCam.rotation)
+                canvas.translate(-pCam.x * w, -pCam.y * h)
+                sc
+            } else -1
+
+            drawBackgroundBitmapWithGrading(canvas, sceneBgBitmap, width, height, 255, bgGrading, scratch)
+
+            if (bgSave >= 0) {
+                canvas.restoreToCount(bgSave)
+            }
         }
 
         // 2. Subtle stage grid when empty & in editor mode (paused)
@@ -270,7 +301,11 @@ class SceneRenderer(
             scratch = scratch,
             fps = fps,
             inlineSvgAssets = inlineSvgAssets,
-            customAnimations = customAnimations
+            customAnimations = customAnimations,
+            audioSyncTracks = audioSyncTracks,
+            activeCamera = effectiveCamera,
+            universalSnapshot = universalSnapshot,
+            bgGrading = bgGrading
         )
 
         // 5. Editor Overlays (skip heavy dashed gizmo/motion-path overlays while actively playing)
@@ -310,23 +345,63 @@ class SceneRenderer(
 
         canvas.restore() // restore camera transform
 
-        // 6. Scene VFX & Atmosphere (particles, cinematic lighting moods, and vignette in full-frame stage space)
-        if (!isChromaActive && scene.vfxConfig.hasActiveVfx) {
-            SceneVfxEngine.drawSceneParticles(
-                canvas = canvas,
-                width = w,
-                height = h,
-                frame = frame,
-                fps = fps,
-                config = scene.vfxConfig,
-                seed = scene.id.hashCode()
-            )
-            SceneVfxEngine.drawLightingAndVignette(
-                canvas = canvas,
-                width = w,
-                height = h,
-                config = scene.vfxConfig
-            )
+        // 6. Scene VFX & Atmosphere (particles, weather layers, cinematic lighting moods, universal color grading, and vignette)
+        if (!isChromaActive) {
+            if (effectiveVfxConfig.hasActiveVfx) {
+                SceneVfxEngine.drawSceneParticles(
+                    canvas = canvas,
+                    width = w,
+                    height = h,
+                    frame = frame,
+                    fps = fps,
+                    config = effectiveVfxConfig,
+                    seed = scene.id.hashCode()
+                )
+                if (effectiveVfxConfig.weatherConfig.isActive) {
+                    WeatherParticleEngine.drawWeather(
+                        canvas = canvas,
+                        width = w,
+                        height = h,
+                        frameIndex = frame,
+                        fps = fps,
+                        config = effectiveVfxConfig.weatherConfig
+                    )
+                }
+                SceneVfxEngine.drawLightingAndVignette(
+                    canvas = canvas,
+                    width = w,
+                    height = h,
+                    config = effectiveVfxConfig
+                )
+            }
+            for (wl in effectiveWeatherLayers) {
+                if (wl.isActive) {
+                    WeatherParticleEngine.drawWeather(
+                        canvas = canvas,
+                        width = w,
+                        height = h,
+                        frameIndex = frame,
+                        fps = fps,
+                        config = wl
+                    )
+                }
+            }
+            if (bgGrading.hasColorGrading) {
+                drawUniversalColorGradingAndAtmosphere(canvas, w, h, bgGrading, scratch)
+            }
+            // 6B. Optional, Opt-In Animated Comic Speech Bubbles & Cinema Subtitles (Odia / Hindi / English)
+            if (scene.dialogueOverlays.isNotEmpty()) {
+                DialogueOverlayRenderer.drawDialogueOverlays(
+                    canvas = canvas,
+                    width = w,
+                    height = h,
+                    scene = scene,
+                    frame = frame,
+                    fps = fps,
+                    effectiveCamera = effectiveCamera,
+                    gesturePreview = gesturePreview
+                )
+            }
         }
 
         // 7. Universal Declarative Custom Scene Transitions (in / out wipe, iris, curtain, custom SVG path, flash)
@@ -334,32 +409,42 @@ class SceneRenderer(
             val transInDef = scene.customTransitionInId?.let { customTransitions[it] }
             if (transInDef != null) {
                 val transFrames = (transInDef.durationSec * fps.coerceAtLeast(1)).toInt().coerceAtLeast(2)
-                if (frame < transFrames) {
-                    val rawP = (frame.toFloat() / transFrames.toFloat()).coerceIn(0f, 1f)
-                    UniversalCustomTransitionEngine.applySingleSceneMaskAndFlash(
-                        canvas = canvas,
-                        width = width,
-                        height = height,
-                        def = transInDef,
-                        rawProgress = rawP,
-                        isEntering = true
-                    )
+                val tOverrides = UniversalKeyframeEngine.resolveTransitionOverrides(universalSnapshot, transInDef.id, isEntering = true)
+                if (frame < transFrames || tOverrides.progressOverride != null) {
+                    val rawP = tOverrides.progressOverride ?: (frame.toFloat() / transFrames.toFloat()).coerceIn(0f, 1f)
+                    if (rawP < 0.999f || (tOverrides.flashAlphaOverride ?: 0f) > 0.01f) {
+                        UniversalCustomTransitionEngine.applySingleSceneMaskAndFlash(
+                            canvas = canvas,
+                            width = width,
+                            height = height,
+                            def = transInDef,
+                            rawProgress = rawP,
+                            isEntering = true,
+                            angleOverrideDeg = tOverrides.wipeAngleOverrideDeg,
+                            flashAlphaOverride = tOverrides.flashAlphaOverride
+                        )
+                    }
                 }
             }
             val transOutDef = scene.customTransitionOutId?.let { customTransitions[it] }
             if (transOutDef != null) {
                 val transFrames = (transOutDef.durationSec * fps.coerceAtLeast(1)).toInt().coerceAtLeast(2)
                 val outStart = (scene.durationFrames - transFrames).coerceAtLeast(0)
-                if (frame >= outStart && scene.durationFrames > 0) {
-                    val rawP = ((frame - outStart).toFloat() / transFrames.toFloat()).coerceIn(0f, 1f)
-                    UniversalCustomTransitionEngine.applySingleSceneMaskAndFlash(
-                        canvas = canvas,
-                        width = width,
-                        height = height,
-                        def = transOutDef,
-                        rawProgress = rawP,
-                        isEntering = false
-                    )
+                val tOverrides = UniversalKeyframeEngine.resolveTransitionOverrides(universalSnapshot, transOutDef.id, isEntering = false)
+                if ((frame >= outStart && scene.durationFrames > 0) || tOverrides.progressOverride != null) {
+                    val rawP = tOverrides.progressOverride ?: ((frame - outStart).toFloat() / transFrames.toFloat()).coerceIn(0f, 1f)
+                    if (rawP > 0.001f || (tOverrides.flashAlphaOverride ?: 0f) > 0.01f) {
+                        UniversalCustomTransitionEngine.applySingleSceneMaskAndFlash(
+                            canvas = canvas,
+                            width = width,
+                            height = height,
+                            def = transOutDef,
+                            rawProgress = rawP,
+                            isEntering = false,
+                            angleOverrideDeg = tOverrides.wipeAngleOverrideDeg,
+                            flashAlphaOverride = tOverrides.flashAlphaOverride
+                        )
+                    }
                 }
             }
         }
@@ -506,7 +591,11 @@ class SceneRenderer(
         scratch: RenderScratch,
         fps: Int = 24,
         inlineSvgAssets: Map<String, InlineSvgAssetDef> = emptyMap(),
-        customAnimations: Map<String, CustomAnimationDef> = emptyMap()
+        customAnimations: Map<String, CustomAnimationDef> = emptyMap(),
+        audioSyncTracks: List<AudioSyncMetadata> = emptyList(),
+        activeCamera: EvaluatedCamera? = null,
+        universalSnapshot: UniversalFrameSnapshot = UniversalFrameSnapshot.EMPTY,
+        bgGrading: EvaluatedBackgroundGrading = EvaluatedBackgroundGrading()
     ) {
         val baseScale = min(w, h) / 420f
         // Precompute parent layer active transform if any layer uses parentLayerId
@@ -535,13 +624,37 @@ class SceneRenderer(
                 val c = clips[i]
                 if (c.layerId == layer.id && frame >= c.startFrame && frame < c.endFrame) {
                     activeLayerClips.add(c)
-                    if (c.depthOrder != 0) hasNonZeroDepth = true
+                    val z = UniversalKeyframeEngine.resolveClipDepthOrder(universalSnapshot, c)
+                    if (z != 0) hasNonZeroDepth = true
                 }
             }
             if (activeLayerClips.isEmpty()) continue
             if (activeLayerClips.size > 1 && hasNonZeroDepth) {
-                activeLayerClips.sortBy { it.depthOrder }
+                activeLayerClips.sortBy { UniversalKeyframeEngine.resolveClipDepthOrder(universalSnapshot, it) }
             }
+
+            // Optional 2.5D Multi-Plane Parallax transform (supports dynamic universal keyframed parallaxDepth 0.1..1.5)
+            val effectiveParallaxDepth = UniversalKeyframeEngine.resolveLayerParallaxDepth(universalSnapshot, layer)
+            val applyParallax = activeCamera != null &&
+                !activeCamera.isIdentity &&
+                !ParallaxCameraMath.isStagePlane(effectiveParallaxDepth)
+            val parallaxSaveCount = if (applyParallax) {
+                val cam = activeCamera!!
+                val pCam = ParallaxCameraMath.computeLayerCamera(cam, effectiveParallaxDepth)
+                val sc = canvas.save()
+                // Invert base stage camera transform
+                canvas.translate(cam.x * w, cam.y * h)
+                canvas.rotate(cam.rotation)
+                val invZoom = 1f / cam.zoom.coerceAtLeast(0.05f)
+                canvas.scale(invZoom, invZoom)
+                canvas.translate(-w * 0.5f, -h * 0.5f)
+                // Apply depth-scaled parallax camera transform
+                canvas.translate(w * 0.5f, h * 0.5f)
+                canvas.scale(pCam.zoom, pCam.zoom)
+                canvas.rotate(-pCam.rotation)
+                canvas.translate(-pCam.x * w, -pCam.y * h)
+                sc
+            } else -1
 
             // Optional Layer Blend Mode compositing
             val blendSaveCount = if (layer.blendMode != LayerBlendMode.NORMAL) {
@@ -564,7 +677,7 @@ class SceneRenderer(
                 )
                 val localFrame = (frame - clip.startFrame).coerceAtLeast(0)
                 val customAnimDef = clip.customAnimationId?.let { customAnimations[it] }
-                val customNodeTracks = if (customAnimDef != null) {
+                val baseCustomNodeTracks = if (customAnimDef != null) {
                     UniversalCustomAnimationEngine.evaluateAllTracks(
                         def = customAnimDef,
                         localFrame = localFrame,
@@ -572,9 +685,22 @@ class SceneRenderer(
                         speedMultiplier = clip.speedMultiplier
                     )
                 } else emptyMap()
+                val inlineSvgDef = clip.inlineSvgAssetId?.let { inlineSvgAssets[it] }
+                val knownSvgNodes = inlineSvgDef?.subPartPivots?.map { it.nodeId }.orEmpty()
+                val customNodeTracks = if (!universalSnapshot.isEmpty) {
+                    UniversalKeyframeEngine.resolveInlineSvgNodeTransforms(
+                        snapshot = universalSnapshot,
+                        clipId = clip.id,
+                        inlineSvgAssetId = clip.inlineSvgAssetId,
+                        knownNodeIds = knownSvgNodes,
+                        baseNodeTransforms = baseCustomNodeTracks
+                    )
+                } else {
+                    baseCustomNodeTracks
+                }
                 val rootCustom = UniversalCustomAnimationEngine.rootTransformOrNull(customNodeTracks)
 
-                val transform = if (rootCustom != null) {
+                val preUniversalTransform = if (rootCustom != null) {
                     baseTransform.copy(
                         x = baseTransform.x + rootCustom.dx,
                         y = baseTransform.y + rootCustom.dy,
@@ -585,17 +711,29 @@ class SceneRenderer(
                     )
                 } else baseTransform
 
+                val (transform, effFlipX, effFlipY) = UniversalKeyframeEngine.resolveGenericClipTransform(
+                    snapshot = universalSnapshot,
+                    clip = clip,
+                    base = preUniversalTransform
+                )
+
                 val effectiveAlpha = (transform.opacity * alphaMultiplier).coerceIn(0f, 1f)
                 if (effectiveAlpha <= 0.01f) continue
 
                 if (layer.type == LayerType.BACKGROUND) {
-                    val inlineBg = clip.inlineSvgAssetId?.let { inlineSvgAssets[it] }
-                    if (inlineBg != null) {
+                    if (inlineSvgDef != null) {
                         canvas.save()
                         canvas.translate(w * 0.5f, h * 0.5f)
+                        if (bgGrading.hasBackgroundTransform) {
+                            canvas.rotate(bgGrading.bgRotation)
+                            canvas.scale(bgGrading.bgScale, bgGrading.bgScale)
+                            val ox = ((bgGrading.bgScrollX % 1f) + 1f) % 1f
+                            val oy = ((bgGrading.bgScrollY % 1f) + 1f) % 1f
+                            canvas.translate(-ox * w, -oy * h)
+                        }
                         InlineSvgAssetSpawner.drawInlineSvgAsset(
                             canvas = canvas,
-                            def = inlineBg,
+                            def = inlineSvgDef,
                             targetMaxDim = kotlin.math.max(w, h),
                             alpha = effectiveAlpha,
                             tintOverlay = tintOverlay,
@@ -606,7 +744,15 @@ class SceneRenderer(
                     } else {
                         val bgBmp = bitmapProvider(clip.imagePath, clip.bundledBgKey)
                         if (bgBmp != null && !bgBmp.isRecycled) {
-                            drawBitmapCenterCropFast(canvas, bgBmp, intW, intH, (effectiveAlpha * 255).toInt(), scratch)
+                            drawBackgroundBitmapWithGrading(
+                                canvas = canvas,
+                                bitmap = bgBmp,
+                                dstWInt = intW,
+                                dstHInt = intH,
+                                alphaInt = (effectiveAlpha * 255).toInt(),
+                                grading = bgGrading,
+                                scratch = scratch
+                            )
                         }
                     }
                     continue
@@ -623,24 +769,55 @@ class SceneRenderer(
                 }
                 canvas.translate(transform.x * w, transform.y * h)
                 canvas.rotate(transform.rotation + (parentAnchor?.rotation ?: 0f))
-                val sx = transform.scaleX * (parentAnchor?.scaleX ?: 1f) * if (clip.flipHorizontal) -1f else 1f
-                val sy = transform.scaleY * (parentAnchor?.scaleY ?: 1f) * if (clip.flipVertical) -1f else 1f
+                val sx = transform.scaleX * (parentAnchor?.scaleX ?: 1f) * if (effFlipX) -1f else 1f
+                val sy = transform.scaleY * (parentAnchor?.scaleY ?: 1f) * if (effFlipY) -1f else 1f
                 canvas.scale(sx, sy)
 
-                // Apply Clip Masking if enabled
+                // Apply Clip Masking (supports both built-in ClipMaskType and universal mask.x/y/w/h/radius/feather)
+                val universalMask = UniversalKeyframeEngine.resolveClipMask(universalSnapshot, clip)
+                val effMaskRadius = universalMask.radiusOverride ?: clip.maskRadius
                 if (clip.maskType != ClipMaskType.NONE) {
-                    val maskDim = min(w, h) * clip.maskRadius.coerceIn(0.08f, 0.95f)
+                    val maskDim = min(w, h) * effMaskRadius.coerceIn(0.08f, 0.95f)
                     val maskPath = buildClipMaskPath(clip.maskType, maskDim, scratch.path)
                     if (maskPath != null) {
+                        if (universalMask.hasCustomRectMask) {
+                            val mx = universalMask.maskX * maskDim
+                            val my = universalMask.maskY * maskDim
+                            maskPath.offset(mx, my)
+                        }
                         canvas.clipPath(maskPath)
                     }
+                } else if (universalMask.hasCustomRectMask) {
+                    val baseDim = min(w, h) * 0.45f
+                    val cxM = universalMask.maskX * baseDim
+                    val cyM = universalMask.maskY * baseDim
+                    val hw = baseDim * universalMask.maskW * 0.5f
+                    val hh = baseDim * universalMask.maskH * 0.5f
+                    val cr = min(hw, hh) * universalMask.feather * 0.4f
+                    scratch.path.reset()
+                    scratch.path.addRoundRect(cxM - hw, cyM - hh, cxM + hw, cyM + hh, cr, cr, Path.Direction.CW)
+                    canvas.clipPath(scratch.path)
                 }
 
                 when (layer.type) {
                     LayerType.CHARACTER -> {
                         val rig = clip.characterId?.let { charactersById[it] }
                         if (rig != null) {
-                            val cycleFrames = clip.animationPresetType.defaultDurationFrames.coerceAtLeast(8).toFloat()
+                            val multiTrack = KeyframeEvaluator.evaluateSimultaneousCharacterTracks(
+                                clip = clip,
+                                eval = transform,
+                                globalFrame = frame,
+                                fps = fps,
+                                audioSyncTracks = audioSyncTracks
+                            )
+                            val charState = UniversalKeyframeEngine.resolveCharacterOverrides(
+                                snapshot = universalSnapshot,
+                                clip = clip,
+                                baseTransform = transform,
+                                baseMultiTrack = multiTrack
+                            )
+                            val effPreset = charState.animationPreset
+                            val cycleFrames = effPreset.defaultDurationFrames.coerceAtLeast(8).toFloat()
                             val rawPhase = (localFrame * clip.speedMultiplier) / cycleFrames
                             val phase = if (clip.loopAnimation) rawPhase % 1f else rawPhase.coerceIn(0f, 0.999f)
                             val isAtlasPro = rig.spriteAtlasRig != null || rig.skeletonRig?.rigMode == CustomRigMode.ATLAS_RIG_PRO
@@ -649,31 +826,56 @@ class SceneRenderer(
                             val customPropBmp = if (clip.propType == CharacterPropType.CUSTOM_PNG) {
                                 bitmapProvider(clip.customPropImagePath, null)
                             } else null
-                            val effectiveExpression = transform.expressionOverride ?: clip.facialExpression
-                            val effectiveHandPose = transform.handPoseOverride ?: clip.handPose
-                            val effectiveBlink = transform.blinkOverride ?: if (clip.forceBlink) true else null
-                            val effectiveMouthOverride = transform.mouthShapeOverride ?: clip.mouthShapeOverride
-                            val effectiveEyeOverride = transform.eyeShapeOverride ?: clip.eyeShapeOverride
-                            val effectiveEyebrowOverride = transform.eyebrowShapeOverride ?: clip.eyebrowShapeOverride
-                            val organicFace = FacialExpressionEngine.evaluateOrganicFace(
-                                activePresetId = transform.facialPresetId,
-                                previousPresetId = transform.previousFacialPresetId,
-                                fallbackExpression = effectiveExpression,
-                                framesSinceKey = transform.framesSinceFacialKey,
+
+                            val baseOrganicFace = FacialExpressionEngine.evaluateOrganicFace(
+                                activePresetId = charState.facialPresetId,
+                                previousPresetId = multiTrack.previousFacialPresetId,
+                                fallbackExpression = charState.expression,
+                                framesSinceKey = multiTrack.framesSinceFacialKey,
                                 globalFrame = frame,
                                 fps = fps,
-                                blinkOverride = effectiveBlink,
+                                blinkOverride = charState.blinkOverride,
                                 characterSeed = clip.id.hashCode(),
-                                mouthOverride = effectiveMouthOverride,
-                                eyeOverride = effectiveEyeOverride,
-                                eyebrowOverride = effectiveEyebrowOverride
+                                mouthOverride = charState.mouthOverride,
+                                eyeOverride = charState.eyeOverride,
+                                eyebrowOverride = charState.eyebrowOverride
                             )
-                            val effectiveTint = tintOverlay ?: if (clip.blackShade > 0.01f) {
-                                Color.argb((clip.blackShade.coerceIn(0f, 1f) * 215f).toInt(), 0, 0, 0)
-                            } else null
-                            val propSwayState = if (tintOverlay == null && clip.propSwayEnabled) {
+                            val organicFace = if (charState.gazeTargetX != null || charState.gazeTargetY != null) {
+                                baseOrganicFace.copy(
+                                    eyeLookX = charState.gazeTargetX ?: baseOrganicFace.eyeLookX,
+                                    eyeLookY = charState.gazeTargetY ?: baseOrganicFace.eyeLookY
+                                )
+                            } else {
+                                baseOrganicFace
+                            }
+
+                            val effectiveTint = tintOverlay
+                                ?: charState.tintArgb
+                                ?: if (clip.blackShade > 0.01f) {
+                                    Color.argb((clip.blackShade.coerceIn(0f, 1f) * 215f).toInt(), 0, 0, 0)
+                                } else null
+
+                            val swayClip = if (
+                                charState.propSwayConfig.stiffness != clip.propSwayStiffness ||
+                                charState.propSwayConfig.damping != clip.propSwayDamping ||
+                                charState.propSwayConfig.maxAngleDeg != clip.propSwayMaxAngleDeg ||
+                                charState.propSwayStrength != clip.propSwayStrength ||
+                                charState.propSwayEnabled != clip.propSwayEnabled
+                            ) {
+                                clip.copy(
+                                    propSwayEnabled = charState.propSwayEnabled,
+                                    propSwayStiffness = charState.propSwayConfig.stiffness,
+                                    propSwayDamping = charState.propSwayConfig.damping,
+                                    propSwayMaxAngleDeg = charState.propSwayConfig.maxAngleDeg,
+                                    propSwayStrength = charState.propSwayStrength
+                                )
+                            } else {
+                                clip
+                            }
+
+                            val propSwayState = if (tintOverlay == null && swayClip.propSwayEnabled) {
                                 PropSwayPhysicsEngine.evaluatePropSway(
-                                    clip = clip,
+                                    clip = swayClip,
                                     rig = rig,
                                     frame = frame,
                                     fps = fps,
@@ -683,29 +885,32 @@ class SceneRenderer(
                                 PropSwayState.ZERO
                             }
                             val blendedPoseOffsets = if (customNodeTracks.isNotEmpty()) {
-                                UniversalCustomAnimationEngine.blendIntoPoseOffsets(transform.poseOffsets, customNodeTracks)
+                                UniversalCustomAnimationEngine.blendIntoPoseOffsets(
+                                    charState.poseOffsets,
+                                    customNodeTracks
+                                )
                             } else {
-                                transform.poseOffsets
+                                charState.poseOffsets
                             }
                             ProceduralRigRenderer.drawCharacter(
                                 canvas = canvas,
                                 rig = rig,
-                                orientation = clip.orientation,
-                                preset = clip.animationPresetType,
+                                orientation = charState.orientation,
+                                preset = effPreset,
                                 phase = phase,
                                 rigScale = baseScale,
                                 alpha = effectiveAlpha,
                                 customBitmap = customBmp,
                                 tintOverlayColor = effectiveTint,
                                 poseOffsets = blendedPoseOffsets,
-                                facialExpression = effectiveExpression,
+                                facialExpression = charState.expression,
                                 propType = clip.propType,
                                 propAttachment = clip.propAttachment,
                                 customPropBitmap = customPropBmp,
-                                propSwayEnabled = clip.propSwayEnabled,
+                                propSwayEnabled = swayClip.propSwayEnabled,
                                 propScale = clip.propScale,
-                                handPose = effectiveHandPose,
-                                blinkOverride = effectiveBlink,
+                                handPose = charState.handPose,
+                                blinkOverride = charState.blinkOverride,
                                 atlasSlices = atlasSlices,
                                 organicFace = organicFace,
                                 propSwayState = propSwayState
@@ -713,12 +918,11 @@ class SceneRenderer(
                         }
                     }
                     LayerType.IMAGE -> {
-                        val inlineSvg = clip.inlineSvgAssetId?.let { inlineSvgAssets[it] }
-                        if (inlineSvg != null) {
+                        if (inlineSvgDef != null) {
                             val maxDim = min(w, h) * 0.44f
                             InlineSvgAssetSpawner.drawInlineSvgAsset(
                                 canvas = canvas,
-                                def = inlineSvg,
+                                def = inlineSvgDef,
                                 targetMaxDim = maxDim,
                                 alpha = effectiveAlpha,
                                 tintOverlay = tintOverlay,
@@ -756,6 +960,9 @@ class SceneRenderer(
 
             if (blendSaveCount >= 0) {
                 canvas.restoreToCount(blendSaveCount)
+            }
+            if (parallaxSaveCount >= 0) {
+                canvas.restoreToCount(parallaxSaveCount)
             }
         }
     }
@@ -1427,6 +1634,164 @@ class SceneRenderer(
         while (y < h) {
             canvas.drawLine(0f, y, w, y, scratch.gridPaint)
             y += step
+        }
+    }
+
+    /**
+     * Renders a background bitmap with optional keyframed seamless scrolling (`bgScrollX`/`bgScrollY`),
+     * `bgScale`, `bgRotation`, and hardware-canvas-compatible rack-focus depth blur (`bgDepthBlur`).
+     * Fast-paths directly to [drawBitmapCenterCropFast] when no universal background transforms are active.
+     */
+    private fun drawBackgroundBitmapWithGrading(
+        canvas: Canvas,
+        bitmap: Bitmap,
+        dstWInt: Int,
+        dstHInt: Int,
+        alphaInt: Int,
+        grading: EvaluatedBackgroundGrading,
+        scratch: RenderScratch
+    ) {
+        if (!grading.hasBackgroundTransform) {
+            drawBitmapCenterCropFast(canvas, bitmap, dstWInt, dstHInt, alphaInt, scratch)
+            return
+        }
+        val w = dstWInt.toFloat()
+        val h = dstHInt.toFloat()
+        canvas.save()
+        if (abs(grading.bgScale - 1f) > 0.0005f || abs(grading.bgRotation) > 0.01f) {
+            canvas.translate(w * 0.5f, h * 0.5f)
+            canvas.rotate(grading.bgRotation)
+            canvas.scale(grading.bgScale, grading.bgScale)
+            canvas.translate(-w * 0.5f, -h * 0.5f)
+        }
+
+        val hasScrollX = abs(grading.bgScrollX) > 0.0001f
+        val hasScrollY = abs(grading.bgScrollY) > 0.0001f
+        val ox = if (hasScrollX) (((grading.bgScrollX % 1f) + 1f) % 1f) * w else 0f
+        val oy = if (hasScrollY) (((grading.bgScrollY % 1f) + 1f) % 1f) * h else 0f
+
+        fun drawTiledPass(passAlpha: Int, blurDx: Float = 0f, blurDy: Float = 0f) {
+            val xOffsets = if (hasScrollX) floatArrayOf(-ox + blurDx, w - ox + blurDx) else floatArrayOf(blurDx)
+            val yOffsets = if (hasScrollY) floatArrayOf(-oy + blurDy, h - oy + blurDy) else floatArrayOf(blurDy)
+            for (tx in xOffsets) {
+                for (ty in yOffsets) {
+                    canvas.save()
+                    canvas.translate(tx, ty)
+                    drawBitmapCenterCropFast(canvas, bitmap, dstWInt, dstHInt, passAlpha, scratch)
+                    canvas.restore()
+                }
+            }
+        }
+
+        drawTiledPass(alphaInt)
+
+        // Hardware-canvas-safe rack-focus soften passes when bgDepthBlur > 0
+        if (grading.bgDepthBlur > 0.02f) {
+            val radius = (min(w, h) * 0.018f * grading.bgDepthBlur).coerceIn(1.5f, 22f)
+            val tapAlpha = (alphaInt * (0.28f * grading.bgDepthBlur)).toInt().coerceIn(8, 120)
+            drawTiledPass(tapAlpha, -radius, 0f)
+            drawTiledPass(tapAlpha, radius, 0f)
+            drawTiledPass(tapAlpha, 0f, -radius)
+            drawTiledPass(tapAlpha, 0f, radius)
+        }
+        canvas.restore()
+    }
+
+    /**
+     * Applies keyframed universal colour grading (`exposure`, `contrast`, `saturation`, `temperature`),
+     * `dayNightBlend`, `ambientLightColor`, and radial `vignette` deterministically across both
+     * live preview and MP4/GIF/PNG export canvases.
+     */
+    private fun drawUniversalColorGradingAndAtmosphere(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        grading: EvaluatedBackgroundGrading,
+        scratch: RenderScratch
+    ) {
+        val fill = scratch.fillPaint
+        val prevShader = fill.shader
+        val prevFilter = fill.colorFilter
+        fill.shader = null
+        fill.colorFilter = null
+
+        try {
+            // 1. Day-to-Night atmosphere blend (deep cinematic indigo night veil)
+            if (grading.dayNightBlend > 0.005f) {
+                val nightAlpha = (grading.dayNightBlend * 145f).toInt().coerceIn(0, 170)
+                fill.color = Color.argb(nightAlpha, 11, 22, 54)
+                canvas.drawRect(0f, 0f, w, h, fill)
+            }
+
+            // 2. Ambient Light Color tint
+            val ambColor = grading.ambientLightColorArgb
+            if (ambColor != null && grading.ambientLightAlpha > 0.005f) {
+                val aInt = (grading.ambientLightAlpha * 255f).toInt().coerceIn(0, 215)
+                fill.color = Color.argb(aInt, Color.red(ambColor), Color.green(ambColor), Color.blue(ambColor))
+                canvas.drawRect(0f, 0f, w, h, fill)
+            }
+
+            // 3. Temperature shift (-1 cool cyan-blue .. +1 warm golden amber)
+            if (abs(grading.temperature) > 0.005f) {
+                val tMag = (abs(grading.temperature) * 68f).toInt().coerceIn(0, 90)
+                fill.color = if (grading.temperature > 0f) {
+                    Color.argb(tMag, 255, 168, 76)
+                } else {
+                    Color.argb(tMag, 72, 148, 255)
+                }
+                canvas.drawRect(0f, 0f, w, h, fill)
+            }
+
+            // 4. Exposure shift (-1 darken .. +1 brighten)
+            if (abs(grading.exposure) > 0.005f) {
+                val expAlpha = (abs(grading.exposure) * 140f).toInt().coerceIn(0, 185)
+                fill.color = if (grading.exposure > 0f) {
+                    Color.argb(expAlpha, 255, 255, 255)
+                } else {
+                    Color.argb(expAlpha, 0, 0, 0)
+                }
+                canvas.drawRect(0f, 0f, w, h, fill)
+            }
+
+            // 5. Saturation reduction (desaturate toward neutral slate veil when saturation < 1)
+            if (grading.saturation < 0.98f) {
+                val desat = ((1f - grading.saturation).coerceIn(0f, 1f) * 95f).toInt().coerceIn(0, 120)
+                fill.color = Color.argb(desat, 128, 128, 128)
+                canvas.drawRect(0f, 0f, w, h, fill)
+            }
+
+            // 6. Contrast crush/lift subtle grade
+            if (abs(grading.contrast - 1f) > 0.03f) {
+                val cDelta = grading.contrast - 1f
+                if (cDelta > 0f) {
+                    val a = (cDelta.coerceIn(0f, 1f) * 34f).toInt().coerceIn(0, 48)
+                    fill.color = Color.argb(a, 10, 12, 18)
+                    canvas.drawRect(0f, 0f, w, h, fill)
+                } else {
+                    val a = ((-cDelta).coerceIn(0f, 0.8f) * 58f).toInt().coerceIn(0, 72)
+                    fill.color = Color.argb(a, 148, 154, 164)
+                    canvas.drawRect(0f, 0f, w, h, fill)
+                }
+            }
+
+            // 7. Cinematic radial vignette
+            if (grading.vignette > 0.005f) {
+                val vAlpha = (grading.vignette * 215f).toInt().coerceIn(0, 230)
+                val radius = (kotlin.math.hypot(w * 0.5f, h * 0.5f)).coerceAtLeast(1f)
+                fill.shader = RadialGradient(
+                    w * 0.5f,
+                    h * 0.5f,
+                    radius,
+                    intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT, Color.argb(vAlpha, 0, 0, 0)),
+                    floatArrayOf(0f, 0.52f, 1f),
+                    Shader.TileMode.CLAMP
+                )
+                fill.color = Color.BLACK
+                canvas.drawRect(0f, 0f, w, h, fill)
+            }
+        } finally {
+            fill.shader = prevShader
+            fill.colorFilter = prevFilter
         }
     }
 

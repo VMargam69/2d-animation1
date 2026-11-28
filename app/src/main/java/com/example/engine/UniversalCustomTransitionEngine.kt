@@ -44,7 +44,11 @@ object UniversalCustomTransitionEngine {
     /**
      * Pure-math evaluation of [def] at [rawProgress] in `0f..1f` (unit-testable on JVM).
      */
-    fun evaluate(def: CustomTransitionDef, rawProgress: Float): EvaluatedCustomTransition {
+    fun evaluate(
+        def: CustomTransitionDef,
+        rawProgress: Float,
+        flashAlphaOverride: Float? = null
+    ): EvaluatedCustomTransition {
         val raw = rawProgress.coerceIn(0f, 1f)
         val bez = def.cubicBezier
         val p = if (bez.size >= 4) {
@@ -81,10 +85,14 @@ object UniversalCustomTransitionEngine {
             clampedP
         ).coerceIn(0f, 1f)
 
-        // Smooth bell curve peaking at raw = 0.5 for flash overlay
-        val flashPeak = def.flashOverlay?.peakAlpha?.coerceIn(0f, 1f) ?: 0f
-        val flashBell = sin(raw * PI).toFloat().coerceIn(0f, 1f)
-        val flashAlpha = (flashPeak * flashBell * flashBell).coerceIn(0f, 1f)
+        // Smooth bell curve peaking at raw = 0.5 for flash overlay (or direct keyframed override)
+        val flashAlpha = if (flashAlphaOverride != null) {
+            flashAlphaOverride.coerceIn(0f, 1f)
+        } else {
+            val flashPeak = def.flashOverlay?.peakAlpha?.coerceIn(0f, 1f) ?: 0f
+            val flashBell = sin(raw * PI).toFloat().coerceIn(0f, 1f)
+            (flashPeak * flashBell * flashBell).coerceIn(0f, 1f)
+        }
 
         return EvaluatedCustomTransition(
             rawProgress = raw,
@@ -100,7 +108,7 @@ object UniversalCustomTransitionEngine {
             incomingRotation = inRot,
             incomingAlpha = inAlpha,
             flashAlpha = flashAlpha,
-            flashColorHex = def.flashOverlay?.colorHex
+            flashColorHex = def.flashOverlay?.colorHex ?: if (flashAlphaOverride != null && flashAlphaOverride > 0.01f) "#FFFFFF" else null
         )
     }
 
@@ -180,15 +188,17 @@ object UniversalCustomTransitionEngine {
         height: Int,
         def: CustomTransitionDef,
         rawProgress: Float,
-        isEntering: Boolean
+        isEntering: Boolean,
+        angleOverrideDeg: Float? = null,
+        flashAlphaOverride: Float? = null
     ) {
         val w = width.toFloat().coerceAtLeast(1f)
         val h = height.toFloat().coerceAtLeast(1f)
         val progress = if (isEntering) rawProgress.coerceIn(0f, 1f) else (1f - rawProgress.coerceIn(0f, 1f))
-        val state = evaluate(def, if (isEntering) rawProgress else (1f - rawProgress))
+        val state = evaluate(def, if (isEntering) rawProgress else (1f - rawProgress), flashAlphaOverride = flashAlphaOverride)
 
         // Draw dark matte outside the reveal shape
-        val revealPath = buildClipPath(def, w, h, state.easedProgress.coerceIn(0f, 1f))
+        val revealPath = buildClipPath(def, w, h, state.easedProgress.coerceIn(0f, 1f), angleOverrideDeg = angleOverrideDeg)
         if (revealPath != null) {
             val mattePath = Path().apply {
                 addRect(0f, 0f, w, h, Path.Direction.CW)
@@ -233,9 +243,11 @@ object UniversalCustomTransitionEngine {
         def: CustomTransitionDef,
         w: Float,
         h: Float,
-        progress: Float
+        progress: Float,
+        angleOverrideDeg: Float? = null
     ): Path? {
         val p = progress.coerceIn(0f, 1f)
+        val effAngle = angleOverrideDeg ?: def.angleDeg
         return when (def.clipPathType) {
             CustomTransitionClipType.NONE -> null
             CustomTransitionClipType.WIPE_ANGLE -> {
@@ -246,7 +258,7 @@ object UniversalCustomTransitionEngine {
                     addRect(-diag, -diag, -diag + diag * 2f * p, diag, Path.Direction.CW)
                 }
                 val matrix = Matrix().apply {
-                    postRotate(def.angleDeg)
+                    postRotate(effAngle)
                     postTranslate(cx, cy)
                 }
                 path.transform(matrix)

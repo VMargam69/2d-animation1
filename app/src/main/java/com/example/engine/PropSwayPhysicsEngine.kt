@@ -191,7 +191,20 @@ object PropSwayPhysicsEngine {
         val safeFps = fps.coerceIn(12, 60).toFloat()
         val dt = 1f / safeFps
         val flipSign = if (clip.flipHorizontal) -1f else 1f
-        val profile = profileFor(clip.propType, clip.propAttachment)
+        val baseProfile = profileFor(clip.propType, clip.propAttachment)
+        val stiffnessScale = (clip.propSwayStiffness.coerceIn(10f, 140f) / 45f)
+        val dampingScale = (clip.propSwayDamping.coerceIn(1.0f, 16f) / 5.5f)
+        val customMaxAngle = clip.propSwayMaxAngleDeg.coerceIn(5f, 75f)
+        val effectiveMaxAngle = if (kotlin.math.abs(customMaxAngle - 42f) > 0.01f) {
+            customMaxAngle
+        } else {
+            baseProfile.maxAngleDeg
+        }
+        val profile = baseProfile.copy(
+            stiffness = (baseProfile.stiffness * stiffnessScale).coerceIn(8f, 180f),
+            damping = (baseProfile.damping * dampingScale).coerceIn(0.8f, 24f),
+            maxAngleDeg = effectiveMaxAngle
+        )
 
         val windowFrames = 14
         val startF = (frame - windowFrames).coerceAtLeast(clip.startFrame)
@@ -324,8 +337,13 @@ object PropSwayPhysicsEngine {
             accTheta = (accTheta - gesturePreview.dragVelocityX * 32f * flipSign).coerceIn(-28f, 28f)
         }
 
-        // Scale the calibrated physical response monotonically by propSwayStrength (0f..2f)
-        val maxScaledAngle = (profile.maxAngleDeg * 1.45f).coerceAtMost(68f)
+        // Scale the calibrated physical response monotonically by propSwayStrength (0f..2f),
+        // respecting an explicit user maxAngleDeg cap when customized.
+        val maxScaledAngle = if (kotlin.math.abs(customMaxAngle - 42f) > 0.01f) {
+            customMaxAngle
+        } else {
+            (profile.maxAngleDeg * 1.45f).coerceAtMost(68f)
+        }
         val scaledAngle = (theta * strength).coerceIn(-maxScaledAngle, maxScaledAngle)
         val scaledAccFlutter = (accTheta * strength).coerceIn(-38f, 38f)
 

@@ -81,6 +81,8 @@ data class StudioUiState(
     val editingClipForAnimationSwapId: String? = null,
     val selectedClipId: String? = null,
     val selectedLayerId: String? = null,
+    val isTimelineMultiSelectMode: Boolean = false,
+    val selectedTimelineClipIds: Set<String> = emptySet(),
     val currentFrame: Int = 0,
     val isPlaying: Boolean = false,
     val isLooping: Boolean = true,
@@ -93,6 +95,7 @@ data class StudioUiState(
     val isDrawingMode: Boolean = false,
     val isIkPosingMode: Boolean = false,
     val ikFlipBend: Boolean = false,
+    val ikJointLimitsEnabled: Boolean = true,
     val isCameraKeyMode: Boolean = false,
     val brushColorHex: String = "#38BDF8",
     val brushWidthRatio: Float = 0.009f,
@@ -793,6 +796,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun deleteSavedPoses(poseIds: Set<String>) {
+        if (poseIds.isEmpty()) return
+        viewModelScope.launch {
+            val updatedList = poseLibraryStorage.deletePoses(poseIds)
+            _uiState.update { it.copy(savedPoses = updatedList) }
+            val label = if (poseIds.size == 1) "1 pose" else "${poseIds.size} poses"
+            showStatus("Deleted $label from pose library")
+        }
+    }
+
     /** 1-Tap Apply Saved Pose with automatic Undo snapshot at the current playhead frame. */
     fun applySavedPoseToSelectedClip(pose: SavedPose) {
         val state = _uiState.value
@@ -988,14 +1001,84 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun deleteSelectedClip() {
         val state = _uiState.value
         val clipId = state.selectedClipId ?: return
-        val updated = ProjectMutator.updateActiveScene(state.project) { scene ->
-            val clip = scene.clips.firstOrNull { it.id == clipId }
-            val locked = scene.layers.firstOrNull { it.id == clip?.layerId }?.isLocked == true
-            if (locked) scene else scene.copy(clips = scene.clips.filterNot { it.id == clipId })
+        val updated = ProjectMutator.deleteClips(state.project, setOf(clipId))
+        commitProjectChange(updated)
+        _uiState.update {
+            it.copy(
+                selectedClipId = null,
+                selectedTimelineClipIds = it.selectedTimelineClipIds - clipId
+            )
+        }
+        showStatus("Clip deleted")
+    }
+
+    fun toggleTimelineMultiSelectMode() {
+        _uiState.update { s ->
+            val entering = !s.isTimelineMultiSelectMode
+            val initialSelected = if (entering && s.selectedClipId != null) {
+                setOf(s.selectedClipId)
+            } else {
+                emptySet()
+            }
+            s.copy(
+                isTimelineMultiSelectMode = entering,
+                selectedTimelineClipIds = initialSelected
+            )
+        }
+    }
+
+    fun toggleTimelineClipSelection(clipId: String) {
+        _uiState.update { s ->
+            val next = if (clipId in s.selectedTimelineClipIds) {
+                s.selectedTimelineClipIds - clipId
+            } else {
+                s.selectedTimelineClipIds + clipId
+            }
+            s.copy(
+                isTimelineMultiSelectMode = true,
+                selectedTimelineClipIds = next
+            )
+        }
+    }
+
+    fun selectAllTimelineClips() {
+        _uiState.update { s ->
+            val scene = s.project.activeScene
+            val lockedLayerIds = scene.layers.filter { it.isLocked }.map { it.id }.toSet()
+            val selectable = scene.clips
+                .filterNot { it.layerId in lockedLayerIds }
+                .map { it.id }
+                .toSet()
+            val allAlreadySelected = selectable.isNotEmpty() && selectable.all { it in s.selectedTimelineClipIds }
+            s.copy(
+                isTimelineMultiSelectMode = true,
+                selectedTimelineClipIds = if (allAlreadySelected) emptySet() else selectable
+            )
+        }
+    }
+
+    fun deleteSelectedTimelineClips() {
+        val state = _uiState.value
+        val targets = state.selectedTimelineClipIds
+        if (targets.isEmpty()) return
+        val beforeCount = state.project.activeScene.clips.size
+        val updated = ProjectMutator.deleteClips(state.project, targets)
+        val deletedCount = (beforeCount - updated.activeScene.clips.size).coerceAtLeast(0)
+        if (deletedCount == 0) {
+            showStatus("Selected clips are on locked layers")
+            return
         }
         commitProjectChange(updated)
-        _uiState.update { it.copy(selectedClipId = null) }
-        showStatus("Clip deleted")
+        _uiState.update { s ->
+            val remainingIds = updated.activeScene.clips.map { it.id }.toSet()
+            s.copy(
+                selectedClipId = s.selectedClipId?.takeIf { it in remainingIds },
+                isTimelineMultiSelectMode = false,
+                selectedTimelineClipIds = emptySet()
+            )
+        }
+        val label = if (deletedCount == 1) "1 clip" else "$deletedCount clips"
+        showStatus("Deleted $label (Undo available)")
     }
 
     fun addShape(kind: ShapeKind, fillHex: String, strokeHex: String) {
@@ -1108,7 +1191,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             basePose = basePose,
             currentOffsets = eval.poseOffsets,
             stageWidth = stageWidth,
-            stageHeight = stageHeight
+            stageHeight = stageHeight,
+            bendFlip = state.ikFlipBend,
+            enforceJointLimits = state.ikJointLimitsEnabled
         )
         val updated = ProjectMutator.upsertKeyframeAtFrame(state.project, clip.id, frame) { kf ->
             kf.copy(poseOffsets = newOffsets)
@@ -1120,6 +1205,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val next = !_uiState.value.ikFlipBend
         _uiState.update { it.copy(ikFlipBend = next) }
         showStatus(if (next) "IK Bend Direction: Reversed" else "IK Bend Direction: Natural")
+    }
+
+    fun toggleIkJointLimits() {
+        val next = !_uiState.value.ikJointLimitsEnabled
+        _uiState.update { it.copy(ikJointLimitsEnabled = next) }
+        showStatus(if (next) "IK Joint Limits: Anatomical ON" else "IK Joint Limits: Free Cartoon Bend")
     }
 
     fun mirrorSelectedClipPoseAtCurrentFrame() {
@@ -1506,6 +1597,33 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun reorderLayer(layerId: String, moveUp: Boolean) {
         val updated = ProjectMutator.reorderLayer(_uiState.value.project, layerId, moveUp)
         commitProjectChange(updated)
+    }
+
+    fun updateLayerParallaxDepth(layerId: String, depth: Float) {
+        val updated = ProjectMutator.updateLayerParallaxDepth(_uiState.value.project, layerId, depth)
+        commitProjectChange(updated)
+    }
+
+    fun upsertDialogueOverlay(beat: DialogueOverlayBeat) {
+        val updated = ProjectMutator.upsertDialogueOverlayBeat(_uiState.value.project, beat)
+        commitProjectChange(updated)
+        val modes = buildList {
+            if (beat.showSpeechBubble) add("Bubble")
+            if (beat.showSubtitle) add("Subtitle")
+        }.joinToString(" + ").ifBlank { "Saved (Hidden)" }
+        showStatus("Dialogue Overlay: $modes")
+    }
+
+    fun removeDialogueOverlay(beatId: String) {
+        val updated = ProjectMutator.removeDialogueOverlayBeat(_uiState.value.project, beatId)
+        commitProjectChange(updated)
+        showStatus("Removed Dialogue Overlay")
+    }
+
+    fun updateAudioDuckingConfig(updater: (AudioDuckingConfig) -> AudioDuckingConfig) {
+        val current = _uiState.value.project
+        val nextDuck = updater(current.audioDucking)
+        commitProjectChange(current.copy(audioDucking = nextDuck))
     }
 
     fun deleteLayer(layerId: String) {
@@ -2008,10 +2126,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 (((frame - audioClip.startFrame) * 1000f * safeSpeed) / fps).toInt()
             if (expectedMs >= endLimitMs) {
                 if (mp.isPlaying) mp.pause()
-            } else if (!mp.isPlaying) {
-                mp.seekTo(expectedMs.coerceIn(0, endLimitMs))
-                mp.start()
-                applyMediaPlayerSpeed()
+            } else {
+                if (!mp.isPlaying) {
+                    mp.seekTo(expectedMs.coerceIn(0, endLimitMs))
+                    mp.start()
+                    applyMediaPlayerSpeed()
+                }
+                val project = _uiState.value.project
+                val globalTimeMs = ((frame * 1000f) / fps).toLong()
+                val duckGain = com.example.engine.AudioDuckingEngine.computeClipGainAtMs(
+                    clip = audioClip,
+                    sceneClips = project.activeScene.clips,
+                    audioSyncTracks = project.audioSyncTracks,
+                    config = project.audioDucking,
+                    timeMs = globalTimeMs,
+                    fps = fps
+                )
+                mp.setVolume(duckGain, duckGain)
             }
         }
     }
