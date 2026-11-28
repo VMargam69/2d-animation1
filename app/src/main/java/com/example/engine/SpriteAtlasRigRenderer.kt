@@ -59,7 +59,8 @@ object SpriteAtlasRigRenderer {
         tearsConfig: TearsFxConfig = TearsFxConfig(),
         globalFrame: Int = 0,
         fps: Int = 24,
-        clipSeed: Int = 0
+        clipSeed: Int = 0,
+        orientation: CharacterOrientation? = null
     ) {
         val s = rigScale
         val alphaInt = (alpha.coerceIn(0f, 1f) * 255).toInt()
@@ -95,9 +96,17 @@ object SpriteAtlasRigRenderer {
         val hasAnyPart = slices.isNotEmpty()
         val showGuide = drawGhostFallbackWhenEmpty && !hasAnyPart
 
-        // 1. Ground contact shadow
-        scratch.shadowPaint.color = Color.argb((alphaInt * 0.28f).toInt(), 0, 0, 0)
-        canvas.drawOval(RectF(-34f * s, 77f * s, 34f * s, 90f * s), scratch.shadowPaint)
+        val isBackView = orientation == CharacterOrientation.BACK || orientation == CharacterOrientation.THREE_QUARTER_BACK
+
+        // 1. Floor-pinned dynamic ground contact shadow
+        val jumpLift = (-pose.bodyBobY).coerceAtLeast(0f)
+        val shadowScale = (1f - (jumpLift / 115f)).coerceIn(0.45f, 1.12f)
+        val floorY = (84f - pose.bodyBobY) * s
+        scratch.shadowPaint.color = Color.argb(((alphaInt * 0.28f) * shadowScale).toInt().coerceIn(0, 255), 0, 0, 0)
+        canvas.drawOval(
+            RectF(-34f * s * shadowScale, floorY - 6.5f * s * shadowScale, 34f * s * shadowScale, floorY + 6.5f * s * shadowScale),
+            scratch.shadowPaint
+        )
 
         // 2. HAIR_BACK (attached to head neck pivot so hair rotates cleanly with head)
         val hairBackBmp = slices[AtlasPartSlot.HAIR_BACK]
@@ -185,7 +194,7 @@ object SpriteAtlasRigRenderer {
             drawGhostHead(canvas, s, alphaInt, scratch)
         }
 
-        if (!skipFaceOverlays) {
+        if (!skipFaceOverlays && !isBackView) {
             // Eyes (Eye White -> Eyeball -> Eyelid / Organic Asymmetric Blink & Squint)
             val eyeWhite = slices[AtlasPartSlot.EYE_WHITE]?.takeIf { !it.isRecycled }
             val eyeball = slices[AtlasPartSlot.EYEBALL]?.takeIf { !it.isRecycled }

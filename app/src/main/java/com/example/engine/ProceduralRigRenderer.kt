@@ -189,7 +189,8 @@ object ProceduralRigRenderer {
                 tearsConfig = tearsConfig,
                 globalFrame = globalFrame,
                 fps = fps,
-                clipSeed = clipSeed
+                clipSeed = clipSeed,
+                orientation = orientation
             )
             canvas.restore()
             return
@@ -290,6 +291,7 @@ object ProceduralRigRenderer {
                 propAttachment = propAttachment,
                 customPropBitmap = customPropBitmap,
                 propScale = propScale,
+                handPose = handPose,
                 organicFace = organicFace,
                 tearsConfig = tearsConfig,
                 globalFrame = globalFrame,
@@ -630,13 +632,116 @@ object ProceduralRigRenderer {
     ) {
         val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
         when (accessory) {
-            CharacterAccessory.TURBAN -> {
+            CharacterAccessory.DESI_PAGDI_TILAK, CharacterAccessory.TURBAN -> {
+                // Iconic layered striped Desi Pagdi (coral-orange, saffron-gold, warm rose wrap bands + V-arch)
+                val pagdiPath = Path().apply {
+                    moveTo(-24.5f * s, -11.5f * s)
+                    cubicTo(-28.5f * s, -26f * s, -16f * s, -39.5f * s, 0f, -39.5f * s)
+                    cubicTo(16f * s, -39.5f * s, 28.5f * s, -26f * s, 24.5f * s, -11.5f * s)
+                    quadTo(12f * s, -18.5f * s, 0f, -21.5f * s)
+                    quadTo(-12f * s, -18.5f * s, -24.5f * s, -11.5f * s)
+                    close()
+                }
                 fill.color = withAlpha(accent, alphaInt)
-                val rect = RectF(-28f * s, -34f * s, 28f * s, -8f * s)
-                canvas.drawRoundRect(rect, 14f * s, 14f * s, fill)
-                canvas.drawRoundRect(rect, 14f * s, 14f * s, stroke)
-                fill.color = withAlpha(0xFFFDE047.toInt(), alphaInt)
-                canvas.drawCircle(0f, -22f * s, 5f * s, fill)
+                canvas.drawPath(pagdiPath, fill)
+
+                // Clipped diagonal woven Rajasthani/Desi stripe bands & fabric wrap creases
+                canvas.save()
+                canvas.clipPath(pagdiPath)
+                val bandColors = intArrayOf(
+                    0xFFF59E23.toInt(), // warm saffron gold
+                    0xFFD9536F.toInt(), // soft coral-crimson
+                    accent,
+                    0xFFF59E23.toInt(),
+                    0xFFD9536F.toInt()
+                )
+                val stripePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+                // Left-wrapped diagonal bands
+                for (i in 0..4) {
+                    stripePaint.color = withAlpha(bandColors[i % bandColors.size], alphaInt)
+                    val offset = (-34f + i * 11.5f) * s
+                    val band = Path().apply {
+                        moveTo(offset, -42f * s)
+                        lineTo(offset + 6.4f * s, -42f * s)
+                        lineTo(offset + 22f * s, -8f * s)
+                        lineTo(offset + 15.6f * s, -8f * s)
+                        close()
+                    }
+                    canvas.drawPath(band, stripePaint)
+                }
+                // Cross-wrapped right crown folds for authentic overlapping turban geometry
+                val rightCrown = Path().apply {
+                    moveTo(-2f * s, -22f * s)
+                    cubicTo(6f * s, -34f * s, 19f * s, -37f * s, 29f * s, -24f * s)
+                    lineTo(29f * s, -10f * s)
+                    quadTo(14f * s, -18f * s, -2f * s, -22f * s)
+                    close()
+                }
+                stripePaint.color = withAlpha(accent, alphaInt)
+                canvas.drawPath(rightCrown, stripePaint)
+                canvas.save()
+                canvas.clipPath(rightCrown)
+                for (i in 0..3) {
+                    stripePaint.color = withAlpha(bandColors[(i + 1) % bandColors.size], alphaInt)
+                    val ox = (2f + i * 9.5f) * s
+                    val rBand = Path().apply {
+                        moveTo(ox + 10f * s, -40f * s)
+                        lineTo(ox + 15.2f * s, -40f * s)
+                        lineTo(ox - 2f * s, -8f * s)
+                        lineTo(ox - 7.2f * s, -8f * s)
+                        close()
+                    }
+                    canvas.drawPath(rBand, stripePaint)
+                }
+                canvas.restore()
+
+                // Delicate hand-drawn fabric wrap fold crease lines
+                val creasePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.STROKE
+                    strokeWidth = 1.25f * s
+                    strokeCap = Paint.Cap.ROUND
+                    color = withAlpha(0xFF7C2D12.toInt(), (alphaInt * 0.58f).toInt())
+                }
+                // Left wrap folds
+                canvas.drawArc(RectF(-28f * s, -37f * s, 12f * s, -8f * s), 192f, 118f, false, creasePaint)
+                canvas.drawArc(RectF(-26f * s, -31f * s, 6f * s, -6f * s), 188f, 110f, false, creasePaint)
+                // Right wrap folds crossing over center V
+                canvas.drawArc(RectF(-10f * s, -37f * s, 28f * s, -8f * s), 232f, 118f, false, creasePaint)
+                canvas.drawArc(RectF(-4f * s, -30f * s, 26f * s, -5f * s), 240f, 112f, false, creasePaint)
+
+                // Soft upper highlight + lower forehead rim shadow
+                stripePaint.color = withAlpha(0xFFFFFFFF.toInt(), (alphaInt * 0.14f).toInt())
+                canvas.drawOval(RectF(-16f * s, -38f * s, 16f * s, -27f * s), stripePaint)
+                stripePaint.color = withAlpha(0xFF451A03.toInt(), (alphaInt * 0.16f).toInt())
+                canvas.drawArc(RectF(-26f * s, -26f * s, 26f * s, -9f * s), 10f, 160f, false, stripePaint)
+                canvas.restore()
+
+                // Crisp outer silhouette border
+                canvas.drawPath(pagdiPath, stroke)
+            }
+            CharacterAccessory.DESI_BINDI_JEWEL -> {
+                // Delicate golden jhumka drop earrings flanking the jawline
+                val gold = withAlpha(0xFFFACC15.toInt(), alphaInt)
+                val goldDark = withAlpha(0xFFB45309.toInt(), alphaInt)
+                val ringStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.STROKE
+                    strokeWidth = 1.3f * s
+                    color = goldDark
+                }
+                listOf(-19.5f * s, 19.5f * s).forEach { ex ->
+                    fill.color = gold
+                    canvas.drawCircle(ex, 6.2f * s, 2.2f * s, fill)
+                    canvas.drawCircle(ex, 6.2f * s, 2.2f * s, ringStroke)
+                    val bell = Path().apply {
+                        moveTo(ex - 2.4f * s, 8.2f * s)
+                        lineTo(ex + 2.4f * s, 8.2f * s)
+                        lineTo(ex + 3.4f * s, 12.6f * s)
+                        quadTo(ex, 14.0f * s, ex - 3.4f * s, 12.6f * s)
+                        close()
+                    }
+                    canvas.drawPath(bell, fill)
+                    canvas.drawPath(bell, ringStroke)
+                }
             }
             CharacterAccessory.HAT -> {
                 fill.color = withAlpha(primary, alphaInt)

@@ -7,10 +7,10 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * 100% offline Pro Catalog of 180 Desi & Story modular character presets across 3 independent tracks:
- * - Expressions (53 presets: 45 Desi/Story + 8 legacy `act_face_*`)
- * - Hand Parts (88 presets: 80 Desi/Story + 8 legacy `act_hand_*`)
- * - Leg Parts (39 presets: 31 Desi/Story + 8 legacy `act_leg_*`)
+ * 100% offline Pro Catalog of 206 Desi & Story modular character presets across 3 independent tracks:
+ * - Expressions (60 presets: 52 Desi/Story + 8 legacy `act_face_*`)
+ * - Hand Parts (100 presets: 92 Desi/Story + 8 legacy `act_hand_*`)
+ * - Leg Parts (46 presets: 38 Desi/Story + 8 legacy `act_leg_*`)
  *
  * ANATOMICAL SIGN CONVENTION (100% aligned with `ProceduralRigRenderer` & `SpriteAtlasRigRenderer` Android Canvas):
  * - Left Arm (mounted at `-X`):
@@ -75,6 +75,13 @@ object ModularActionCatalog {
         ModularActionDef("expr_take_water_glass_drink", "Take Water Glass Drink Expression", ModularActionTrack.FACIAL, 26, "Refreshing water sip gaze"),
         ModularActionDef("expr_talking_on_phone", "Talking On Phone Expression", ModularActionTrack.FACIAL, 26, "Animated phone call chat"),
         ModularActionDef("expr_walking_slowly", "Walking Slowly Expression", ModularActionTrack.FACIAL, 32, "Calm strolling gaze & gentle bob"),
+        ModularActionDef("expr_idle_face", "Idle Face Expression", ModularActionTrack.FACIAL, 30, "Calm neutral breathing & soft blink"),
+        ModularActionDef("expr_lipsing_with_hand", "Lipsing With Hand Expression", ModularActionTrack.FACIAL, 24, "Lively conversational dialogue rhythm"),
+        ModularActionDef("expr_crying_emotional", "Crying Emotional Expression", ModularActionTrack.FACIAL, 28, "Trembling sobs & downturned brows"),
+        ModularActionDef("expr_sleepy_yawn", "Sleepy Yawn Expression", ModularActionTrack.FACIAL, 34, "Droopy drowsy lids & wide yawn"),
+        ModularActionDef("expr_proud_smirk", "Proud Smirk Expression", ModularActionTrack.FACIAL, 28, "Confident chin-up smirk & glint"),
+        ModularActionDef("expr_shocked_gasp", "Shocked Gasp Expression", ModularActionTrack.FACIAL, 22, "Sudden wide-eyed jaw-drop gasp"),
+        ModularActionDef("expr_shy_blush", "Shy Blush Expression", ModularActionTrack.FACIAL, 28, "Bashful sideways glance & warm smile"),
         // Backward-compatible legacy facial IDs
         ModularActionDef("act_face_smile", "Warm Smile", ModularActionTrack.FACIAL, 24, "Happy smile + gentle nod"),
         ModularActionDef("act_face_gasp", "Shock Gasp", ModularActionTrack.FACIAL, 22, "Wide eyes + shock O mouth"),
@@ -170,6 +177,18 @@ object ModularActionCatalog {
         ModularActionDef("hand_walk_with_sword", "Walk With Sword Hand Part", ModularActionTrack.HANDS, 24, "Warrior sword carried ready"),
         ModularActionDef("hand_walk_with_thela", "Walk With Thela Hand Part", ModularActionTrack.HANDS, 26, "Pushing street handcart handles"),
         ModularActionDef("hand_walk_with_torch", "Walk With Torch Hand Part", ModularActionTrack.HANDS, 26, "Shining flashlight beam forward"),
+        ModularActionDef("hand_idle_1", "Idle 1 Hand Part", ModularActionTrack.HANDS, 32, "Relaxed natural breathing idle arms"),
+        ModularActionDef("hand_idle_2", "Idle 2 Hand Part", ModularActionTrack.HANDS, 32, "Soft conversational ready stance"),
+        ModularActionDef("hand_not_thinking", "Not Thinking Hand Part", ModularActionTrack.HANDS, 26, "Playful hands-up clueless shrug"),
+        ModularActionDef("hand_talking_on_mobile_l", "Talking On Mobile L Hand Part", ModularActionTrack.HANDS, 26, "Left hand holding phone to ear"),
+        ModularActionDef("hand_walk_with_gun", "Walk With Gun Hand Part", ModularActionTrack.HANDS, 26, "Walking alert with aimed pistol"),
+        ModularActionDef("hand_walk_with_hammer", "Walk With Hammer Hand Part", ModularActionTrack.HANDS, 26, "Carrying heavy hammer while walking"),
+        ModularActionDef("hand_walk_with_hand", "Walk With Hand Hand Part", ModularActionTrack.HANDS, 26, "Expressive brisk arm swing stride"),
+        ModularActionDef("hand_walk_with_thala", "Walk With Thala Hand Part", ModularActionTrack.HANDS, 26, "Balancing serving thali while walking"),
+        ModularActionDef("hand_praying_aarti", "Aarti Thali Hand Part", ModularActionTrack.HANDS, 28, "Circular devotional aarti flame wave"),
+        ModularActionDef("hand_pointing_angry", "Pointing Angry Hand Part", ModularActionTrack.HANDS, 22, "Sharp accusing finger jab"),
+        ModularActionDef("hand_wiping_tears", "Wiping Tears Hand Part", ModularActionTrack.HANDS, 28, "Gentle emotional eye-wipe gesture"),
+        ModularActionDef("hand_dancing_bhangra", "Bhangra Dance Hand Part", ModularActionTrack.HANDS, 20, "High joyous Desi shoulder-bounce arms"),
         // Backward-compatible legacy hand IDs
         ModularActionDef("act_hand_wave", "Friendly Wave", ModularActionTrack.HANDS, 26, "High right-hand wave arc"),
         ModularActionDef("act_hand_point", "Point Forward", ModularActionTrack.HANDS, 22, "Confident extended point"),
@@ -214,6 +233,13 @@ object ModularActionCatalog {
         ModularActionDef("leg_sneak_walk", "Sneak Walk Leg Part", ModularActionTrack.LEGS, 28, "Low tiptoe stealth creeping"),
         ModularActionDef("leg_walking_slowly", "Walking Slowly Leg Part", ModularActionTrack.LEGS, 32, "Unhurried gentle strolling pace"),
         ModularActionDef("leg_walk", "Walk Leg Part", ModularActionTrack.LEGS, 26, "Classic balanced walk cycle"),
+        ModularActionDef("leg_namaskar", "Namaskar Leg Part", ModularActionTrack.LEGS, 28, "Standing respectful heels-together bow"),
+        ModularActionDef("leg_sitting_idle", "Sitting Idle Leg Part", ModularActionTrack.LEGS, 30, "Relaxed seated chair foot tap"),
+        ModularActionDef("leg_running_fast", "Running Fast Leg Part", ModularActionTrack.LEGS, 18, "Full high-knee athletic sprint"),
+        ModularActionDef("leg_tiptoe_peek", "Tiptoe Peek Leg Part", ModularActionTrack.LEGS, 28, "Cautious tiptoe forward lean"),
+        ModularActionDef("leg_dancing_bhangra", "Bhangra Dance Leg Part", ModularActionTrack.LEGS, 20, "High-energy bouncy bhangra hop"),
+        ModularActionDef("leg_praying_kneel", "Praying Kneel Leg Part", ModularActionTrack.LEGS, 30, "Humble devotional kneeling pose"),
+        ModularActionDef("leg_limping_injured", "Limping Injured Leg Part", ModularActionTrack.LEGS, 30, "Asymmetric favor-leg injured limp"),
         // Backward-compatible legacy leg IDs
         ModularActionDef("act_leg_walk", "Walk Stride", ModularActionTrack.LEGS, 26, "Smooth alternating stride"),
         ModularActionDef("act_leg_sprint", "Sprint Cycle", ModularActionTrack.LEGS, 18, "Fast high-knee run swing"),
@@ -1550,6 +1576,252 @@ object ModularActionCatalog {
                 rightKneeDelta = 14f,
                 torsoTiltDelta = 4f,
                 bodyBobDelta = 3f
+            )
+            // ═══════════════════════════════════════════════════════════════
+            // EXPANDED VIDEO-MATCHED + PRO DESI/STORY PRESETS (26 NEW -> 206 TOTAL)
+            // ═══════════════════════════════════════════════════════════════
+            "expr_idle_face" -> ModularActionSample(
+                track = ModularActionTrack.FACIAL,
+                expressionOverride = FacialExpression.NEUTRAL,
+                mouthShapeOverride = MouthShapeOverride.NEUTRAL,
+                eyeShapeOverride = if (p in 0.78f..0.85f) EyeShapeOverride.CLOSED_SLEEP else EyeShapeOverride.NORMAL,
+                eyebrowShapeOverride = EyebrowShapeOverride.NEUTRAL,
+                blinkOverride = p in 0.78f..0.85f,
+                headNodDelta = 1.8f * wave
+            )
+            "expr_lipsing_with_hand" -> ModularActionSample(
+                track = ModularActionTrack.FACIAL,
+                expressionOverride = FacialExpression.HAPPY,
+                mouthShapeOverride = when {
+                    wave3 > 0.35f -> MouthShapeOverride.TALK_AA
+                    wave3 > -0.25f -> MouthShapeOverride.TALK_EE
+                    else -> MouthShapeOverride.SMILE
+                },
+                eyeShapeOverride = EyeShapeOverride.NORMAL,
+                eyebrowShapeOverride = EyebrowShapeOverride.ARCHED_HAPPY,
+                headNodDelta = 3.5f * wave2
+            )
+            "expr_crying_emotional" -> ModularActionSample(
+                track = ModularActionTrack.FACIAL,
+                expressionOverride = FacialExpression.SAD,
+                facialPresetId = FacialExpressionEngine.PRESET_SAD,
+                mouthShapeOverride = if (bounce > 0.55f) MouthShapeOverride.SHOCK_O else MouthShapeOverride.FROWN,
+                eyeShapeOverride = EyeShapeOverride.SAD_DROOP,
+                eyebrowShapeOverride = EyebrowShapeOverride.WORRIED_SAD,
+                headNodDelta = 7f + 4f * bounce
+            )
+            "expr_sleepy_yawn" -> ModularActionSample(
+                track = ModularActionTrack.FACIAL,
+                expressionOverride = FacialExpression.SAD,
+                mouthShapeOverride = if (pulse > 0.35f) MouthShapeOverride.SHOCK_O else MouthShapeOverride.NEUTRAL,
+                eyeShapeOverride = if (pulse > 0.45f) EyeShapeOverride.CLOSED_SLEEP else EyeShapeOverride.SAD_DROOP,
+                eyebrowShapeOverride = EyebrowShapeOverride.WORRIED_SAD,
+                headNodDelta = -6f * pulse + 4f * (1f - pulse)
+            )
+            "expr_proud_smirk" -> ModularActionSample(
+                track = ModularActionTrack.FACIAL,
+                expressionOverride = FacialExpression.HAPPY,
+                mouthShapeOverride = MouthShapeOverride.SMIRK,
+                eyeShapeOverride = EyeShapeOverride.NORMAL,
+                eyebrowShapeOverride = EyebrowShapeOverride.SKEPTICAL_ONE_UP,
+                headNodDelta = -6f - 2f * wave,
+                gazeX = 0.22f
+            )
+            "expr_shocked_gasp" -> ModularActionSample(
+                track = ModularActionTrack.FACIAL,
+                expressionOverride = FacialExpression.SHOCKED,
+                facialPresetId = FacialExpressionEngine.PRESET_SHOCKED,
+                mouthShapeOverride = MouthShapeOverride.SHOCK_O,
+                eyeShapeOverride = EyeShapeOverride.WIDE_SHOCK,
+                eyebrowShapeOverride = EyebrowShapeOverride.RAISED_SURPRISE,
+                headNodDelta = -7f * pulse,
+                squashX = 1f - 0.04f * pulse,
+                squashY = 1f + 0.05f * pulse
+            )
+            "expr_shy_blush" -> ModularActionSample(
+                track = ModularActionTrack.FACIAL,
+                expressionOverride = FacialExpression.HAPPY,
+                facialPresetId = FacialExpressionEngine.PRESET_HAPPY,
+                mouthShapeOverride = MouthShapeOverride.SMILE,
+                eyeShapeOverride = EyeShapeOverride.HAPPY_ARC,
+                eyebrowShapeOverride = EyebrowShapeOverride.ARCHED_HAPPY,
+                headNodDelta = 6f + 2.5f * wave,
+                gazeX = -0.35f + 0.15f * wave
+            )
+            "hand_idle_1" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 7f + 3.5f * wave,
+                leftForearmDelta = -10f - 3f * waveLag,
+                rightArmDelta = -7f - 3.5f * wave,
+                rightForearmDelta = 10f + 3f * waveLag,
+                handPoseOverride = HandPoseType.OPEN,
+                bodyBobDelta = 1.4f * wave
+            )
+            "hand_idle_2" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 16f + 4f * wave,
+                leftForearmDelta = -36f - 4f * waveLag,
+                rightArmDelta = -18f - 4f * wave,
+                rightForearmDelta = 42f + 5f * waveLag,
+                handPoseOverride = HandPoseType.OPEN,
+                bodyBobDelta = 1.6f * wave
+            )
+            "hand_not_thinking" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 52f + 10f * pulse,
+                leftForearmDelta = -72f - 8f * pulse,
+                rightArmDelta = -52f - 10f * pulse,
+                rightForearmDelta = 72f + 8f * pulse,
+                handPoseOverride = HandPoseType.OPEN,
+                torsoTiltDelta = 3f * wave,
+                bodyBobDelta = -2.5f * pulse
+            )
+            "hand_talking_on_mobile_l" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 36f + 3f * wave,
+                leftForearmDelta = -132f + 3f * wave,
+                rightArmDelta = -18f - 10f * wave2,
+                rightForearmDelta = 40f + 16f * waveLag,
+                handPoseOverride = HandPoseType.PROP_GRIP
+            )
+            "hand_walk_with_gun" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 18f + 18f * wave,
+                leftForearmDelta = -22f - 8f * waveLag,
+                rightArmDelta = -76f - 4f * bounce,
+                rightForearmDelta = 12f + 5f * bounce,
+                handPoseOverride = HandPoseType.PROP_GRIP,
+                torsoTiltDelta = 4f
+            )
+            "hand_walk_with_hammer" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 22f * wave,
+                leftForearmDelta = -18f - 8f * waveLag,
+                rightArmDelta = -48f - 10f * wave,
+                rightForearmDelta = 82f + 10f * waveLag,
+                handPoseOverride = HandPoseType.PROP_GRIP
+            )
+            "hand_walk_with_hand" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 36f * wave,
+                leftForearmDelta = -24f - 14f * waveLag,
+                rightArmDelta = -36f * wave,
+                rightForearmDelta = 24f + 14f * waveLag,
+                handPoseOverride = HandPoseType.OPEN
+            )
+            "hand_walk_with_thala" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 38f + 4f * bounce,
+                leftForearmDelta = -76f + 4f * bounce,
+                rightArmDelta = -38f - 4f * bounce,
+                rightForearmDelta = 76f - 4f * bounce,
+                handPoseOverride = HandPoseType.OPEN
+            )
+            "hand_praying_aarti" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 14f + 4f * wave,
+                leftForearmDelta = -52f,
+                rightArmDelta = -52f - 18f * cosW,
+                rightForearmDelta = 68f + 22f * wave,
+                handPoseOverride = HandPoseType.PROP_GRIP,
+                torsoTiltDelta = 3f * wave
+            )
+            "hand_pointing_angry" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 28f,
+                leftForearmDelta = -62f,
+                rightArmDelta = -84f - 10f * bounce,
+                rightForearmDelta = 8f + 10f * bounce,
+                handPoseOverride = HandPoseType.POINT,
+                torsoTiltDelta = 6f + 3f * bounce
+            )
+            "hand_wiping_tears" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 12f,
+                leftForearmDelta = -24f,
+                rightArmDelta = -42f - 8f * wave,
+                rightForearmDelta = 132f + 10f * wave2,
+                handPoseOverride = HandPoseType.OPEN,
+                torsoTiltDelta = 4f
+            )
+            "hand_dancing_bhangra" -> ModularActionSample(
+                track = ModularActionTrack.HANDS,
+                leftArmDelta = 112f + 18f * bounce,
+                leftForearmDelta = -56f - 14f * wave2,
+                rightArmDelta = -112f - 18f * bounce,
+                rightForearmDelta = 56f + 14f * wave2,
+                handPoseOverride = HandPoseType.OPEN,
+                torsoTiltDelta = 8f * wave,
+                bodyBobDelta = -7f * bounce
+            )
+            "leg_namaskar" -> ModularActionSample(
+                track = ModularActionTrack.LEGS,
+                leftLegDelta = -5f,
+                leftKneeDelta = 8f + 4f * pulse,
+                rightLegDelta = 5f,
+                rightKneeDelta = 8f + 4f * pulse,
+                torsoTiltDelta = 10f * pulse,
+                bodyBobDelta = 2f * pulse
+            )
+            "leg_sitting_idle" -> ModularActionSample(
+                track = ModularActionTrack.LEGS,
+                leftLegDelta = -74f,
+                leftKneeDelta = 80f,
+                rightLegDelta = -68f + 5f * wave2,
+                rightKneeDelta = 74f - 8f * wave2,
+                torsoTiltDelta = -2f + 1.5f * wave,
+                bodyBobDelta = 21f + 1f * wave,
+                silhouetteStyle = "seated_profile"
+            )
+            "leg_running_fast" -> ModularActionSample(
+                track = ModularActionTrack.LEGS,
+                leftLegDelta = -64f * wave,
+                leftKneeDelta = 38f + 56f * (waveLag.coerceAtLeast(0f)),
+                rightLegDelta = 64f * wave,
+                rightKneeDelta = 38f + 56f * ((-waveLag).coerceAtLeast(0f)),
+                torsoTiltDelta = 18f,
+                bodyBobDelta = -16f * bounce,
+                squashX = 1f + 0.05f * cos2,
+                squashY = 1f - 0.05f * cos2
+            )
+            "leg_tiptoe_peek" -> ModularActionSample(
+                track = ModularActionTrack.LEGS,
+                leftLegDelta = -16f - 12f * pulse,
+                leftKneeDelta = 28f + 16f * pulse,
+                rightLegDelta = 14f,
+                rightKneeDelta = 22f + 10f * pulse,
+                torsoTiltDelta = 14f * pulse,
+                bodyBobDelta = -5f * pulse
+            )
+            "leg_dancing_bhangra" -> ModularActionSample(
+                track = ModularActionTrack.LEGS,
+                leftLegDelta = -32f * (wave.coerceAtLeast(0f)) - 12f,
+                leftKneeDelta = 24f + 42f * (wave.coerceAtLeast(0f)),
+                rightLegDelta = -32f * ((-wave).coerceAtLeast(0f)) - 12f,
+                rightKneeDelta = 24f + 42f * ((-wave).coerceAtLeast(0f)),
+                torsoTiltDelta = 7f * wave,
+                bodyBobDelta = -12f * bounce,
+                squashX = 1f + 0.05f * cos2,
+                squashY = 1f - 0.05f * cos2
+            )
+            "leg_praying_kneel" -> ModularActionSample(
+                track = ModularActionTrack.LEGS,
+                leftLegDelta = -62f,
+                leftKneeDelta = 112f,
+                rightLegDelta = -58f,
+                rightKneeDelta = 110f,
+                torsoTiltDelta = 8f + 4f * pulse,
+                bodyBobDelta = 26f,
+                silhouetteStyle = "cross_legged"
+            )
+            "leg_limping_injured" -> ModularActionSample(
+                track = ModularActionTrack.LEGS,
+                leftLegDelta = -26f * wave,
+                leftKneeDelta = 18f * (waveLag.coerceAtLeast(0f)),
+                rightLegDelta = -8f + 12f * wave,
+                rightKneeDelta = 34f + 12f * ((-waveLag).coerceAtLeast(0f)),
+                torsoTiltDelta = 8f + 6f * (wave.coerceAtLeast(0f)),
+                bodyBobDelta = 6f * (wave.coerceAtLeast(0f)) - 2f
             )
             else -> ModularActionSample(track = action.track, propSilhouetteHint = hint)
         }

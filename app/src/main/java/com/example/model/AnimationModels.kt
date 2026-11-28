@@ -58,7 +58,9 @@ enum class CharacterAccessory(val displayName: String) {
     CAPE("Cape"),
     HALO("Halo"),
     HORNS("Horns"),
-    HEADPHONES("Headphones")
+    HEADPHONES("Headphones"),
+    DESI_PAGDI_TILAK("Desi Pagdi & Tilak"),
+    DESI_BINDI_JEWEL("Desi Bindi & Jhumka")
 }
 
 enum class HumanCostumeStyle(val displayName: String) {
@@ -69,6 +71,7 @@ enum class HumanCostumeStyle(val displayName: String) {
     SPORT_ATHLETIC("Athletic"),
     HOODIE_STREET("Street Hoodie"),
     VILLAGE_DHOTI("Dhoti & Kurta"),
+    DESI_KURTA_DHOTI("Desi Kurta & Dhoti"),
     FANTASY_ARMOR("Armor Tunic")
 }
 

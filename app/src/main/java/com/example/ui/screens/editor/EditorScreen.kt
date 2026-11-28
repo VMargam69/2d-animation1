@@ -950,6 +950,9 @@ fun EditorScreen(
                     onInsertModularAction = onInsertModularAction,
                     onApplyModularControl = onApplyModularControl,
                     onCommitIkPose = onCommitIkStudioPose,
+                    onChangeOrientation = { nextOri ->
+                        onUpdateSelectedClip { it.copy(orientation = nextOri) }
+                    },
                     onDismiss = onCloseSheet
                 )
             } else {

@@ -84,6 +84,7 @@ fun IkStudioModal(
         expression: FacialExpression,
         handPose: HandPoseType
     ) -> Unit,
+    onChangeOrientation: (CharacterOrientation) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     // Evaluate clip's existing pose at currentFrame as the exact baseline
@@ -92,6 +93,9 @@ fun IkStudioModal(
     }
 
     var activeTab by remember { mutableIntStateOf(initialTab.coerceIn(0, 2)) }
+    var workingOrientation by remember(clip.id, clip.orientation) { mutableStateOf(clip.orientation) }
+    val activeClip = remember(clip, workingOrientation) { clip.copy(orientation = workingOrientation) }
+    var controlResetTrigger by remember { mutableIntStateOf(0) }
     var workingOffsets by remember(clip.id, currentFrame) { mutableStateOf(evalTransform.poseOffsets) }
     var workingGaze by remember(clip.id, currentFrame) { mutableStateOf(GazeTarget(0f, 0f)) }
     var workingHeadTilt by remember(clip.id, currentFrame) { mutableFloatStateOf(0f) }
@@ -218,94 +222,159 @@ fun IkStudioModal(
                 .testTag("ik_studio_modal")
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // ─── 1. TOP STUDIO HEADER BAR ───
+                // ─── 1. TOP STUDIO HEADER BAR (Video-Matched `Control` + Blue `Reset` + `X` on Control tab) ───
                 Surface(
-                    color = StudioCharcoal,
-                    tonalElevation = 2.dp,
+                    color = if (activeTab == 1) Color(0xFF121316) else StudioCharcoal,
+                    tonalElevation = if (activeTab == 1) 0.dp else 2.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .padding(horizontal = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        IconButton(
-                            onClick = {
-                                previewAction = null
-                                onDismiss()
-                            },
+                    if (activeTab == 1) {
+                        Row(
                             modifier = Modifier
-                                .size(48.dp)
-                                .testTag("ik_studio_close_btn")
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .padding(start = 16.dp, end = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "Close IK Studio",
-                                tint = StudioTextPrimary
-                            )
-                        }
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "IK Studio",
-                                color = StudioTextPrimary,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1
-                            )
-                            Text(
-                                text = "${rig.name} • F$currentFrame",
-                                color = StudioTextSecondary,
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        // Quick "+ Pose" button to save current pose from any tab
-                        OutlinedButton(
-                            onClick = { showSavePoseDialog = true },
-                            border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.7f)),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                            modifier = Modifier
-                                .height(40.dp)
-                                .testTag("ik_studio_quick_save_pose_btn")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.BookmarkAdd,
-                                contentDescription = "Save pose to library",
-                                tint = ElectricCyan,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text("Save Pose", color = ElectricCyan, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
-                        }
-
-                        // Primary Commit Save button
-                        Button(
-                            onClick = {
-                                previewAction = null
-                                onCommitIkPose(
-                                    clip.id,
-                                    activeCombinedBaseOffsets,
-                                    workingExpression,
-                                    workingHandPose
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Control",
+                                    color = Color(0xFFF3F4F6),
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
                                 )
-                                onDismiss()
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ElectricCyan,
-                                contentColor = StudioObsidian
-                            ),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                Text(
+                                    text = "${rig.name} • ${CharacterAngleSystem.shortLabel(workingOrientation)}",
+                                    color = Color(0xFF9CA3AF),
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Button(
+                                onClick = { controlResetTrigger++ },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF3B82F6),
+                                    contentColor = Color.White
+                                ),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .height(38.dp)
+                                    .testTag("control_reset_btn")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.RestartAlt,
+                                    contentDescription = "Reset modular control selections",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(5.dp))
+                                Text("Reset", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    previewAction = null
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("ik_studio_close_btn")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Close Control Studio",
+                                    tint = Color(0xFFD1D5DB)
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
                             modifier = Modifier
-                                .height(40.dp)
-                                .testTag("ik_studio_commit_save_btn")
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text("Save", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                            IconButton(
+                                onClick = {
+                                    previewAction = null
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("ik_studio_close_btn")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Close IK Studio",
+                                    tint = StudioTextPrimary
+                                )
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "IK Studio",
+                                    color = StudioTextPrimary,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = "${rig.name} • ${CharacterAngleSystem.shortLabel(workingOrientation)} • F$currentFrame",
+                                    color = StudioTextSecondary,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            // Quick "+ Pose" button to save current pose from any tab
+                            OutlinedButton(
+                                onClick = { showSavePoseDialog = true },
+                                border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.7f)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                modifier = Modifier
+                                    .height(40.dp)
+                                    .testTag("ik_studio_quick_save_pose_btn")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.BookmarkAdd,
+                                    contentDescription = "Save pose to library",
+                                    tint = ElectricCyan,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("Save Pose", color = ElectricCyan, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                            }
+
+                            // Primary Commit Save button
+                            Button(
+                                onClick = {
+                                    previewAction = null
+                                    onCommitIkPose(
+                                        clip.id,
+                                        activeCombinedBaseOffsets,
+                                        workingExpression,
+                                        workingHandPose
+                                    )
+                                    onDismiss()
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ElectricCyan,
+                                    contentColor = StudioObsidian
+                                ),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                modifier = Modifier
+                                    .height(40.dp)
+                                    .testTag("ik_studio_commit_save_btn")
+                            ) {
+                                Text("Save", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                            }
                         }
                     }
                 }
@@ -320,7 +389,7 @@ fun IkStudioModal(
                         .background(Color(0xFF0B111B))
                 ) {
                     IkStudioInteractiveCanvas(
-                        clip = clip,
+                        clip = activeClip,
                         rig = rig,
                         currentFrame = currentFrame,
                         fps = fps,
@@ -451,6 +520,52 @@ fun IkStudioModal(
                             onClick = { viewportZoom = (viewportZoom - 0.2f).coerceIn(0.65f, 2.4f) }
                         )
                     }
+
+                    // Bottom-Center Live 5-Angle Character Turnaround Pill Bar
+                    Surface(
+                        color = Color(0xFF12151C).copy(alpha = 0.90f),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Color(0xFF282D38)),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 8.dp)
+                            .testTag("ik_5_angle_turnaround_bar")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CharacterAngleSystem.turnaroundAngles.forEach { angle ->
+                                val isCurrent = workingOrientation == angle
+                                Surface(
+                                    color = if (isCurrent) Color(0xFF3B82F6) else Color.Transparent,
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 34.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            workingOrientation = angle
+                                            onChangeOrientation(angle)
+                                        }
+                                        .testTag("ik_angle_${angle.name.lowercase()}")
+                                ) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                                    ) {
+                                        Text(
+                                            text = CharacterAngleSystem.shortLabel(angle),
+                                            color = if (isCurrent) Color.White else Color(0xFF9CA3AF),
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 HorizontalDivider(color = StudioBorderSubtle)
@@ -532,6 +647,8 @@ fun IkStudioModal(
 
                         1 -> ModularControlLibraryPanel(
                             initialSelection = controlSelectionPreview,
+                            resetTrigger = controlResetTrigger,
+                            showInlineResetButton = false,
                             onSelectionPreviewChanged = { nextSel, tapped ->
                                 controlSelectionPreview = nextSel
                                 previewAction = tapped
@@ -665,7 +782,7 @@ private fun IkStudioInteractiveCanvas(
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(clip.id, rig.id, phase) {
+            .pointerInput(clip.id, clip.orientation, rig.id, phase) {
                 var draggingHandle: IkHandleId? = null
                 var draggingGaze = false
 

@@ -184,6 +184,7 @@ object PropSwayPhysicsEngine {
                 rig.accessory == CharacterAccessory.HAT ||
                 rig.accessory == CharacterAccessory.CROWN ||
                 rig.accessory == CharacterAccessory.TURBAN ||
+                rig.accessory == CharacterAccessory.DESI_PAGDI_TILAK ||
                 rig.accessory == CharacterAccessory.HALO
             )
         if (!hasProp && !hasDynamicAccessory) return PropSwayState.ZERO

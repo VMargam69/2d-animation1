@@ -98,7 +98,11 @@ object IkRigSolver {
         val neckY: Float,
         val headHandleOffset: Float,
         val torsoHandleY: Float,
-        val pelvisPivotY: Float
+        val pelvisPivotY: Float,
+        val leftShoulderX: Float = -shoulderHalf,
+        val rightShoulderX: Float = shoulderHalf,
+        val leftHipX: Float = -hipHalf,
+        val rightHipX: Float = hipHalf
     )
 
     data class StageSkeletonAnchors(
@@ -231,27 +235,32 @@ object IkRigSolver {
             )
         }
 
-        // Standard Real-Human & PNG Skeleton Rig geometry (matches HumanRigDrawer exact measurements)
-        val isSide = clip.orientation == CharacterOrientation.SIDE
-        val isThreeQuarter = clip.orientation == CharacterOrientation.THREE_QUARTER_FRONT ||
-            clip.orientation == CharacterOrientation.THREE_QUARTER_BACK
-        val build = rig.buildType
-        val shoulderHalf = (if (isSide) 7f else if (isThreeQuarter) 22f else 26f) * build.shoulderScale * baseScale
-        val hipHalf = (if (isSide) 5f else 11.5f) * build.torsoScale * baseScale
+        // Standard Real-Human & PNG Skeleton Rig geometry (100% locked to CharacterAngleSystem 5-angle math)
+        val angleProfile = CharacterAngleSystem.profileFor(clip.orientation, rig.buildType)
+        val leftShX = angleProfile.leftShoulderX * baseScale
+        val rightShX = angleProfile.rightShoulderX * baseScale
+        val leftHpX = angleProfile.leftHipX * baseScale
+        val rightHpX = angleProfile.rightHipX * baseScale
+        val avgShoulderHalf = (abs(leftShX) + abs(rightShX)) * 0.5f
+        val avgHipHalf = (abs(leftHpX) + abs(rightHpX)) * 0.5f
 
         return RigBoneGeometry(
-            shoulderHalf = shoulderHalf,
+            shoulderHalf = avgShoulderHalf,
             shoulderY = -30f * baseScale,
             upperArmLen = 25.5f * baseScale,
             forearmLen = 25.5f * baseScale,
-            hipHalf = hipHalf,
+            hipHalf = avgHipHalf,
             hipY = 20f * baseScale,
             thighLen = 29.5f * baseScale,
             calfLen = 31f * baseScale,
             neckY = -68f * baseScale,
             headHandleOffset = 20f * baseScale,
             torsoHandleY = -8f * baseScale,
-            pelvisPivotY = 18f * baseScale
+            pelvisPivotY = 18f * baseScale,
+            leftShoulderX = leftShX,
+            rightShoulderX = rightShX,
+            leftHipX = leftHpX,
+            rightHipX = rightHpX
         )
     }
 
@@ -328,22 +337,22 @@ object IkRigSolver {
         val headY = geom.neckY - cos(headRad) * geom.headHandleOffset
 
         val (lElbowLocal, lHandLocal) = fkChain(
-            -geom.shoulderHalf, geom.shoulderY,
+            geom.leftShoulderX, geom.shoulderY,
             pose.leftArmDeg, pose.leftForearmDeg,
             geom.upperArmLen, geom.forearmLen
         )
         val (rElbowLocal, rHandLocal) = fkChain(
-            geom.shoulderHalf, geom.shoulderY,
+            geom.rightShoulderX, geom.shoulderY,
             pose.rightArmDeg, pose.rightForearmDeg,
             geom.upperArmLen, geom.forearmLen
         )
         val (lKneeLocal, lFootLocal) = fkChain(
-            -geom.hipHalf, geom.hipY,
+            geom.leftHipX, geom.hipY,
             pose.leftLegDeg, pose.leftKneeDeg,
             geom.thighLen, geom.calfLen
         )
         val (rKneeLocal, rFootLocal) = fkChain(
-            geom.hipHalf, geom.hipY,
+            geom.rightHipX, geom.hipY,
             pose.rightLegDeg, pose.rightKneeDeg,
             geom.thighLen, geom.calfLen
         )
@@ -360,10 +369,10 @@ object IkRigSolver {
         val (rFtNx, rFtNy) = localToStageNorm(rFootLocal.first, rFootLocal.second)
 
         val (neckNx, neckNy) = localToStageNorm(0f, geom.neckY)
-        val (lShNx, lShNy) = localToStageNorm(-geom.shoulderHalf, geom.shoulderY)
-        val (rShNx, rShNy) = localToStageNorm(geom.shoulderHalf, geom.shoulderY)
-        val (lHpNx, lHpNy) = localToStageNorm(-geom.hipHalf, geom.hipY)
-        val (rHpNx, rHpNy) = localToStageNorm(geom.hipHalf, geom.hipY)
+        val (lShNx, lShNy) = localToStageNorm(geom.leftShoulderX, geom.shoulderY)
+        val (rShNx, rShNy) = localToStageNorm(geom.rightShoulderX, geom.shoulderY)
+        val (lHpNx, lHpNy) = localToStageNorm(geom.leftHipX, geom.hipY)
+        val (rHpNx, rHpNy) = localToStageNorm(geom.rightHipX, geom.hipY)
 
         val handles = listOf(
             PropAndModularChartRenderer.StageIkHandle(IkHandleId.HEAD, headNx, headNy, 0xFF38BDF8.toInt()),
@@ -417,7 +426,16 @@ object IkRigSolver {
         val rawDist = hypot(vx.toDouble(), vy.toDouble()).toFloat()
         val maxReach = (upperLen + lowerLen) * 0.996f
         val minReach = (abs(upperLen - lowerLen) + 1.5f).coerceAtMost(maxReach * 0.6f)
-        val d = rawDist.coerceIn(minReach, maxReach)
+        // Pro Soft-IK Damping: smoothly cushions the final 6% of limb extension so elbows/knees never snap-pop!
+        val softZoneStart = maxReach * 0.94f
+        val softSpan = (maxReach - softZoneStart).coerceAtLeast(0.5f)
+        val dampedDist = if (rawDist > softZoneStart) {
+            val excess = rawDist - softZoneStart
+            softZoneStart + softSpan * (1f - exp((-excess / softSpan).toDouble()).toFloat())
+        } else {
+            rawDist
+        }
+        val d = dampedDist.coerceIn(minReach, maxReach)
 
         // Direct aim angle from origin to target in +Y-down canvas convention
         val aimRad = atan2(-vx.toDouble(), vy.toDouble())
@@ -517,7 +535,7 @@ object IkRigSolver {
                 currentOffsets.copy(torsoTiltOffset = (tiltDeg - basePose.bodyTiltDeg).coerceIn(-maxTorso, maxTorso))
             }
             IkHandleId.LEFT_ELBOW -> {
-                val worldUpper = angleFromDownDeg(lx - (-geom.shoulderHalf), ly - geom.shoulderY)
+                val worldUpper = angleFromDownDeg(lx - geom.leftShoulderX, ly - geom.shoulderY)
                 val clampedUpper = if (enforceJointLimits) AnatomicalJointLimits.LEFT_SHOULDER.clamp(worldUpper) else worldUpper
                 currentOffsets.copy(leftArmOffset = normalizeAngleDeg(clampedUpper - basePose.leftArmDeg))
             }
@@ -526,7 +544,7 @@ object IkRigSolver {
                 val minLower = if (enforceJointLimits && !bendFlip) -142f else -165f
                 val maxLower = if (enforceJointLimits && !bendFlip) 0f else 165f
                 val (upperDeg, lowerRelDeg) = solveTwoBoneIk(
-                    originX = -geom.shoulderHalf,
+                    originX = geom.leftShoulderX,
                     originY = geom.shoulderY,
                     targetX = lx,
                     targetY = ly,
@@ -543,16 +561,17 @@ object IkRigSolver {
                 )
             }
             IkHandleId.RIGHT_ELBOW -> {
-                val worldUpper = angleFromDownDeg(lx - geom.shoulderHalf, ly - geom.shoulderY)
+                val worldUpper = angleFromDownDeg(lx - geom.rightShoulderX, ly - geom.shoulderY)
                 val clampedUpper = if (enforceJointLimits) AnatomicalJointLimits.RIGHT_SHOULDER.clamp(worldUpper) else worldUpper
                 currentOffsets.copy(rightArmOffset = normalizeAngleDeg(clampedUpper - basePose.rightArmDeg))
             }
             IkHandleId.RIGHT_HAND -> {
-                val defaultBend = if (isSideOr3Q) -1f else 1f
-                val minLower = if (enforceJointLimits && !bendFlip) (if (isSideOr3Q) -142f else 0f) else -165f
-                val maxLower = if (enforceJointLimits && !bendFlip) (if (isSideOr3Q) 0f else 142f) else 165f
+                val angleProf = CharacterAngleSystem.profileFor(clip.orientation, rig.buildType)
+                val defaultBend = angleProf.ikRightElbowSign
+                val minLower = if (enforceJointLimits && !bendFlip) (if (defaultBend < 0f) -142f else 0f) else -165f
+                val maxLower = if (enforceJointLimits && !bendFlip) (if (defaultBend < 0f) 0f else 142f) else 165f
                 val (upperDeg, lowerRelDeg) = solveTwoBoneIk(
-                    originX = geom.shoulderHalf,
+                    originX = geom.rightShoulderX,
                     originY = geom.shoulderY,
                     targetX = lx,
                     targetY = ly,
@@ -569,7 +588,7 @@ object IkRigSolver {
                 )
             }
             IkHandleId.LEFT_KNEE -> {
-                val rawThigh = angleFromDownDeg(lx - (-geom.hipHalf), ly - geom.hipY)
+                val rawThigh = angleFromDownDeg(lx - geom.leftHipX, ly - geom.hipY)
                 val worldThigh = if (enforceJointLimits) AnatomicalJointLimits.HIP.clamp(rawThigh) else rawThigh.coerceIn(-155f, 155f)
                 currentOffsets.copy(leftLegOffset = normalizeAngleDeg(worldThigh - basePose.leftLegDeg))
             }
@@ -578,7 +597,7 @@ object IkRigSolver {
                 val minKnee = if (enforceJointLimits && !bendFlip) 0f else -155f
                 val maxKnee = if (enforceJointLimits && !bendFlip) 132f else 155f
                 val (thighDeg, kneeRelDeg) = solveTwoBoneIk(
-                    originX = -geom.hipHalf,
+                    originX = geom.leftHipX,
                     originY = geom.hipY,
                     targetX = lx,
                     targetY = ly,
@@ -595,16 +614,17 @@ object IkRigSolver {
                 )
             }
             IkHandleId.RIGHT_KNEE -> {
-                val rawThigh = angleFromDownDeg(lx - geom.hipHalf, ly - geom.hipY)
+                val rawThigh = angleFromDownDeg(lx - geom.rightHipX, ly - geom.hipY)
                 val worldThigh = if (enforceJointLimits) AnatomicalJointLimits.HIP.clamp(rawThigh) else rawThigh.coerceIn(-155f, 155f)
                 currentOffsets.copy(rightLegOffset = normalizeAngleDeg(worldThigh - basePose.rightLegDeg))
             }
             IkHandleId.RIGHT_FOOT -> {
-                val defaultBend = if (isSideOr3Q) 1f else -1f
-                val minKnee = if (enforceJointLimits && !bendFlip) (if (isSideOr3Q) 0f else -132f) else -155f
-                val maxKnee = if (enforceJointLimits && !bendFlip) (if (isSideOr3Q) 132f else 0f) else 155f
+                val angleProf = CharacterAngleSystem.profileFor(clip.orientation, rig.buildType)
+                val defaultBend = angleProf.ikRightKneeSign
+                val minKnee = if (enforceJointLimits && !bendFlip) (if (defaultBend > 0f) 0f else -132f) else -155f
+                val maxKnee = if (enforceJointLimits && !bendFlip) (if (defaultBend > 0f) 132f else 0f) else 155f
                 val (thighDeg, kneeRelDeg) = solveTwoBoneIk(
-                    originX = geom.hipHalf,
+                    originX = geom.rightHipX,
                     originY = geom.hipY,
                     targetX = lx,
                     targetY = ly,

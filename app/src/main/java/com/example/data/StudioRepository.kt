@@ -42,9 +42,8 @@ class StudioRepository(
     }
 
     suspend fun ensureSeeded() = withContext(Dispatchers.IO) {
-        if (characterDao.countCharacters() == 0) {
-            characterDao.insertAllIgnore(BuiltInCatalog.builtInCharacters.map { it.toEntity() })
-        }
+        // Always register any newly shipped built-in characters without overwriting user edits/custom rigs
+        characterDao.insertAllIgnore(BuiltInCatalog.builtInCharacters.map { it.toEntity() })
         // Always ensure bundled offline HD SVG/PNG packs from assets/characters/ are registered
         val bundledPacks = assetStorage.loadBundledAssetPacks()
         if (bundledPacks.isNotEmpty()) {

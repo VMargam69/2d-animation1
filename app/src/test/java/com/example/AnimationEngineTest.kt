@@ -5279,4 +5279,105 @@ class AnimationEngineTest {
             kotlin.math.abs(jumpAfter.leftArmDeg - jumpBefore.leftArmDeg) < 16f
         )
     }
+
+    @Test
+    fun `5-Angle Turnaround System, Soft-IK Reach Damping, and 206 Pro Presets work seamlessly`() {
+        // 1. Unified 5-Angle CharacterAngleSystem checks
+        assertEquals(5, com.example.engine.CharacterAngleSystem.turnaroundAngles.size)
+        val front = com.example.engine.CharacterAngleSystem.profileFor(CharacterOrientation.FRONT, HumanBuildType.STANDARD)
+        val q3Front = com.example.engine.CharacterAngleSystem.profileFor(CharacterOrientation.THREE_QUARTER_FRONT, HumanBuildType.STANDARD)
+        val side = com.example.engine.CharacterAngleSystem.profileFor(CharacterOrientation.SIDE, HumanBuildType.STANDARD)
+        val q3Back = com.example.engine.CharacterAngleSystem.profileFor(CharacterOrientation.THREE_QUARTER_BACK, HumanBuildType.STANDARD)
+        val back = com.example.engine.CharacterAngleSystem.profileFor(CharacterOrientation.BACK, HumanBuildType.STANDARD)
+
+        assertEquals(kotlin.math.abs(front.leftShoulderX), kotlin.math.abs(front.rightShoulderX), 0.01f)
+        assertTrue("3/4 Front should foreshorten far shoulder X", kotlin.math.abs(q3Front.leftShoulderX) < kotlin.math.abs(q3Front.rightShoulderX))
+        assertTrue("3/4 Front right eye should be foreshortened narrower than left eye", q3Front.rightEyeScaleX < q3Front.leftEyeScaleX)
+        assertEquals(com.example.engine.HeadAngleProfileMode.SIDE_PROFILE, side.headProfileMode)
+        assertTrue("Side view far-limb shading must darken far limbs (< 0.85)", side.leftArmDepthShade < 0.85f)
+        assertFalse("3/4 Back hides face features", q3Back.showsFace)
+        assertFalse("Back view hides face features", back.showsFace)
+        assertEquals(com.example.engine.ShoeAngleView.REAR_HEEL, back.leftShoeView)
+
+        // 2. IkRigSolver 5-angle asymmetric anchors + Pro Soft-IK over-reach damping (zero pop/NaN)
+        val rig = BuiltInCatalog.builtInCharacters.first()
+        val base = BuiltInCatalog.sceneTemplates.first().buildProject("Soft IK Test")
+        val charClip = base.activeScene.clips.first { it.characterId != null }.copy(orientation = CharacterOrientation.THREE_QUARTER_FRONT)
+        val eval = KeyframeEvaluator.evaluate(charClip, 0)
+        val basePose = ProceduralRigRenderer.computePose(AnimationPresetType.IDLE, 0f)
+        val (_, anchors3q) = com.example.engine.IkRigSolver.computeStageIkHandlesWithAnchors(
+            clip = charClip,
+            rig = rig,
+            transform = eval,
+            pose = basePose,
+            stageWidth = 1000f,
+            stageHeight = 562f
+        )
+        assertTrue(
+            "Stage IK anchors must mirror 3/4 Front shoulder asymmetry",
+            kotlin.math.abs(anchors3q.leftShoulderNx - eval.x) < kotlin.math.abs(anchors3q.rightShoulderNx - eval.x)
+        )
+        // Drag far beyond 150% arm reach -> Soft-IK must damp cleanly without NaN
+        val overReachSolved = com.example.engine.IkRigSolver.solveIkDragToOffsets(
+            handleId = IkHandleId.RIGHT_HAND,
+            targetNx = (eval.x + 0.42f).coerceIn(0.05f, 0.98f),
+            targetNy = (eval.y - 0.35f).coerceIn(0.05f, 0.98f),
+            clip = charClip,
+            rig = rig,
+            transform = eval,
+            basePose = basePose,
+            currentOffsets = PoseKeyframeOffsets(),
+            stageWidth = 1000f,
+            stageHeight = 562f,
+            bendFlip = false
+        )
+        assertFalse(overReachSolved.rightArmOffset.isNaN())
+        assertFalse(overReachSolved.rightForearmOffset.isNaN())
+        assertTrue("Soft-IK should keep subtle natural bend near full extension rather than rigid 0-deg lock", kotlin.math.abs(overReachSolved.rightForearmOffset) > 0.5f)
+
+        // 3. Expanded 206-preset catalog checks (60 Expressions + 100 Hand Parts + 46 Leg Parts)
+        val all = com.example.engine.ModularActionEngine.catalog
+        val exprs = com.example.engine.ModularActionEngine.actionsForTrack(com.example.engine.ModularActionTrack.FACIAL)
+        val hands = com.example.engine.ModularActionEngine.actionsForTrack(com.example.engine.ModularActionTrack.HANDS)
+        val legs = com.example.engine.ModularActionEngine.actionsForTrack(com.example.engine.ModularActionTrack.LEGS)
+        assertTrue("Expected 60+ Expressions, got ${exprs.size}", exprs.size >= 60)
+        assertTrue("Expected 100+ Hand Parts, got ${hands.size}", hands.size >= 100)
+        assertTrue("Expected 46+ Leg Parts, got ${legs.size}", legs.size >= 46)
+        assertEquals("All 206 preset IDs must be unique", all.size, all.map { it.id }.toSet().size)
+        listOf(
+            "expr_idle_face", "expr_lipsing_with_hand", "expr_crying_emotional",
+            "hand_idle_1", "hand_not_thinking", "hand_walk_with_gun", "hand_walk_with_thala", "hand_dancing_bhangra",
+            "leg_namaskar", "leg_sitting_idle", "leg_running_fast", "leg_dancing_bhangra"
+        ).forEach { id ->
+            val def = com.example.engine.ModularActionEngine.findById(id)
+            assertNotNull("Missing expanded preset: $id", def)
+            val s0 = com.example.engine.ModularActionEngine.evaluateAtProgress(def!!, 0f)
+            val s1 = com.example.engine.ModularActionEngine.evaluateAtProgress(def, 1f)
+            assertEquals("Loop boundary mismatch on $id", s0.leftArmDelta, s1.leftArmDelta, 0.5f)
+            assertEquals("Loop boundary mismatch on $id", s0.rightLegDelta, s1.rightLegDelta, 0.5f)
+        }
+    }
+
+    @Test
+    fun `BuiltInCatalog includes Pixel-Perfect Desi Story Cast with Raju Kisan featured and unique IDs`() {
+        val chars = BuiltInCatalog.builtInCharacters
+        assertEquals("All built-in character IDs must be unique", chars.size, chars.map { it.id }.toSet().size)
+
+        val raju = chars.firstOrNull { it.id == "char_raju_kisan_pro" }
+        assertNotNull("Raju Kisan must be present in BuiltInCatalog", raju)
+        assertEquals("Raju Kisan", raju!!.name)
+        assertEquals(HumanCostumeStyle.DESI_KURTA_DHOTI, raju.costumeStyle)
+        assertEquals(CharacterAccessory.DESI_PAGDI_TILAK, raju.accessory)
+        assertTrue("Raju Kisan should be pinned at top of Character List", raju.isPinned)
+
+        listOf(
+            "char_ramesh_seth_pro",
+            "char_dadaji_pro",
+            "char_meera_devi_pro",
+            "char_mohan_pandit_pro",
+            "char_chotu_boy_pro"
+        ).forEach { expectedId ->
+            assertNotNull("Missing new Desi character: $expectedId", chars.firstOrNull { it.id == expectedId })
+        }
+    }
 }

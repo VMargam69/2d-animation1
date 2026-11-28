@@ -229,12 +229,23 @@ fun ModularControlLibraryPanel(
     initialSelection: ModularControlSelection,
     onSelectionPreviewChanged: (ModularControlSelection, ModularActionDef?) -> Unit,
     onApplyChanges: (ModularControlSelection) -> Unit,
+    resetTrigger: Int = 0,
+    showInlineResetButton: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var activeSectionFilter by remember { mutableStateOf<ModularActionTrack?>(null) }
     var selection by remember(initialSelection) { mutableStateOf(initialSelection) }
     var lastTappedAction by remember { mutableStateOf<ModularActionDef?>(null) }
+
+    LaunchedEffect(resetTrigger) {
+        if (resetTrigger > 0) {
+            searchQuery = ""
+            activeSectionFilter = null
+            selection = ModularControlSelection()
+            lastTappedAction = null
+        }
+    }
 
     // Smooth 24fps shared animation clock driving all visible isolated white silhouettes
     var animTick by remember { mutableIntStateOf(0) }
@@ -340,29 +351,31 @@ fun ModularControlLibraryPanel(
                     }
                 }
 
-                OutlinedButton(
-                    onClick = {
-                        searchQuery = ""
-                        activeSectionFilter = null
-                        selection = ModularControlSelection()
-                        lastTappedAction = null
-                    },
-                    border = BorderStroke(1.dp, ControlBorder),
-                    colors = ButtonDefaults.outlinedButtonColors(containerColor = ControlCardBg),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .height(44.dp)
-                        .testTag("control_reset_btn")
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.RestartAlt,
-                        contentDescription = "Reset modular control selections",
-                        tint = ControlTextSecondary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text("Reset", color = ControlTextPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                if (showInlineResetButton) {
+                    OutlinedButton(
+                        onClick = {
+                            searchQuery = ""
+                            activeSectionFilter = null
+                            selection = ModularControlSelection()
+                            lastTappedAction = null
+                        },
+                        border = BorderStroke(1.dp, ControlBorder),
+                        colors = ButtonDefaults.outlinedButtonColors(containerColor = ControlCardBg),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .height(44.dp)
+                            .testTag("control_reset_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.RestartAlt,
+                            contentDescription = "Reset modular control selections",
+                            tint = ControlTextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Reset", color = ControlTextPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
 
@@ -1193,7 +1206,7 @@ private fun DrawScope.drawIsolatedArmsSilhouette(
         )
     }
 
-    val baseR = (size.minDimension * 0.068f * fitScale.coerceIn(0.8f, 1.15f)).coerceIn(3.4f, 6.2f)
+    val baseR = (size.minDimension * 0.078f * fitScale.coerceIn(0.84f, 1.18f)).coerceIn(3.8f, 6.8f)
     val handType = sample.handPoseOverride ?: HandPoseType.OPEN
 
     fun drawArm(sh: Offset, el: Offset, ha: Offset, color: Color) {
@@ -1252,7 +1265,7 @@ private fun DrawScope.drawIsolatedLegsSilhouette(
     val u = size.minDimension
     val cx = size.width * 0.5f
     val cy = size.height * 0.52f
-    val baseR = (u * 0.082f).coerceIn(3.8f, 6.8f)
+    val baseR = (u * 0.090f).coerceIn(4.2f, 7.2f)
 
     when (sample.silhouetteStyle) {
         "cross_legged" -> {
