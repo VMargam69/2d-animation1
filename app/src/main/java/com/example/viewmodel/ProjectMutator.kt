@@ -21,7 +21,10 @@ object ProjectMutator {
         if (updatedScenes.isEmpty()) {
             updatedScenes.add(transform(AnimationScene()))
         } else {
-            updatedScenes[idx] = transform(updatedScenes[idx])
+            val currentScene = updatedScenes[idx]
+            val nextScene = transform(currentScene)
+            if (nextScene == currentScene) return project
+            updatedScenes[idx] = nextScene
         }
         return project.copy(scenes = updatedScenes, updatedAt = System.currentTimeMillis())
     }
@@ -758,6 +761,59 @@ object ProjectMutator {
             sorted[targetIdx] = tmp
             val reindexed = sorted.mapIndexed { i, l -> l.copy(orderIndex = i) }
             scene.copy(layers = reindexed)
+        }
+
+    fun bringLayerToFront(project: ProjectDocument, layerId: String): ProjectDocument =
+        updateActiveScene(project) { scene ->
+            val sorted = scene.layers.sortedBy { it.orderIndex }.toMutableList()
+            val idx = sorted.indexOfFirst { it.id == layerId }
+            if (idx == -1 || idx == sorted.lastIndex) return@updateActiveScene scene
+            val target = sorted.removeAt(idx)
+            sorted.add(target)
+            val reindexed = sorted.mapIndexed { i, l -> l.copy(orderIndex = i) }
+            scene.copy(layers = reindexed)
+        }
+
+    fun sendLayerToBack(project: ProjectDocument, layerId: String): ProjectDocument =
+        updateActiveScene(project) { scene ->
+            val sorted = scene.layers.sortedBy { it.orderIndex }.toMutableList()
+            val idx = sorted.indexOfFirst { it.id == layerId }
+            if (idx == -1 || idx == 0) return@updateActiveScene scene
+            val target = sorted.removeAt(idx)
+            sorted.add(0, target)
+            val reindexed = sorted.mapIndexed { i, l -> l.copy(orderIndex = i) }
+            scene.copy(layers = reindexed)
+        }
+
+    fun bringLayerForward(project: ProjectDocument, layerId: String): ProjectDocument =
+        reorderLayer(project, layerId, moveUp = true)
+
+    fun sendLayerBackward(project: ProjectDocument, layerId: String): ProjectDocument =
+        reorderLayer(project, layerId, moveUp = false)
+
+    fun deleteLayer(project: ProjectDocument, layerId: String): ProjectDocument =
+        updateActiveScene(project) { scene ->
+            val target = scene.layers.firstOrNull { it.id == layerId } ?: return@updateActiveScene scene
+            if (target.isLocked || scene.layers.size <= 1) return@updateActiveScene scene
+            val removedClipIds = scene.clips.asSequence()
+                .filter { it.layerId == layerId }
+                .map { it.id }
+                .toSet()
+            val remainingLayers = scene.layers
+                .filterNot { it.id == layerId }
+                .sortedBy { it.orderIndex }
+                .mapIndexed { i, l -> l.copy(orderIndex = i) }
+            val remainingClips = scene.clips.filterNot { it.layerId == layerId }
+            val nextFocusClipId = if (scene.cameraFocusClipId in removedClipIds) null else scene.cameraFocusClipId
+            val remainingUniversalTracks = scene.universalKeyframeTracks.filterNot { tr ->
+                tr.targetId == layerId || tr.targetId in removedClipIds
+            }
+            scene.copy(
+                layers = remainingLayers,
+                clips = remainingClips,
+                cameraFocusClipId = nextFocusClipId,
+                universalKeyframeTracks = remainingUniversalTracks
+            )
         }
 
     fun updateLayerParallaxDepth(

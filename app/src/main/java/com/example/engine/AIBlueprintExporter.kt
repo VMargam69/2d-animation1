@@ -78,6 +78,16 @@ object AIBlueprintExporter {
         val handPose: String
     )
 
+    data class BlueprintSceneLayer(
+        val id: String,
+        val name: String,
+        val type: String,
+        val zIndex: Int,
+        val isVisible: Boolean,
+        val isLocked: Boolean,
+        val parallaxDepth: Float = 1.0f
+    )
+
     data class ProjectAssetsPayload(
         val characters: List<BlueprintCharacterAsset>,
         val backgrounds: List<BlueprintVisualAsset>,
@@ -86,7 +96,8 @@ object AIBlueprintExporter {
         val savedPoses: List<BlueprintSavedPoseAsset>,
         val existingInlineSvgIds: List<String>,
         val existingCustomAnimationIds: List<String>,
-        val existingCustomTransitionIds: List<String>
+        val existingCustomTransitionIds: List<String>,
+        val activeSceneLayers: List<BlueprintSceneLayer> = emptyList()
     )
 
     data class BlueprintCapabilitiesPayload(
@@ -276,6 +287,20 @@ object AIBlueprintExporter {
             )
         }
 
+        val activeSceneLayers = project.activeScene.layers
+            .sortedBy { it.orderIndex }
+            .map { layer ->
+                BlueprintSceneLayer(
+                    id = layer.id,
+                    name = layer.name,
+                    type = layer.type.name,
+                    zIndex = layer.orderIndex,
+                    isVisible = layer.isVisible,
+                    isLocked = layer.isLocked,
+                    parallaxDepth = layer.parallaxDepth
+                )
+            }
+
         val assetsPayload = ProjectAssetsPayload(
             characters = charAssets,
             backgrounds = bgAssets,
@@ -284,7 +309,8 @@ object AIBlueprintExporter {
             savedPoses = savedPoseAssets,
             existingInlineSvgIds = project.inlineSvgAssets.keys.toList(),
             existingCustomAnimationIds = project.customAnimations.keys.toList(),
-            existingCustomTransitionIds = project.customTransitions.keys.toList()
+            existingCustomTransitionIds = project.customTransitions.keys.toList(),
+            activeSceneLayers = activeSceneLayers
         )
 
         val capabilitiesPayload = BlueprintCapabilitiesPayload(

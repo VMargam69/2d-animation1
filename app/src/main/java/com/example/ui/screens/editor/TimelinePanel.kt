@@ -72,6 +72,11 @@ fun TimelinePanel(
     onSelectClip: (String) -> Unit,
     onToggleLayerVisibility: (String) -> Unit,
     onToggleLayerLock: (String) -> Unit,
+    onBringLayerToFront: (String) -> Unit = {},
+    onSendLayerToBack: (String) -> Unit = {},
+    onBringLayerForward: (String) -> Unit = {},
+    onSendLayerBackward: (String) -> Unit = {},
+    onDeleteLayer: (String) -> Unit = {},
     onOpenLayerManager: () -> Unit,
     onTrimAudioClip: (
         clipId: String,
@@ -138,6 +143,7 @@ fun TimelinePanel(
     var showSensitivitySlider by remember { mutableStateOf(false) }
     var showFacialTray by remember { mutableStateOf(true) }
     var showBulkDeleteClipsConfirm by remember { mutableStateOf(false) }
+    var openLayerMenuId by remember { mutableStateOf<String?>(null) }
     val hasAudioTrack = remember(scene.layers, scene.clips) {
         scene.layers.any { it.type == LayerType.AUDIO } || scene.clips.any { !it.audioPath.isNullOrBlank() }
     }
@@ -214,7 +220,7 @@ fun TimelinePanel(
     }
 
     val layerRailWidth by animateDpAsState(
-        targetValue = if (isLayerRailCollapsed) 40.dp else 116.dp,
+        targetValue = if (isLayerRailCollapsed) 66.dp else 146.dp,
         label = "timeline_layer_rail_width"
     )
     val latestOnSeekFrame by rememberUpdatedState(onSeekFrame)
@@ -1026,20 +1032,183 @@ fun TimelinePanel(
                         }
                         HorizontalDivider(color = AmberKeyframe.copy(alpha = 0.30f), thickness = 1.dp)
 
-                        sortedLayers.forEach { layer ->
+                        sortedLayers.forEachIndexed { layerIdx, layer ->
                             val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))
                             val isSelLayer = layer.id == selectedLayerId
                             val isAudioLayer = layer.type == LayerType.AUDIO
                             val rowHeight = layerRowHeight(layer.type)
+                            val isAtFront = layerIdx == 0
+                            val isAtBack = layerIdx == sortedLayers.lastIndex
+                            val isMenuOpen = openLayerMenuId == layer.id
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(rowHeight)
                                     .background(if (isSelLayer) StudioCard else Color.Transparent)
-                                    .padding(horizontal = if (isLayerRailCollapsed) 4.dp else 5.dp),
+                                    .padding(start = 0.dp, end = if (isLayerRailCollapsed) 2.dp else 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = if (isLayerRailCollapsed) Arrangement.Center else Arrangement.spacedBy(3.dp)
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
+                                // Far-left 3-dot (⋮) Z-Order & Actions trigger + anchored dark popup menu
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .width(40.dp)
+                                        .height(rowHeight)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable { openLayerMenuId = layer.id }
+                                        .testTag("layer_menu_btn_${layer.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.MoreVert,
+                                        contentDescription = "Layer options for ${layer.name}",
+                                        tint = if (isMenuOpen) ElectricCyan else StudioTextSecondary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    DropdownMenu(
+                                        expanded = isMenuOpen,
+                                        onDismissRequest = { openLayerMenuId = null },
+                                        shape = RoundedCornerShape(14.dp),
+                                        containerColor = Color(0xFF1A1E26),
+                                        border = BorderStroke(1.dp, Color(0xFF2C3444))
+                                    ) {
+                                        val enabledText = Color(0xFFF1F5F9)
+                                        val enabledIcon = Color(0xFFCBD5E1)
+                                        val disabledTint = Color(0xFF64748B).copy(alpha = 0.45f)
+                                        val deleteRed = Color(0xFFEF4444)
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "Bring To Front",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = if (!isAtFront) enabledText else disabledTint
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.FlipToFront,
+                                                    contentDescription = "Bring To Front",
+                                                    tint = if (!isAtFront) enabledIcon else disabledTint,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            enabled = !isAtFront,
+                                            onClick = {
+                                                openLayerMenuId = null
+                                                onBringLayerToFront(layer.id)
+                                            },
+                                            modifier = Modifier.testTag("layer_menu_front_${layer.id}")
+                                        )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "Send To Back",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = if (!isAtBack) enabledText else disabledTint
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.FlipToBack,
+                                                    contentDescription = "Send To Back",
+                                                    tint = if (!isAtBack) enabledIcon else disabledTint,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            enabled = !isAtBack,
+                                            onClick = {
+                                                openLayerMenuId = null
+                                                onSendLayerToBack(layer.id)
+                                            },
+                                            modifier = Modifier.testTag("layer_menu_back_${layer.id}")
+                                        )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "Bring Forward",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = if (!isAtFront) enabledText else disabledTint
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.MoveUp,
+                                                    contentDescription = "Bring Forward",
+                                                    tint = if (!isAtFront) enabledIcon else disabledTint,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            enabled = !isAtFront,
+                                            onClick = {
+                                                openLayerMenuId = null
+                                                onBringLayerForward(layer.id)
+                                            },
+                                            modifier = Modifier.testTag("layer_menu_forward_${layer.id}")
+                                        )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "Send Backward",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = if (!isAtBack) enabledText else disabledTint
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.MoveDown,
+                                                    contentDescription = "Send Backward",
+                                                    tint = if (!isAtBack) enabledIcon else disabledTint,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            enabled = !isAtBack,
+                                            onClick = {
+                                                openLayerMenuId = null
+                                                onSendLayerBackward(layer.id)
+                                            },
+                                            modifier = Modifier.testTag("layer_menu_backward_${layer.id}")
+                                        )
+
+                                        HorizontalDivider(
+                                            color = Color(0xFF2C3444),
+                                            thickness = 1.dp,
+                                            modifier = Modifier.padding(vertical = 2.dp)
+                                        )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "Delete",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = deleteRed
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.DeleteOutline,
+                                                    contentDescription = "Delete layer",
+                                                    tint = deleteRed,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                openLayerMenuId = null
+                                                onDeleteLayer(layer.id)
+                                            },
+                                            modifier = Modifier.testTag("layer_menu_delete_${layer.id}")
+                                        )
+                                    }
+                                }
+
                                 Box(
                                     modifier = Modifier
                                         .width(3.dp)
@@ -1056,13 +1225,11 @@ fun TimelinePanel(
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f)
                                     )
-                                } else {
-                                    Spacer(Modifier.width(3.dp))
                                 }
                                 Box(
                                     contentAlignment = Alignment.Center,
                                     modifier = Modifier
-                                        .size(24.dp)
+                                        .size(22.dp)
                                         .clip(CircleShape)
                                         .clickable { onToggleLayerVisibility(layer.id) }
                                         .testTag("layer_vis_${layer.id}")
@@ -1091,7 +1258,7 @@ fun TimelinePanel(
                                     Box(
                                         contentAlignment = Alignment.Center,
                                         modifier = Modifier
-                                            .size(22.dp)
+                                            .size(20.dp)
                                             .clip(CircleShape)
                                             .clickable { onToggleLayerLock(layer.id) }
                                             .testTag("layer_lock_${layer.id}")
@@ -1632,7 +1799,7 @@ fun TimelinePanel(
 }
 
 private fun layerRowHeight(type: LayerType): Dp =
-    if (type == LayerType.AUDIO) 52.dp else 36.dp
+    if (type == LayerType.AUDIO) 52.dp else 40.dp
 
 private fun shortEasingLabel(easing: EasingType): String = easing.shortLabel
 

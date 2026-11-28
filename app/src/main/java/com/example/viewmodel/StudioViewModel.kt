@@ -1599,6 +1599,42 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         commitProjectChange(updated)
     }
 
+    fun bringLayerToFront(layerId: String) {
+        val current = _uiState.value.project
+        val layerName = current.activeScene.layers.firstOrNull { it.id == layerId }?.name
+        val updated = ProjectMutator.bringLayerToFront(current, layerId)
+        if (updated != current) {
+            commitProjectChange(updated)
+            if (layerName != null) showStatus("Brought \"$layerName\" to front")
+        }
+    }
+
+    fun sendLayerToBack(layerId: String) {
+        val current = _uiState.value.project
+        val layerName = current.activeScene.layers.firstOrNull { it.id == layerId }?.name
+        val updated = ProjectMutator.sendLayerToBack(current, layerId)
+        if (updated != current) {
+            commitProjectChange(updated)
+            if (layerName != null) showStatus("Sent \"$layerName\" to back")
+        }
+    }
+
+    fun bringLayerForward(layerId: String) {
+        val current = _uiState.value.project
+        val updated = ProjectMutator.bringLayerForward(current, layerId)
+        if (updated != current) {
+            commitProjectChange(updated)
+        }
+    }
+
+    fun sendLayerBackward(layerId: String) {
+        val current = _uiState.value.project
+        val updated = ProjectMutator.sendLayerBackward(current, layerId)
+        if (updated != current) {
+            commitProjectChange(updated)
+        }
+    }
+
     fun updateLayerParallaxDepth(layerId: String, depth: Float) {
         val updated = ProjectMutator.updateLayerParallaxDepth(_uiState.value.project, layerId, depth)
         commitProjectChange(updated)
@@ -1627,17 +1663,32 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun deleteLayer(layerId: String) {
-        val updated = ProjectMutator.updateActiveScene(_uiState.value.project) { scene ->
-            if (scene.layers.size <= 1) scene
-            else scene.copy(
-                layers = scene.layers.filterNot { it.id == layerId },
-                clips = scene.clips.filterNot { it.layerId == layerId }
+        val current = _uiState.value.project
+        val scene = current.activeScene
+        val layer = scene.layers.firstOrNull { it.id == layerId } ?: return
+        if (layer.isLocked) {
+            showStatus("Unlock layer to delete")
+            return
+        }
+        if (scene.layers.size <= 1) {
+            showStatus("Cannot delete the last layer")
+            return
+        }
+        val removedClipIds = scene.clips.asSequence()
+            .filter { it.layerId == layerId }
+            .map { it.id }
+            .toSet()
+        val updated = ProjectMutator.deleteLayer(current, layerId)
+        commitProjectChange(updated)
+        _uiState.update { st ->
+            val clearSelectedClip = st.selectedLayerId == layerId || st.selectedClipId in removedClipIds
+            st.copy(
+                selectedLayerId = if (st.selectedLayerId == layerId) null else st.selectedLayerId,
+                selectedClipId = if (clearSelectedClip) null else st.selectedClipId,
+                selectedTimelineClipIds = st.selectedTimelineClipIds - removedClipIds
             )
         }
-        commitProjectChange(updated)
-        if (_uiState.value.selectedLayerId == layerId) {
-            _uiState.update { it.copy(selectedLayerId = null, selectedClipId = null) }
-        }
+        showStatus("Deleted layer \"${layer.name}\"")
     }
 
     // --- Scenes ---

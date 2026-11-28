@@ -3374,6 +3374,87 @@ class AnimationEngineTest {
         assertEquals("bg.scrollX", restored.activeScene.universalKeyframeTracks[0].propertyPath)
         assertEquals(UniversalLoopMode.OFFSET_REPEAT, restored.activeScene.universalKeyframeTracks[0].loopMode)
     }
+
+    @Test
+    fun `layer Z-order actions and lock-safe delete update orderIndex, clips, focus, and blueprint sync`() {
+        val layerBg = AnimationLayer(id = "l_bg", name = "Background", type = LayerType.BACKGROUND, orderIndex = 0)
+        val layerHero = AnimationLayer(id = "l_hero", name = "Hero", type = LayerType.CHARACTER, orderIndex = 1)
+        val layerProp = AnimationLayer(id = "l_prop", name = "Prop", type = LayerType.SHAPE, orderIndex = 2, isLocked = true)
+        val layerText = AnimationLayer(id = "l_text", name = "Caption", type = LayerType.TEXT, orderIndex = 3)
+
+        val clipHero = TimelineClip(id = "c_hero", layerId = "l_hero", name = "Hero Clip")
+        val clipProp = TimelineClip(id = "c_prop", layerId = "l_prop", name = "Prop Clip")
+        val clipText = TimelineClip(id = "c_text", layerId = "l_text", name = "Caption Clip")
+
+        val scene = AnimationScene(
+            id = "s_zorder",
+            name = "Z-Order Scene",
+            layers = listOf(layerBg, layerHero, layerProp, layerText),
+            clips = listOf(clipHero, clipProp, clipText),
+            cameraFocusClipId = "c_text",
+            universalKeyframeTracks = listOf(
+                UniversalKeyframeTrack(
+                    id = "trk_text",
+                    targetId = "c_text",
+                    propertyPath = "transform.opacity",
+                    domain = UniversalPropertyDomain.CHARACTER,
+                    valueType = UniversalValueType.FLOAT,
+                    keyframes = listOf(UniversalKeyframe(frame = 0, floatValue = 1f))
+                )
+            )
+        )
+        val project = ProjectDocument(name = "ZOrder Test", scenes = listOf(scene))
+
+        // 1. Bring Background to front -> order becomes [l_hero, l_prop, l_text, l_bg]
+        val front = ProjectMutator.bringLayerToFront(project, "l_bg")
+        assertEquals(listOf("l_hero", "l_prop", "l_text", "l_bg"), front.activeScene.layers.sortedBy { it.orderIndex }.map { it.id })
+        assertEquals(listOf(0, 1, 2, 3), front.activeScene.layers.sortedBy { it.orderIndex }.map { it.orderIndex })
+        // Already at front -> no-op (exact equality preserves undo cleanliness)
+        assertEquals(front, ProjectMutator.bringLayerToFront(front, "l_bg"))
+
+        // 2. Send Background back to back -> order restored [l_bg, l_hero, l_prop, l_text]
+        val back = ProjectMutator.sendLayerToBack(front, "l_bg")
+        assertEquals(listOf("l_bg", "l_hero", "l_prop", "l_text"), back.activeScene.layers.sortedBy { it.orderIndex }.map { it.id })
+        // Already at back -> no-op
+        assertEquals(back, ProjectMutator.sendLayerToBack(back, "l_bg"))
+
+        // 3. Bring Forward 1 step on Hero -> swaps with Prop: [l_bg, l_prop, l_hero, l_text]
+        val forward = ProjectMutator.bringLayerForward(back, "l_hero")
+        assertEquals(listOf("l_bg", "l_prop", "l_hero", "l_text"), forward.activeScene.layers.sortedBy { it.orderIndex }.map { it.id })
+
+        // 4. Send Backward 1 step on Hero -> returns to [l_bg, l_hero, l_prop, l_text]
+        val backward = ProjectMutator.sendLayerBackward(forward, "l_hero")
+        assertEquals(listOf("l_bg", "l_hero", "l_prop", "l_text"), backward.activeScene.layers.sortedBy { it.orderIndex }.map { it.id })
+
+        // 5. Blueprint export reflects live Z-order immediately
+        val bp = com.example.engine.AIBlueprintExporter.buildBlueprint(
+            project = forward,
+            characters = emptyList(),
+            mediaAssets = emptyList()
+        )
+        assertEquals(listOf("l_bg", "l_prop", "l_hero", "l_text"), bp.projectAssets.activeSceneLayers.map { it.id })
+        assertEquals(listOf(0, 1, 2, 3), bp.projectAssets.activeSceneLayers.map { it.zIndex })
+
+        // 6. Locked layer cannot be deleted
+        val afterLockedDelete = ProjectMutator.deleteLayer(backward, "l_prop")
+        assertEquals(backward, afterLockedDelete)
+        assertEquals(4, afterLockedDelete.activeScene.layers.size)
+
+        // 7. Unlocked layer deletes cleanly with clips, camera focus, universal tracks, and contiguous reindexing
+        val afterDelete = ProjectMutator.deleteLayer(backward, "l_text")
+        assertEquals(listOf("l_bg", "l_hero", "l_prop"), afterDelete.activeScene.layers.sortedBy { it.orderIndex }.map { it.id })
+        assertEquals(listOf(0, 1, 2), afterDelete.activeScene.layers.sortedBy { it.orderIndex }.map { it.orderIndex })
+        assertFalse(afterDelete.activeScene.clips.any { it.layerId == "l_text" })
+        assertNull(afterDelete.activeScene.cameraFocusClipId)
+        assertTrue(afterDelete.activeScene.universalKeyframeTracks.isEmpty())
+
+        // 8. Cannot delete last remaining layer
+        val singleLayerProject = ProjectDocument(
+            name = "Single Layer",
+            scenes = listOf(AnimationScene(layers = listOf(layerBg)))
+        )
+        assertEquals(singleLayerProject, ProjectMutator.deleteLayer(singleLayerProject, "l_bg"))
+    }
 }
 
 
