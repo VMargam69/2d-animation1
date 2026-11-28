@@ -349,9 +349,6 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onApplyModularControl = { clipId, selection ->
                     viewModel.applyModularControlConfig(clipId, selection)
                 },
-                onBakeMocapKeyframes = { clipId, frames, config ->
-                    viewModel.bakeMocapRecording(clipId, frames, config)
-                },
                 loadPoseThumbnail = { path -> viewModel.poseLibraryStorage.loadCachedThumbnail(path) },
                 loadCharacterBitmap = { path ->
                     if (!path.isNullOrBlank()) viewModel.assetStorage.getCachedOrRequestBitmap(path, null) else null
