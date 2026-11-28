@@ -15,25 +15,63 @@ enum class DirectorScriptImportMode(val label: String) {
     APPEND_SCENES("Append Scenes")
 }
 
+/**
+ * Fine-grained Selective Track Import checkboxes for `.fcscript.json` import.
+ * All 6 categories default to `true` for 100% backward compatibility.
+ */
+data class DirectorScriptTrackSelection(
+    val charactersAndActing: Boolean = true,
+    val cameraShots: Boolean = true,
+    val backgroundsAndParallax: Boolean = true,
+    val vfxWeatherAndGrading: Boolean = true,
+    val audioAndDucking: Boolean = true,
+    val subtitlesAndBubbles: Boolean = true
+) {
+    val allSelected: Boolean
+        get() = charactersAndActing &&
+            cameraShots &&
+            backgroundsAndParallax &&
+            vfxWeatherAndGrading &&
+            audioAndDucking &&
+            subtitlesAndBubbles
+
+    val anySelected: Boolean
+        get() = charactersAndActing ||
+            cameraShots ||
+            backgroundsAndParallax ||
+            vfxWeatherAndGrading ||
+            audioAndDucking ||
+            subtitlesAndBubbles
+}
+
 data class DirectorScriptDryRunReport(
     val isValid: Boolean,
     val formatVersion: Int = 3,
+    val scriptTitle: String? = null,
     val sceneCount: Int = 0,
+    val totalDurationSec: Float = 0f,
     val inlineSvgCount: Int = 0,
     val customAnimationCount: Int = 0,
     val customTransitionCount: Int = 0,
     val layerCount: Int = 0,
     val clipCount: Int = 0,
+    val characterClipCount: Int = 0,
     val keyframeCount: Int = 0,
     val cameraShotCount: Int = 0,
+    val cameraBoxCount: Int = 0,
     val lipSyncTrackCount: Int = 0,
     val clipOperationCount: Int = 0,
     val weatherLayerCount: Int = 0,
+    val vfxSceneCount: Int = 0,
     val dialogueOverlayCount: Int = 0,
     val universalKeyframeTrackCount: Int = 0,
     val universalKeyframeCount: Int = 0,
     val audioDuckingConfigured: Boolean = false,
     val requestedAspectRatio: String? = null,
+    val sanitizationFixes: List<String> = emptyList(),
+    val sanitizedJson: String = "",
+    val errorHint: String? = null,
+    val errorSnippet: String? = null,
     val warnings: List<String> = emptyList(),
     val errors: List<String> = emptyList()
 )
@@ -413,30 +451,50 @@ object DirectorScriptReceiver {
     }
 
     /**
-     * Parses and dry-run validates raw `.fcscript.json` text without mutating the current project.
+     * Auto-sanitizes messy LLM output (markdown fences, prose, comments, trailing commas)
+     * before parsing and dry-run validating `.fcscript.json` without mutating the project.
      */
     fun validateAndDryRun(
         scriptJson: String,
         existingCharacters: List<CharacterRigDefinition>,
         existingMediaAssets: List<LocalMediaAsset>
     ): Pair<ScriptDocumentDto?, DirectorScriptDryRunReport> {
-        val trimmed = scriptJson.trim()
-        if (trimmed.isEmpty()) {
+        val rawTrimmed = scriptJson.trim()
+        if (rawTrimmed.isEmpty()) {
             return null to DirectorScriptDryRunReport(
                 isValid = false,
                 errors = listOf("Director script JSON is empty.")
             )
         }
 
-        val parsed = runCatching {
-            moshi.adapter(ScriptDocumentDto::class.java).fromJson(trimmed)
-        }.getOrElse { err ->
+        val sanitization = DirectorScriptJsonSanitizer.sanitizeLlmJson(rawTrimmed)
+        val cleaned = sanitization.sanitizedJson
+        if (cleaned.isEmpty()) {
             return null to DirectorScriptDryRunReport(
                 isValid = false,
+                sanitizationFixes = sanitization.fixesApplied,
+                errors = listOf("No JSON object found in input."),
+                errorHint = "Ensure the pasted text contains a `{ ... }` `.fcscript.json` object."
+            )
+        }
+
+        val parsed = runCatching {
+            moshi.adapter(ScriptDocumentDto::class.java).fromJson(cleaned)
+        }.getOrElse { err ->
+            val (hint, snippet) = DirectorScriptJsonSanitizer.extractErrorDiagnostics(cleaned, err)
+            return null to DirectorScriptDryRunReport(
+                isValid = false,
+                sanitizationFixes = sanitization.fixesApplied,
+                sanitizedJson = cleaned,
+                errorHint = hint,
+                errorSnippet = snippet,
                 errors = listOf("Invalid JSON syntax: ${err.message ?: "unable to parse"}")
             )
         } ?: return null to DirectorScriptDryRunReport(
             isValid = false,
+            sanitizationFixes = sanitization.fixesApplied,
+            sanitizedJson = cleaned,
+            errorHint = "Root JSON value must be an object `{ ... }`.",
             errors = listOf("JSON parsed to null document.")
         )
 
@@ -473,13 +531,18 @@ object DirectorScriptReceiver {
         val knownCharIds = existingCharacters.map { it.id }.toSet() + inlineIds
         val knownAssetIds = existingMediaAssets.map { it.id }.toSet() + inlineIds
 
+        val resolvedFps = (parsed.fps ?: 24).coerceIn(12, 60)
+        var totalDurationSec = 0f
         var totalLayers = 0
         var totalClips = 0
+        var totalCharacterClips = 0
         var totalKeyframes = 0
         var totalCameraShots = 0
+        var totalCameraBoxes = 0
         var totalLipSync = 0
         var totalOps = 0
         var totalWeatherLayers = 0
+        var totalVfxScenes = 0
         var totalDialogueOverlays = 0
         var totalUniversalTracks = 0
         var totalUniversalKeyframes = 0
@@ -504,16 +567,31 @@ object DirectorScriptReceiver {
         validateUniversalTracks(docUniversalTracks, "Document")
 
         for ((sIdx, scene) in scenes.withIndex()) {
+            val sceneSec = scene.durationSec
+                ?: scene.durationFrames?.let { it.toFloat() / resolvedFps.toFloat() }
+                ?: 6.0f
+            totalDurationSec += sceneSec.coerceAtLeast(0.5f)
             totalLayers += scene.layers.orEmpty().size
             val clips = scene.clips.orEmpty()
             totalClips += clips.size
             totalOps += scene.clipOperations.orEmpty().size
-            totalCameraShots += scene.cameraShots.orEmpty().size + scene.cameraBoxes.orEmpty().size
-            totalWeatherLayers += scene.weatherLayers.orEmpty().size
+            val boxesCount = scene.cameraBoxes.orEmpty().size
+            totalCameraBoxes += boxesCount
+            totalCameraShots += scene.cameraShots.orEmpty().size + boxesCount
+            val weatherCount = scene.weatherLayers.orEmpty().size
+            totalWeatherLayers += weatherCount
+            val hasSceneVfx = weatherCount > 0 ||
+                !scene.colourGrading.isNullOrBlank() ||
+                !scene.colorGrading.isNullOrBlank() ||
+                !scene.vfx?.particleType.isNullOrBlank() ||
+                !scene.vfx?.style.isNullOrBlank() ||
+                !scene.vfx?.lightingMood.isNullOrBlank()
+            if (hasSceneVfx) totalVfxScenes++
             totalDialogueOverlays += scene.dialogueOverlays.orEmpty().size
             validateUniversalTracks(scene.keyframeTracks.orEmpty(), "Scene ${sIdx + 1}")
             for (clip in clips) {
                 totalKeyframes += max(1, clip.keyframes.orEmpty().size)
+                if (!clip.characterId.isNullOrBlank()) totalCharacterClips++
                 if (!clip.lipSyncAudioId.isNullOrBlank()) totalLipSync++
                 val cid = clip.characterId
                 if (!cid.isNullOrBlank() && cid !in knownCharIds) {
@@ -543,30 +621,51 @@ object DirectorScriptReceiver {
             warnings.add("Unknown aspect ratio '$reqRatio' — keeping current project aspect ratio.")
         }
 
+        val resolvedTitle = parsed.projectName?.takeIf { it.isNotBlank() }
+            ?: scenes.firstOrNull()?.name?.takeIf { it.isNotBlank() }
+            ?: "Director Script"
+
         val report = DirectorScriptDryRunReport(
             isValid = errors.isEmpty(),
             formatVersion = parsed.schemaVersion ?: 3,
+            scriptTitle = resolvedTitle,
             sceneCount = scenes.size,
+            totalDurationSec = ((totalDurationSec * 10f).roundToInt() / 10f),
             inlineSvgCount = validInlineCount,
             customAnimationCount = customAnims.size,
             customTransitionCount = customTrans.size,
             layerCount = totalLayers,
             clipCount = totalClips,
+            characterClipCount = totalCharacterClips,
             keyframeCount = totalKeyframes,
             cameraShotCount = totalCameraShots,
+            cameraBoxCount = totalCameraBoxes,
             lipSyncTrackCount = totalLipSync,
             clipOperationCount = totalOps,
             weatherLayerCount = totalWeatherLayers,
+            vfxSceneCount = totalVfxScenes,
             dialogueOverlayCount = totalDialogueOverlays,
             universalKeyframeTrackCount = totalUniversalTracks,
             universalKeyframeCount = totalUniversalKeyframes,
             audioDuckingConfigured = parsed.audioDucking != null,
             requestedAspectRatio = reqRatio,
+            sanitizationFixes = sanitization.fixesApplied,
+            sanitizedJson = cleaned,
+            errorHint = if (errors.isNotEmpty()) "Ensure at least one scene, inline SVG, custom animation, transition, or keyframeTrack is provided." else null,
             warnings = warnings,
             errors = errors
         )
         return parsed to report
     }
+
+    /** Convenience helper for 1-tap "Copy Fix Prompt for AI" when validation fails. */
+    fun buildErrorFixPrompt(rawInput: String, report: DirectorScriptDryRunReport): String =
+        DirectorScriptJsonSanitizer.buildErrorFixPrompt(
+            rawInput = rawInput,
+            errors = report.errors,
+            errorHint = report.errorHint,
+            errorSnippet = report.errorSnippet
+        )
 
     /**
      * Compiles a validated `.fcscript.json` document into [currentProject], spawning any inline
@@ -581,11 +680,15 @@ object DirectorScriptReceiver {
         existingCharacters: List<CharacterRigDefinition>,
         existingMediaAssets: List<LocalMediaAsset>,
         importMode: DirectorScriptImportMode,
+        trackSelection: DirectorScriptTrackSelection = DirectorScriptTrackSelection(),
         waveformProvider: (audioPath: String) -> AudioWaveformData? = { path ->
             runCatching { AudioWaveformExtractor.getCached(path) }.getOrNull()
                 ?: java.io.File(path).takeIf { it.exists() }?.let { AudioWaveformExtractor.parseWavWaveform(it, 240) }
         }
     ): Result<DirectorScriptCompileResult> {
+        if (!trackSelection.anySelected) {
+            return Result.failure(IllegalArgumentException("Select at least one track category to import."))
+        }
         val (dto, report) = validateAndDryRun(scriptJson, existingCharacters, existingMediaAssets)
         if (dto == null || !report.isValid) {
             return Result.failure(IllegalArgumentException(report.errors.firstOrNull() ?: "Invalid director script"))
@@ -1037,40 +1140,61 @@ object DirectorScriptReceiver {
             )
         }
 
+        val filteredCompiledScenes = if (trackSelection.allSelected) {
+            compiledScenes
+        } else {
+            compiledScenes.mapIndexed { idx, incomingScene ->
+                val baseScene = if (importMode == DirectorScriptImportMode.REPLACE_TIMELINE) {
+                    currentProject.scenes.getOrNull(idx) ?: currentProject.activeScene
+                } else {
+                    null
+                }
+                applySelectiveTrackFilter(
+                    incoming = incomingScene,
+                    existing = baseScene,
+                    selection = trackSelection
+                )
+            }
+        }
+
         val finalScenes = when {
-            compiledScenes.isEmpty() && !dto.keyframeTracks.isNullOrEmpty() && currentProject.scenes.isNotEmpty() -> {
+            filteredCompiledScenes.isEmpty() && !dto.keyframeTracks.isNullOrEmpty() && currentProject.scenes.isNotEmpty() -> {
                 val activeIdx = currentProject.activeSceneIndex.coerceIn(0, currentProject.scenes.lastIndex)
                 val targetScene = currentProject.scenes[activeIdx]
                 val extraTracks = compileUniversalKeyframeTracks(
                     rawTracks = dto.keyframeTracks,
                     fps = fps,
                     sceneDurationFrames = targetScene.durationFrames
-                )
+                ).filter { isUniversalTrackAllowed(it, trackSelection) }
                 currentProject.scenes.mapIndexed { sIdx, sc ->
                     if (sIdx == activeIdx) sc.copy(universalKeyframeTracks = sc.universalKeyframeTracks + extraTracks) else sc
                 }
             }
-            compiledScenes.isEmpty() -> currentProject.scenes
-            importMode == DirectorScriptImportMode.REPLACE_TIMELINE -> compiledScenes
-            else -> currentProject.scenes + compiledScenes
+            filteredCompiledScenes.isEmpty() -> currentProject.scenes
+            importMode == DirectorScriptImportMode.REPLACE_TIMELINE -> filteredCompiledScenes
+            else -> currentProject.scenes + filteredCompiledScenes
         }
         val targetActiveIdx = when {
-            compiledScenes.isEmpty() -> currentProject.activeSceneIndex
+            filteredCompiledScenes.isEmpty() -> currentProject.activeSceneIndex
             importMode == DirectorScriptImportMode.REPLACE_TIMELINE -> 0
             else -> currentProject.scenes.size
         }.coerceIn(0, (finalScenes.size - 1).coerceAtLeast(0))
 
-        // Compile Smart Auto Audio Ducking Config (Phase 7)
-        val compiledDucking = dto.audioDucking?.let { d ->
-            val base = currentProject.audioDucking
-            base.copy(
-                duckingEnabled = d.duckingEnabled ?: base.duckingEnabled,
-                duckTargetVolume = (d.duckTargetVolume ?: base.duckTargetVolume).coerceIn(0.05f, 0.85f),
-                attackMs = (d.attackMs ?: base.attackMs).coerceIn(30, 800),
-                releaseMs = (d.releaseMs ?: base.releaseMs).coerceIn(80, 1500),
-                voiceThreshold = (d.voiceThreshold ?: base.voiceThreshold).coerceIn(0.03f, 0.50f)
-            )
-        } ?: currentProject.audioDucking
+        // Compile Smart Auto Audio Ducking Config (Phase 7) — gated by audioAndDucking selection
+        val compiledDucking = if (trackSelection.audioAndDucking) {
+            dto.audioDucking?.let { d ->
+                val base = currentProject.audioDucking
+                base.copy(
+                    duckingEnabled = d.duckingEnabled ?: base.duckingEnabled,
+                    duckTargetVolume = (d.duckTargetVolume ?: base.duckTargetVolume).coerceIn(0.05f, 0.85f),
+                    attackMs = (d.attackMs ?: base.attackMs).coerceIn(30, 800),
+                    releaseMs = (d.releaseMs ?: base.releaseMs).coerceIn(80, 1500),
+                    voiceThreshold = (d.voiceThreshold ?: base.voiceThreshold).coerceIn(0.03f, 0.50f)
+                )
+            } ?: currentProject.audioDucking
+        } else {
+            currentProject.audioDucking
+        }
 
         val updatedProject = currentProject.copy(
             name = dto.projectName?.takeIf { it.isNotBlank() } ?: currentProject.name,
@@ -1095,6 +1219,125 @@ object DirectorScriptReceiver {
                 report = report
             )
         )
+    }
+
+    /**
+     * Merges ONLY the selected categories from [incoming] into [existing] (when replacing) or strips
+     * unchecked categories cleanly (when appending).
+     */
+    private fun applySelectiveTrackFilter(
+        incoming: AnimationScene,
+        existing: AnimationScene?,
+        selection: DirectorScriptTrackSelection
+    ): AnimationScene {
+        val incomingLayerById = incoming.layers.associateBy { it.id }
+        val existingLayerById = existing?.layers?.associateBy { it.id }.orEmpty()
+
+        fun isClipAllowed(clip: TimelineClip, layerLookup: Map<String, AnimationLayer>): Boolean {
+            val layerType = layerLookup[clip.layerId]?.type
+            return when {
+                layerType == LayerType.AUDIO || !clip.audioPath.isNullOrBlank() -> selection.audioAndDucking
+                layerType == LayerType.TEXT || !clip.textContent.isNullOrBlank() -> selection.subtitlesAndBubbles
+                layerType == LayerType.BACKGROUND -> selection.backgroundsAndParallax
+                layerType == LayerType.CHARACTER || clip.characterId != null -> selection.charactersAndActing
+                layerType == LayerType.SHAPE -> selection.charactersAndActing
+                else -> selection.charactersAndActing || selection.backgroundsAndParallax
+            }
+        }
+
+        val keptIncomingClips = incoming.clips.filter { isClipAllowed(it, incomingLayerById) }
+        val keptExistingClips = existing?.clips
+            ?.filter { !isClipAllowed(it, existingLayerById) }
+            .orEmpty()
+
+        // Avoid ID collisions when merging preserved existing clips with incoming clips
+        val incomingClipIds = keptIncomingClips.map { it.id }.toSet()
+        val incomingLayerIds = incoming.layers.map { it.id }.toSet()
+        val mergedLayersMap = LinkedHashMap<String, AnimationLayer>()
+
+        // Preserve existing layers for unchecked categories first
+        if (existing != null) {
+            val neededExistingLayerIds = keptExistingClips.map { it.layerId }.toSet()
+            for (layer in existing.layers.sortedBy { it.orderIndex }) {
+                val categoryKeptFromExisting = when (layer.type) {
+                    LayerType.AUDIO -> !selection.audioAndDucking
+                    LayerType.TEXT -> !selection.subtitlesAndBubbles
+                    LayerType.BACKGROUND -> !selection.backgroundsAndParallax
+                    LayerType.CHARACTER, LayerType.SHAPE -> !selection.charactersAndActing
+                    else -> layer.id in neededExistingLayerIds
+                }
+                if (categoryKeptFromExisting || layer.id in neededExistingLayerIds) {
+                    mergedLayersMap[layer.id] = layer
+                }
+            }
+        }
+
+        // Add incoming layers for checked categories (and preserve existing parallaxDepth if Backgrounds/Parallax unchecked)
+        val neededIncomingLayerIds = keptIncomingClips.map { it.layerId }.toSet()
+        for (layer in incoming.layers.sortedBy { it.orderIndex }) {
+            val layerAllowed = when (layer.type) {
+                LayerType.AUDIO -> selection.audioAndDucking
+                LayerType.TEXT -> selection.subtitlesAndBubbles
+                LayerType.BACKGROUND -> selection.backgroundsAndParallax
+                LayerType.CHARACTER, LayerType.SHAPE -> selection.charactersAndActing
+                else -> layer.id in neededIncomingLayerIds || selection.charactersAndActing
+            }
+            if (layerAllowed || layer.id in neededIncomingLayerIds) {
+                val adjustedLayer = if (!selection.backgroundsAndParallax) {
+                    val prevDepth = existingLayerById[layer.id]?.parallaxDepth ?: 1.0f
+                    layer.copy(parallaxDepth = prevDepth)
+                } else {
+                    layer
+                }
+                mergedLayersMap[adjustedLayer.id] = adjustedLayer
+            }
+        }
+
+        val finalClips = keptExistingClips.filter { it.id !in incomingClipIds } + keptIncomingClips
+        val finalLayers = mergedLayersMap.values
+            .sortedBy { it.orderIndex }
+            .mapIndexed { idx, l -> l.copy(orderIndex = idx) }
+            .ifEmpty { existing?.layers ?: incoming.layers }
+
+        val mergedUniversalTracks = buildList {
+            if (existing != null) {
+                addAll(existing.universalKeyframeTracks.filter { !isUniversalTrackAllowed(it, selection) })
+            }
+            addAll(incoming.universalKeyframeTracks.filter { isUniversalTrackAllowed(it, selection) })
+        }
+
+        return (existing ?: incoming).copy(
+            name = incoming.name,
+            durationFrames = max(incoming.durationFrames, existing?.durationFrames ?: incoming.durationFrames),
+            backgroundColorHex = if (selection.backgroundsAndParallax) incoming.backgroundColorHex else (existing?.backgroundColorHex ?: "#162033"),
+            backgroundBundledKey = if (selection.backgroundsAndParallax) incoming.backgroundBundledKey else existing?.backgroundBundledKey,
+            backgroundImagePath = if (selection.backgroundsAndParallax) incoming.backgroundImagePath else existing?.backgroundImagePath,
+            cameraKeyframes = if (selection.cameraShots) incoming.cameraKeyframes else (existing?.cameraKeyframes ?: emptyList()),
+            cameraBoxes = if (selection.cameraShots) incoming.cameraBoxes else (existing?.cameraBoxes ?: emptyList()),
+            cameraLayerEnabled = if (selection.cameraShots) incoming.cameraLayerEnabled else (existing?.cameraLayerEnabled ?: true),
+            vfxConfig = if (selection.vfxWeatherAndGrading) incoming.vfxConfig else (existing?.vfxConfig ?: SceneVfxConfig()),
+            weatherLayers = if (selection.vfxWeatherAndGrading) incoming.weatherLayers else (existing?.weatherLayers ?: emptyList()),
+            customTransitionInId = if (selection.vfxWeatherAndGrading) incoming.customTransitionInId else existing?.customTransitionInId,
+            customTransitionOutId = if (selection.vfxWeatherAndGrading) incoming.customTransitionOutId else existing?.customTransitionOutId,
+            dialogueOverlays = if (selection.subtitlesAndBubbles) incoming.dialogueOverlays else (existing?.dialogueOverlays ?: emptyList()),
+            layers = finalLayers,
+            clips = finalClips,
+            universalKeyframeTracks = mergedUniversalTracks
+        )
+    }
+
+    private fun isUniversalTrackAllowed(
+        track: UniversalKeyframeTrack,
+        selection: DirectorScriptTrackSelection
+    ): Boolean {
+        val path = track.propertyPath.lowercase()
+        return when {
+            track.domain == UniversalPropertyDomain.CAMERA || path.startsWith("camera.") -> selection.cameraShots
+            track.domain == UniversalPropertyDomain.BACKGROUND_PARALLAX || path.startsWith("bg.") || path.startsWith("parallax.") -> selection.backgroundsAndParallax
+            track.domain == UniversalPropertyDomain.VFX_WEATHER || track.domain == UniversalPropertyDomain.TRANSITION || path.startsWith("vfx.") || path.startsWith("weather.") || path.startsWith("colorgrading.") -> selection.vfxWeatherAndGrading
+            path.startsWith("audio.") -> selection.audioAndDucking
+            else -> selection.charactersAndActing
+        }
     }
 
     // ────────────────────────── Sub-Compilers ──────────────────────────

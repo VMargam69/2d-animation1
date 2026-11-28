@@ -894,95 +894,75 @@ object ProjectMutator {
         project: ProjectDocument,
         clipId: String,
         globalFrame: Int
-    ): ProjectDocument = updateActiveScene(project) { scene ->
-        val clip = scene.clips.firstOrNull { it.id == clipId } ?: return@updateActiveScene scene
-        val layer = scene.layers.firstOrNull { it.id == clip.layerId }
-        if (layer?.isLocked == true) return@updateActiveScene scene
-        if (globalFrame <= clip.startFrame + 2 || globalFrame >= clip.endFrame - 2) {
-            return@updateActiveScene scene
-        }
-
-        val splitLocal = globalFrame - clip.startFrame
-        val evalAtSplit = KeyframeEvaluator.evaluate(clip, globalFrame)
-        val firstKfs = clip.keyframes.filter { it.frame < splitLocal }.ifEmpty {
-            listOf(
-                TransformKeyframe(
-                    frame = 0,
-                    x = evalAtSplit.x,
-                    y = evalAtSplit.y,
-                    rotation = evalAtSplit.rotation,
-                    scaleX = evalAtSplit.scaleX,
-                    scaleY = evalAtSplit.scaleY,
-                    opacity = evalAtSplit.opacity,
-                    poseOffsets = evalAtSplit.poseOffsets,
-                    expressionOverride = evalAtSplit.expressionOverride,
-                    facialPresetId = evalAtSplit.facialPresetId,
-                    mouthShapeOverride = evalAtSplit.mouthShapeOverride,
-                    eyeShapeOverride = evalAtSplit.eyeShapeOverride,
-                    eyebrowShapeOverride = evalAtSplit.eyebrowShapeOverride,
-                    handPoseOverride = evalAtSplit.handPoseOverride,
-                    blinkOverride = evalAtSplit.blinkOverride
-                )
-            )
-        }
-        val secondKfs = (listOf(
-            TransformKeyframe(
-                frame = 0,
-                x = evalAtSplit.x,
-                y = evalAtSplit.y,
-                rotation = evalAtSplit.rotation,
-                scaleX = evalAtSplit.scaleX,
-                scaleY = evalAtSplit.scaleY,
-                opacity = evalAtSplit.opacity,
-                poseOffsets = evalAtSplit.poseOffsets,
-                expressionOverride = evalAtSplit.expressionOverride,
-                facialPresetId = evalAtSplit.facialPresetId,
-                mouthShapeOverride = evalAtSplit.mouthShapeOverride,
-                eyeShapeOverride = evalAtSplit.eyeShapeOverride,
-                eyebrowShapeOverride = evalAtSplit.eyebrowShapeOverride,
-                handPoseOverride = evalAtSplit.handPoseOverride,
-                blinkOverride = evalAtSplit.blinkOverride
-            )
-        ) + clip.keyframes.filter { it.frame > splitLocal }.map { it.copy(frame = it.frame - splitLocal) })
-            .distinctBy { it.frame }
-            .sortedBy { it.frame }
-
-        val firstPart = clip.copy(durationFrames = splitLocal, keyframes = firstKfs)
-        val secondPart = clip.copy(
-            id = UUID.randomUUID().toString(),
-            name = "${clip.name} (2)",
-            startFrame = globalFrame,
-            durationFrames = clip.endFrame - globalFrame,
-            keyframes = secondKfs
-        )
-        scene.copy(
-            clips = scene.clips.flatMap { if (it.id == clipId) listOf(firstPart, secondPart) else listOf(it) }
-        )
-    }
+    ): ProjectDocument = com.example.engine.TimelineNleEngine.splitClipUniversal(project, clipId, globalFrame).project
 
     fun duplicateClip(project: ProjectDocument, clipId: String): Pair<ProjectDocument, String?> {
-        val original = project.activeScene.clips.firstOrNull { it.id == clipId } ?: return project to null
-        val newClipId = UUID.randomUUID().toString()
-        val updated = updateActiveScene(project) { scene ->
-            val srcLayer = scene.layers.firstOrNull { it.id == original.layerId }
-            val newLayer = AnimationLayer(
-                name = "${srcLayer?.name ?: original.name} Copy",
-                type = srcLayer?.type ?: LayerType.CHARACTER,
-                orderIndex = (scene.layers.maxOfOrNull { it.orderIndex } ?: -1) + 1
-            )
-            val shiftedKfs = original.keyframes.map { kf ->
-                kf.copy(x = (kf.x + 0.08f).coerceIn(0.08f, 0.92f))
-            }
-            val copy = original.copy(
-                id = newClipId,
-                layerId = newLayer.id,
-                name = "${original.name} Copy",
-                keyframes = shiftedKfs
-            )
-            scene.copy(layers = scene.layers + newLayer, clips = scene.clips + copy)
-        }
-        return updated to newClipId
+        val result = com.example.engine.TimelineNleEngine.duplicateClipUniversal(project, clipId)
+        return result.project to result.createdClipId
     }
+
+    fun deleteClipUniversal(
+        project: ProjectDocument,
+        clipId: String,
+        ripple: Boolean = false
+    ): com.example.engine.ClipOperationResult =
+        com.example.engine.TimelineNleEngine.deleteClipUniversal(project, clipId, ripple)
+
+    fun toggleClipHoldCutAtFrame(
+        project: ProjectDocument,
+        clipId: String,
+        globalFrame: Int
+    ): com.example.engine.ClipOperationResult =
+        com.example.engine.TimelineNleEngine.toggleClipHoldCutAtFrame(project, clipId, globalFrame)
+
+    fun trimClipToPlayhead(
+        project: ProjectDocument,
+        clipId: String,
+        globalFrame: Int,
+        trimStart: Boolean? = null
+    ): com.example.engine.ClipOperationResult =
+        com.example.engine.TimelineNleEngine.trimClipToPlayhead(project, clipId, globalFrame, trimStart)
+
+    fun trimOrMoveClip(
+        project: ProjectDocument,
+        clipId: String,
+        newStartFrame: Int,
+        newDurationFrames: Int,
+        isMoveOnly: Boolean
+    ): com.example.engine.ClipOperationResult =
+        com.example.engine.TimelineNleEngine.trimOrMoveClip(project, clipId, newStartFrame, newDurationFrames, isMoveOnly)
+
+    fun moveClipAcrossTracks(
+        project: ProjectDocument,
+        clipId: String,
+        targetLayerId: String?,
+        targetStartFrame: Int,
+        createNewTrack: Boolean = false,
+        insertNewTrackAtTop: Boolean = true
+    ): com.example.engine.ClipOperationResult =
+        com.example.engine.TimelineNleEngine.moveClipAcrossTracks(
+            project = project,
+            clipId = clipId,
+            targetLayerId = targetLayerId,
+            targetStartFrame = targetStartFrame,
+            createNewTrack = createNewTrack,
+            insertNewTrackAtTop = insertNewTrackAtTop
+        )
+
+    fun deleteCameraBoxUniversal(
+        project: ProjectDocument,
+        boxId: String,
+        ripple: Boolean = false
+    ): com.example.engine.ClipOperationResult =
+        com.example.engine.TimelineNleEngine.deleteCameraBoxUniversal(project, boxId, ripple)
+
+    fun trimCameraBoxToPlayhead(
+        project: ProjectDocument,
+        boxId: String,
+        globalFrame: Int,
+        trimStart: Boolean? = null
+    ): com.example.engine.ClipOperationResult =
+        com.example.engine.TimelineNleEngine.trimCameraBoxToPlayhead(project, boxId, globalFrame, trimStart)
 
     fun reorderLayer(project: ProjectDocument, layerId: String, moveUp: Boolean): ProjectDocument =
         updateActiveScene(project) { scene ->

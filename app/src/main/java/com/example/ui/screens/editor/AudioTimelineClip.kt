@@ -5,6 +5,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -25,8 +27,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,8 +44,12 @@ import androidx.compose.ui.unit.sp
 import com.example.engine.AudioWaveformData
 import com.example.engine.AudioWaveformExtractor
 import com.example.engine.AudioWaveformJsonCodec
+import com.example.engine.SnapDragMode
+import com.example.engine.SnapTarget
+import com.example.engine.TimelineNleEngine
 import com.example.model.TimelineClip
 import com.example.ui.theme.*
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -80,8 +92,17 @@ internal fun TrimmableAudioTimelineClip(
         newTrimStartMs: Long,
         newTrimEndMs: Long
     ) -> Unit,
-    waveformSensitivity: Float = 1.0f
+    waveformSensitivity: Float = 1.0f,
+    isBeingDragged: Boolean = false,
+    snapTargets: List<SnapTarget> = emptyList(),
+    snapTolerancePx: Float = 0f,
+    onActiveSnapGuideChange: (Int?) -> Unit = {},
+    onStartLongPressDrag: ((clip: TimelineClip, pointerRoot: Offset) -> Unit)? = null,
+    onUpdateLongPressDrag: ((pointerRoot: Offset) -> Unit)? = null,
+    onEndLongPressDrag: (() -> Unit)? = null,
+    onCancelLongPressDrag: (() -> Unit)? = null
 ) {
+    val haptic = LocalHapticFeedback.current
     val audioPath = clip.audioPath
     val waveform by produceState<AudioWaveformData?>(
         initialValue = AudioWaveformExtractor.getCached(audioPath),
@@ -98,15 +119,22 @@ internal fun TrimmableAudioTimelineClip(
     val safeSpeed = clip.speedMultiplier.coerceIn(0.1f, 4f)
     val msPerFrame = (1000f * safeSpeed) / safeFps.toFloat()
     val waveformDurationMs = waveform?.durationMs ?: 0L
-    val visAlpha = if (isLayerVisible) 1f else 0.35f
+    val visAlpha = (if (isLayerVisible) 1f else 0.35f) * (if (isBeingDragged) 0.28f else 1f)
 
     var liveLeftDeltaFrames by remember(clip.id) { mutableIntStateOf(0) }
     var liveRightDeltaFrames by remember(clip.id) { mutableIntStateOf(0) }
     var activeTrimEdge by remember(clip.id) { mutableStateOf<AudioTrimEdge?>(null) }
+    var barRootPosition by remember(clip.id) { mutableStateOf(Offset.Zero) }
 
     val latestClip by rememberUpdatedState(clip)
+    val latestSnapTargets by rememberUpdatedState(snapTargets)
+    val latestOnSnapGuide by rememberUpdatedState(onActiveSnapGuideChange)
     val latestOnTrim by rememberUpdatedState(onTrimAudioClip)
     val latestOnSelect by rememberUpdatedState(onSelectClip)
+    val latestOnStartDrag by rememberUpdatedState(onStartLongPressDrag)
+    val latestOnUpdateDrag by rememberUpdatedState(onUpdateLongPressDrag)
+    val latestOnEndDrag by rememberUpdatedState(onEndLongPressDrag)
+    val latestOnCancelDrag by rememberUpdatedState(onCancelLongPressDrag)
 
     val effStartFrame = (clip.startFrame + liveLeftDeltaFrames).coerceAtLeast(0)
     val effDurationFrames = (clip.durationFrames - liveLeftDeltaFrames + liveRightDeltaFrames)
@@ -150,6 +178,9 @@ internal fun TrimmableAudioTimelineClip(
             .offset(x = clipOffsetX, y = 3.dp)
             .width(clipWidth)
             .height(clipHeight)
+            .onGloballyPositioned { coords ->
+                barRootPosition = coords.positionInRoot()
+            }
             .clip(RoundedCornerShape(6.dp))
             .background(
                 if (isSelected || isTrimming) layerColor.copy(alpha = 0.24f * visAlpha)
@@ -160,7 +191,56 @@ internal fun TrimmableAudioTimelineClip(
                 color = borderColor,
                 shape = RoundedCornerShape(6.dp)
             )
-            .clickable { onSelectClip(clip.id) }
+            .pointerInput(clip.id, isLayerLocked) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val downPos = down.position
+                    val slop = viewConfiguration.touchSlop
+                    var releasedEarly = false
+                    var cancelledByMove = false
+                    withTimeoutOrNull(220L) {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Main)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (change.changedToUpIgnoreConsumed()) {
+                                releasedEarly = true
+                                break
+                            }
+                            if ((change.position - downPos).getDistance() > slop) {
+                                cancelledByMove = true
+                                break
+                            }
+                        }
+                    }
+                    if (releasedEarly) {
+                        latestOnSelect(latestClip.id)
+                        return@awaitEachGesture
+                    }
+                    val startCb = latestOnStartDrag
+                    if (cancelledByMove || isLayerLocked || startCb == null) {
+                        return@awaitEachGesture
+                    }
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    startCb(latestClip, barRootPosition + downPos)
+                    var endedCleanly = false
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (change.changedToUpIgnoreConsumed()) {
+                            change.consume()
+                            endedCleanly = true
+                            break
+                        }
+                        change.consume()
+                        latestOnUpdateDrag?.invoke(barRootPosition + change.position)
+                    }
+                    if (endedCleanly) {
+                        latestOnEndDrag?.invoke()
+                    } else {
+                        latestOnCancelDrag?.invoke()
+                    }
+                }
+            }
             .testTag("timeline_clip_${clip.id}")
     ) {
         // 1. Live Trimmed Mirrored Waveform Canvas
@@ -294,6 +374,7 @@ internal fun TrimmableAudioTimelineClip(
                                 val finalDelta = currentDelta
                                 activeTrimEdge = null
                                 liveLeftDeltaFrames = 0
+                                latestOnSnapGuide(null)
                                 if (finalDelta != 0) {
                                     val committedStart = (c.startFrame + finalDelta).coerceAtLeast(0)
                                     val committedDur = (c.durationFrames - finalDelta).coerceAtLeast(MIN_AUDIO_CLIP_FRAMES)
@@ -309,6 +390,7 @@ internal fun TrimmableAudioTimelineClip(
                             onDragCancel = {
                                 activeTrimEdge = null
                                 liveLeftDeltaFrames = 0
+                                latestOnSnapGuide(null)
                             }
                         ) { change, dragAmount ->
                             change.consume()
@@ -319,7 +401,18 @@ internal fun TrimmableAudioTimelineClip(
                             val minBySource = -floor(c.audioTrimStartMs / msPerFrame).toInt()
                             val minLeftDelta = max(minByTimeline, minBySource)
                             val maxLeftDelta = (c.durationFrames - MIN_AUDIO_CLIP_FRAMES).coerceAtLeast(0)
-                            val clamped = rawDelta.coerceIn(minLeftDelta, maxLeftDelta)
+                            val preSnapDelta = rawDelta.coerceIn(minLeftDelta, maxLeftDelta)
+                            val snapped = TimelineNleEngine.computeMagneticSnap(
+                                candidateStartFrame = c.startFrame + preSnapDelta,
+                                candidateEndFrame = c.endFrame,
+                                mode = SnapDragMode.TRIM_LEFT,
+                                snapTargets = latestSnapTargets,
+                                frameWidthPx = frameWidthPx,
+                                snapTolerancePx = snapTolerancePx,
+                                minDurationFrames = MIN_AUDIO_CLIP_FRAMES
+                            )
+                            val clamped = (snapped.snappedStartFrame - c.startFrame).coerceIn(minLeftDelta, maxLeftDelta)
+                            latestOnSnapGuide(if (c.startFrame + clamped == snapped.snappedGuideFrame) snapped.snappedGuideFrame else null)
                             if (clamped != currentDelta) {
                                 currentDelta = clamped
                                 liveLeftDeltaFrames = clamped
@@ -352,6 +445,7 @@ internal fun TrimmableAudioTimelineClip(
                                 val finalDelta = currentDelta
                                 activeTrimEdge = null
                                 liveRightDeltaFrames = 0
+                                latestOnSnapGuide(null)
                                 if (finalDelta != 0) {
                                     val committedDur = (c.durationFrames + finalDelta).coerceAtLeast(MIN_AUDIO_CLIP_FRAMES)
                                     val rawEndMs = c.audioTrimStartMs + (committedDur * msPerFrame).roundToLong()
@@ -366,6 +460,7 @@ internal fun TrimmableAudioTimelineClip(
                             onDragCancel = {
                                 activeTrimEdge = null
                                 liveRightDeltaFrames = 0
+                                latestOnSnapGuide(null)
                             }
                         ) { change, dragAmount ->
                             change.consume()
@@ -382,7 +477,19 @@ internal fun TrimmableAudioTimelineClip(
                                 max(sceneDurationFrames - c.startFrame, c.durationFrames + 48)
                             }
                             val maxRightDelta = (maxTotalDur - c.durationFrames).coerceAtLeast(0)
-                            val clamped = rawDelta.coerceIn(minRightDelta, maxRightDelta)
+                            val preSnapDelta = rawDelta.coerceIn(minRightDelta, maxRightDelta)
+                            val snapped = TimelineNleEngine.computeMagneticSnap(
+                                candidateStartFrame = c.startFrame,
+                                candidateEndFrame = c.endFrame + preSnapDelta,
+                                mode = SnapDragMode.TRIM_RIGHT,
+                                snapTargets = latestSnapTargets,
+                                frameWidthPx = frameWidthPx,
+                                snapTolerancePx = snapTolerancePx,
+                                minDurationFrames = MIN_AUDIO_CLIP_FRAMES,
+                                maxFrame = c.startFrame + maxTotalDur
+                            )
+                            val clamped = (snapped.snappedEndFrame - c.endFrame).coerceIn(minRightDelta, maxRightDelta)
+                            latestOnSnapGuide(if (c.endFrame + clamped == snapped.snappedGuideFrame) snapped.snappedGuideFrame else null)
                             if (clamped != currentDelta) {
                                 currentDelta = clamped
                                 liveRightDeltaFrames = clamped

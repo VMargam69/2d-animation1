@@ -30,9 +30,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.data.DirectorScriptHistoryEntry
 import com.example.engine.*
 import com.example.model.CharacterRigDefinition
 import com.example.model.LocalMediaAsset
+import com.example.model.MediaAssetType
 import com.example.model.ProjectDocument
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -40,24 +42,37 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 100% Offline Universal Script-Based Film Studio Modal:
- * - Tab 1: Export AI Blueprint (`.fcblueprint.json` v3) with dynamic capability introspection & real audio durations.
- * - Tab 2: Import Director Script (`.fcscript.json`) with live dry-run validation, Replace/Append mode,
- *          SAF file import, clipboard paste, built-in offline demo script, and automatic Undo snapshot.
+ * 100% Offline Universal Script-Based Film Studio Modal (3-Tab Pro Workflow):
+ * - Tab 1: Export Blueprint & 1-Tap AI Prompt Builder (Compact vs Full, Include Current Timeline State,
+ *          live Estimated Token Count pill, Odia/Hindi/English Story Instructions, Copy Complete Prompt).
+ * - Tab 2: Import Director Script (Resilient LLM JSON auto-sanitizer, Interactive Dry-Run Summary,
+ *          1-Tap "Copy Fix Prompt for AI" on errors, 6 Selective Track Import checkboxes, Replace/Append).
+ * - Tab 3: Offline Script History (Last 10 applied scripts stored in `filesDir/director_script_history.json`
+ *          with 1-tap Load/Inspect, Copy JSON, Re-Apply, and Delete).
  */
 @Composable
 fun DirectorScriptDialog(
     project: ProjectDocument,
     characters: List<CharacterRigDefinition>,
     mediaAssets: List<LocalMediaAsset>,
-    onApplyDirectorScript: (scriptJson: String, mode: DirectorScriptImportMode) -> Unit,
+    scriptHistory: List<DirectorScriptHistoryEntry> = emptyList(),
+    onApplyDirectorScript: (
+        scriptJson: String,
+        mode: DirectorScriptImportMode,
+        trackSelection: DirectorScriptTrackSelection
+    ) -> Unit,
+    onDeleteHistoryEntry: (String) -> Unit = {},
+    onClearHistory: () -> Unit = {},
     onExportBlueprintToSaf: (Uri, String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var activeTab by remember { mutableIntStateOf(0) } // 0 = Export Blueprint, 1 = Import Script
+    var activeTab by remember { mutableIntStateOf(0) } // 0 = Blueprint, 1 = Import, 2 = History
+    var exportMode by remember { mutableStateOf(AIBlueprintExporter.BlueprintExportMode.COMPACT) }
+    var includeCurrentTimelineState by remember { mutableStateOf(false) }
+    var storyInstructions by remember { mutableStateOf("") }
     var blueprintJson by remember { mutableStateOf("") }
     var blueprintLoading by remember { mutableStateOf(true) }
     var blueprintStatus by remember { mutableStateOf<String?>(null) }
@@ -65,6 +80,7 @@ fun DirectorScriptDialog(
 
     var scriptInput by remember { mutableStateOf("") }
     var importMode by remember { mutableStateOf(DirectorScriptImportMode.REPLACE_TIMELINE) }
+    var trackSelection by remember { mutableStateOf(DirectorScriptTrackSelection()) }
     var importFeedback by remember { mutableStateOf<String?>(null) }
 
     val capabilitySnapshot = remember { StudioCapabilityRegistry.introspect() }
@@ -72,21 +88,50 @@ fun DirectorScriptDialog(
         StudioCapabilityRegistry.totalCapabilityCount(capabilitySnapshot)
     }
 
-    // Build .fcblueprint.json off main thread so MediaMetadataRetriever audio probing never stalls UI
-    LaunchedEffect(project.id, project.updatedAt, characters.size, mediaAssets.size) {
+    val exportOptions = remember(exportMode, includeCurrentTimelineState) {
+        AIBlueprintExporter.BlueprintExportOptions(
+            mode = exportMode,
+            includeCurrentTimelineState = includeCurrentTimelineState
+        )
+    }
+
+    // Build .fcblueprint.json off main thread whenever project or export scope changes
+    LaunchedEffect(
+        project.id,
+        project.updatedAt,
+        characters.size,
+        mediaAssets.size,
+        exportOptions
+    ) {
         blueprintLoading = true
         blueprintJson = withContext(Dispatchers.IO) {
             AIBlueprintExporter.exportToJson(
                 project = project,
                 characters = characters,
                 mediaAssets = mediaAssets,
-                prettyPrint = true
+                prettyPrint = exportOptions.mode == AIBlueprintExporter.BlueprintExportMode.FULL,
+                options = exportOptions
             )
         }
         blueprintLoading = false
     }
 
-    // Live dry-run validation whenever scriptInput changes
+    val blueprintTokens = remember(blueprintJson) {
+        AIBlueprintExporter.estimateTokenCount(blueprintJson)
+    }
+    val completePromptPreview = remember(blueprintJson, storyInstructions, exportOptions) {
+        if (blueprintJson.isBlank()) ""
+        else AIBlueprintExporter.buildCompleteAiPrompt(
+            blueprintJson = blueprintJson,
+            storyInstructions = storyInstructions,
+            options = exportOptions
+        )
+    }
+    val completePromptTokens = remember(completePromptPreview) {
+        AIBlueprintExporter.estimateTokenCount(completePromptPreview)
+    }
+
+    // Live resilient auto-sanitized dry-run validation whenever scriptInput changes
     val dryRunReport: DirectorScriptDryRunReport? = remember(scriptInput, characters, mediaAssets) {
         if (scriptInput.isBlank()) null
         else DirectorScriptReceiver.validateAndDryRun(scriptInput, characters, mediaAssets).second
@@ -97,7 +142,7 @@ fun DirectorScriptDialog(
     ) { uri: Uri? ->
         if (uri != null && blueprintJson.isNotBlank()) {
             onExportBlueprintToSaf(uri, blueprintJson)
-            blueprintStatus = "Saved .fcblueprint.json successfully."
+            blueprintStatus = "Saved .fcblueprint.json (${exportOptions.mode.label}) successfully."
         }
     }
 
@@ -131,8 +176,8 @@ fun DirectorScriptDialog(
             border = BorderStroke(1.dp, StudioBorderSubtle),
             modifier = Modifier
                 .fillMaxWidth(0.95f)
-                .widthIn(max = 580.dp)
-                .fillMaxHeight(0.88f)
+                .widthIn(max = 600.dp)
+                .fillMaxHeight(0.90f)
         ) {
             Column(
                 modifier = Modifier
@@ -174,7 +219,7 @@ fun DirectorScriptDialog(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "100% Offline Blueprint & Universal Script Pipeline (v3)",
+                                text = "100% Offline Blueprint, Prompt Builder & Script Compiler (v3)",
                                 fontSize = 11.sp,
                                 color = StudioTextSecondary,
                                 maxLines = 1,
@@ -198,18 +243,18 @@ fun DirectorScriptDialog(
 
                 Spacer(Modifier.height(10.dp))
 
-                // 2-Tab Selector
+                // 3-Tab Selector: Blueprint | Import | History
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
                         .background(StudioCharcoal)
                         .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     ScriptStudioTabPill(
-                        label = "Export Blueprint",
-                        icon = Icons.Rounded.UploadFile,
+                        label = "Blueprint",
+                        icon = Icons.Rounded.AutoAwesome,
                         selected = activeTab == 0,
                         modifier = Modifier
                             .weight(1f)
@@ -217,7 +262,7 @@ fun DirectorScriptDialog(
                         onClick = { activeTab = 0 }
                     )
                     ScriptStudioTabPill(
-                        label = "Import Script",
+                        label = "Import",
                         icon = Icons.Rounded.Download,
                         selected = activeTab == 1,
                         modifier = Modifier
@@ -225,39 +270,63 @@ fun DirectorScriptDialog(
                             .testTag("director_tab_import"),
                         onClick = { activeTab = 1 }
                     )
+                    ScriptStudioTabPill(
+                        label = if (scriptHistory.isNotEmpty()) "History (${scriptHistory.size})" else "History",
+                        icon = Icons.Rounded.History,
+                        selected = activeTab == 2,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("director_tab_history"),
+                        onClick = { activeTab = 2 }
+                    )
                 }
 
                 Spacer(Modifier.height(12.dp))
 
-                if (activeTab == 0) {
-                    ExportBlueprintTabContent(
+                when (activeTab) {
+                    0 -> ExportBlueprintTabContent(
                         project = project,
                         charactersCount = characters.size,
-                        backgroundsCount = mediaAssets.count { it.type == com.example.model.MediaAssetType.BACKGROUND },
+                        backgroundsCount = mediaAssets.count { it.type == MediaAssetType.BACKGROUND },
                         propsCount = mediaAssets.count {
-                            it.type == com.example.model.MediaAssetType.IMAGE ||
-                                it.type == com.example.model.MediaAssetType.SVG ||
-                                it.type == com.example.model.MediaAssetType.GIF
+                            it.type == MediaAssetType.IMAGE ||
+                                it.type == MediaAssetType.SVG ||
+                                it.type == MediaAssetType.GIF
                         },
                         audioCount = project.scenes.sumOf { s -> s.clips.count { !it.audioPath.isNullOrBlank() } } +
-                            mediaAssets.count { it.type == com.example.model.MediaAssetType.AUDIO },
+                            mediaAssets.count { it.type == MediaAssetType.AUDIO },
                         totalCapabilities = totalCapabilities,
+                        exportMode = exportMode,
+                        onExportModeChange = { exportMode = it },
+                        includeCurrentTimelineState = includeCurrentTimelineState,
+                        onToggleIncludeTimelineState = { includeCurrentTimelineState = it },
+                        storyInstructions = storyInstructions,
+                        onStoryInstructionsChange = { storyInstructions = it },
                         blueprintJson = blueprintJson,
+                        blueprintTokens = blueprintTokens,
+                        completePromptTokens = completePromptTokens,
                         isLoading = blueprintLoading,
                         statusMessage = blueprintStatus,
                         showPreview = showBlueprintPreview,
                         onTogglePreview = { showBlueprintPreview = !showBlueprintPreview },
+                        onCopyCompletePrompt = {
+                            if (completePromptPreview.isNotBlank()) {
+                                copyTextToClipboard(context, "FrameCraft Complete AI Prompt", completePromptPreview)
+                                val tok = AIBlueprintExporter.formatTokenEstimate(completePromptTokens)
+                                blueprintStatus = "Copied Ready-to-Paste AI Prompt ($tok) — paste into any external AI!"
+                            }
+                        },
+                        onCopyBlueprintOnly = {
+                            copyTextToClipboard(context, "FrameCraft Blueprint", blueprintJson)
+                            val tok = AIBlueprintExporter.formatTokenEstimate(blueprintTokens)
+                            blueprintStatus = "Copied Blueprint JSON only ($tok) to clipboard."
+                        },
                         onSaveBlueprint = {
                             val safe = project.name.replace(Regex("[^A-Za-z0-9_-]"), "_").take(24).ifBlank { "FrameCraft" }
                             blueprintSaveLauncher.launch("${safe}.fcblueprint.json")
-                        },
-                        onCopyBlueprint = {
-                            copyTextToClipboard(context, "FrameCraft Blueprint", blueprintJson)
-                            blueprintStatus = "Copied .fcblueprint.json (${blueprintJson.length} chars) to clipboard."
                         }
                     )
-                } else {
-                    ImportDirectorScriptTabContent(
+                    1 -> ImportDirectorScriptTabContent(
                         scriptInput = scriptInput,
                         onScriptInputChange = {
                             scriptInput = it
@@ -266,6 +335,8 @@ fun DirectorScriptDialog(
                         dryRunReport = dryRunReport,
                         importMode = importMode,
                         onImportModeChange = { importMode = it },
+                        trackSelection = trackSelection,
+                        onTrackSelectionChange = { trackSelection = it },
                         feedbackMessage = importFeedback,
                         onPickFile = {
                             scriptOpenLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
@@ -283,11 +354,35 @@ fun DirectorScriptDialog(
                             scriptInput = DirectorScriptReceiver.sampleDemoDirectorScriptJson(project, characters)
                             importFeedback = "Loaded built-in offline demo script (Inline Tree SVG + Custom Anim + Iris Transition + Auto-Focus Camera)."
                         },
+                        onCopyFixPrompt = { report ->
+                            val fixPrompt = DirectorScriptReceiver.buildErrorFixPrompt(scriptInput, report)
+                            copyTextToClipboard(context, "FrameCraft AI Fix Prompt", fixPrompt)
+                            importFeedback = "Copied Fix Prompt with exact error & offending snippet — paste back to your AI!"
+                        },
                         onApply = {
-                            if (dryRunReport?.isValid == true) {
-                                onApplyDirectorScript(scriptInput, importMode)
+                            if (dryRunReport?.isValid == true && trackSelection.anySelected) {
+                                onApplyDirectorScript(scriptInput, importMode, trackSelection)
                             }
                         }
+                    )
+                    else -> ScriptHistoryTabContent(
+                        historyEntries = scriptHistory,
+                        onInspectEntry = { entry ->
+                            scriptInput = entry.scriptJson
+                            importFeedback = "Loaded '${entry.title}' from offline history into Import tab."
+                            activeTab = 1
+                        },
+                        onCopyEntry = { entry ->
+                            copyTextToClipboard(context, entry.title, entry.scriptJson)
+                            importFeedback = "Copied '${entry.title}' JSON to clipboard."
+                        },
+                        onReapplyEntry = { entry ->
+                            val mode = runCatching { DirectorScriptImportMode.valueOf(entry.importMode) }
+                                .getOrDefault(DirectorScriptImportMode.REPLACE_TIMELINE)
+                            onApplyDirectorScript(entry.scriptJson, mode, DirectorScriptTrackSelection())
+                        },
+                        onDeleteEntry = onDeleteHistoryEntry,
+                        onClearAll = onClearHistory
                     )
                 }
             }
@@ -307,28 +402,29 @@ private fun ScriptStudioTabPill(
         color = if (selected) ElectricCyan else Color.Transparent,
         shape = RoundedCornerShape(10.dp),
         modifier = modifier
-            .height(42.dp)
+            .height(44.dp)
             .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
-            modifier = Modifier.padding(horizontal = 10.dp)
+            modifier = Modifier.padding(horizontal = 6.dp)
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
                 tint = if (selected) StudioObsidian else StudioTextSecondary,
-                modifier = Modifier.size(16.dp)
+                modifier = Modifier.size(15.dp)
             )
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(4.dp))
             Text(
                 text = label,
-                fontSize = 12.5.sp,
+                fontSize = 11.5.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (selected) StudioObsidian else StudioTextSecondary,
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -342,13 +438,22 @@ private fun ExportBlueprintTabContent(
     propsCount: Int,
     audioCount: Int,
     totalCapabilities: Int,
+    exportMode: AIBlueprintExporter.BlueprintExportMode,
+    onExportModeChange: (AIBlueprintExporter.BlueprintExportMode) -> Unit,
+    includeCurrentTimelineState: Boolean,
+    onToggleIncludeTimelineState: (Boolean) -> Unit,
+    storyInstructions: String,
+    onStoryInstructionsChange: (String) -> Unit,
     blueprintJson: String,
+    blueprintTokens: Int,
+    completePromptTokens: Int,
     isLoading: Boolean,
     statusMessage: String?,
     showPreview: Boolean,
     onTogglePreview: () -> Unit,
-    onSaveBlueprint: () -> Unit,
-    onCopyBlueprint: () -> Unit
+    onCopyCompletePrompt: () -> Unit,
+    onCopyBlueprintOnly: () -> Unit,
+    onSaveBlueprint: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -356,7 +461,7 @@ private fun ExportBlueprintTabContent(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Intro & Live Registry Card
+        // Smart Scope, Compact/Full Mode & Live Token Estimator Card
         Surface(
             color = StudioCharcoal,
             shape = RoundedCornerShape(14.dp),
@@ -364,84 +469,274 @@ private fun ExportBlueprintTabContent(
         ) {
             Column(
                 modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(Icons.Rounded.AutoAwesome, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
-                    Text(
-                        text = "Live Project Snapshot (.fcblueprint.json v3)",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = StudioTextPrimary
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Rounded.AutoAwesome, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = "Blueprint Scope & Mode",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = StudioTextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    // Live Estimated Token Count Pill
+                    Surface(
+                        color = ElectricCyanDim,
+                        shape = RoundedCornerShape(999.dp),
+                        border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.5f)),
+                        modifier = Modifier.testTag("blueprint_token_estimate_pill")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        ) {
+                            Icon(Icons.Rounded.Speed, null, tint = ElectricCyan, modifier = Modifier.size(12.dp))
+                            Text(
+                                text = if (isLoading) "Estimating..." else AIBlueprintExporter.formatTokenEstimate(blueprintTokens),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ElectricCyan
+                            )
+                        }
+                    }
                 }
-                Text(
-                    text = "Dynamically packages your live project assets, exact audio durations, $totalCapabilities live studio capabilities, and Universal Extension schemas (Inline SVGs, Custom Animations & Transitions) for any external LLM or script editor.",
-                    fontSize = 11.5.sp,
-                    color = StudioTextSecondary,
-                    lineHeight = 16.sp
-                )
 
-                // Compact metrics grid
+                // Compact vs Full Mode Segmented Selector
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AIBlueprintExporter.BlueprintExportMode.entries.forEach { mode ->
+                        val selected = exportMode == mode
+                        val subtitle = if (mode == AIBlueprintExporter.BlueprintExportMode.COMPACT) {
+                            "Lean tokens"
+                        } else {
+                            "Full schema + examples"
+                        }
+                        Surface(
+                            color = if (selected) ElectricCyanDim else StudioObsidian,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, if (selected) ElectricCyan else StudioBorderSubtle),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onExportModeChange(mode) }
+                                .testTag("blueprint_mode_${mode.name.lowercase()}")
+                        ) {
+                            Column(
+                                verticalArrangement = Arrangement.Center,
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.padding(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = mode.label,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) ElectricCyan else StudioTextPrimary
+                                )
+                                Text(
+                                    text = subtitle,
+                                    fontSize = 9.5.sp,
+                                    color = if (selected) ElectricCyan.copy(alpha = 0.85f) else StudioTextMuted,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Include Current Timeline State Toggle (OFF by default)
+                Surface(
+                    color = StudioObsidian,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (includeCurrentTimelineState) EmeraldLayer.copy(alpha = 0.55f) else StudioBorderSubtle
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { onToggleIncludeTimelineState(!includeCurrentTimelineState) }
+                        .testTag("blueprint_include_timeline_toggle")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(
+                                text = "Include Current Timeline State",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (includeCurrentTimelineState) EmeraldLayer else StudioTextPrimary
+                            )
+                            Text(
+                                text = "Serializes active scene clips, positions, dialogue & camera keys so AI can refine existing animation.",
+                                fontSize = 10.sp,
+                                color = StudioTextSecondary,
+                                lineHeight = 13.5.sp
+                            )
+                        }
+                        Switch(
+                            checked = includeCurrentTimelineState,
+                            onCheckedChange = onToggleIncludeTimelineState,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = StudioObsidian,
+                                checkedTrackColor = EmeraldLayer
+                            )
+                        )
+                    }
+                }
+
+                // Compact Live Asset Metrics Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     BlueprintStatChip("Stage", "${project.aspectRatioPreset.label} • ${project.fps}fps", ElectricCyan, Modifier.weight(1f))
-                    BlueprintStatChip("Chars", "$charactersCount", EmeraldLayer, Modifier.weight(1f))
-                    BlueprintStatChip("Audio", "$audioCount", AmberKeyframe, Modifier.weight(1f))
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    BlueprintStatChip("BGs / Props", "$backgroundsCount / $propsCount", StudioTextPrimary, Modifier.weight(1f))
-                    BlueprintStatChip("Capabilities", "$totalCapabilities live", ElectricCyan, Modifier.weight(1f))
-                    BlueprintStatChip(
-                        "Custom Ext",
-                        "${project.inlineSvgAssets.size}/${project.customAnimations.size}/${project.customTransitions.size}",
-                        EmeraldLayer,
-                        Modifier.weight(1f)
-                    )
+                    BlueprintStatChip("Chars / Audio", "$charactersCount / $audioCount", EmeraldLayer, Modifier.weight(1f))
+                    BlueprintStatChip("BGs / Caps", "$backgroundsCount+$propsCount • $totalCapabilities", AmberKeyframe, Modifier.weight(1f))
                 }
             }
         }
 
-        // Action Buttons
+        // Story / Scene Instructions Input (Odia / Hindi / English)
+        OutlinedTextField(
+            value = storyInstructions,
+            onValueChange = onStoryInstructionsChange,
+            label = { Text("Story / Scene Instructions (Odia / Hindi / English — Optional)", fontSize = 11.5.sp) },
+            placeholder = {
+                Text(
+                    "e.g. \"ଦୁଇ ସାଙ୍ଗ ବର୍ଷାରେ ଗାଁ ରାସ୍ତାରେ କଥା ହେଉଛନ୍ତି...\" or \"Two friends talk in monsoon rain with close-up reaction cuts\"",
+                    fontSize = 11.sp,
+                    color = StudioTextMuted
+                )
+            },
+            trailingIcon = {
+                if (storyInstructions.isNotEmpty()) {
+                    IconButton(
+                        onClick = { onStoryInstructionsChange("") },
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Icon(
+                            Icons.Rounded.Clear,
+                            contentDescription = "Clear story instructions",
+                            tint = StudioTextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            },
+            textStyle = LocalTextStyle.current.copy(
+                fontSize = 12.sp,
+                color = StudioTextPrimary,
+                lineHeight = 17.sp
+            ),
+            minLines = 3,
+            maxLines = 5,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = ElectricCyan,
+                unfocusedBorderColor = StudioBorderSubtle,
+                focusedContainerColor = StudioObsidian,
+                unfocusedContainerColor = StudioObsidian
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("blueprint_story_instructions_input")
+        )
+
+        // Primary 1-Tap CTA: Copy Ready-to-Paste AI Prompt
+        Button(
+            onClick = onCopyCompletePrompt,
+            enabled = !isLoading && blueprintJson.isNotBlank(),
+            colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = StudioObsidian),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .testTag("blueprint_copy_complete_prompt_btn")
+        ) {
+            Icon(Icons.Rounded.AutoAwesome, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(
+                text = if (isLoading) {
+                    "Preparing AI Prompt..."
+                } else {
+                    "Copy Ready-to-Paste AI Prompt (${AIBlueprintExporter.formatTokenEstimate(completePromptTokens)})"
+                },
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        // Secondary Actions: Copy Blueprint JSON Only & Save .fcblueprint.json
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Button(
+            OutlinedButton(
+                onClick = onCopyBlueprintOnly,
+                enabled = !isLoading && blueprintJson.isNotBlank(),
+                border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.6f)),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .testTag("blueprint_copy_btn")
+            ) {
+                Icon(Icons.Rounded.ContentCopy, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    "Copy Blueprint JSON Only",
+                    color = ElectricCyan,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            OutlinedButton(
                 onClick = onSaveBlueprint,
                 enabled = !isLoading && blueprintJson.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan, contentColor = StudioObsidian),
+                border = BorderStroke(1.dp, EmeraldLayer.copy(alpha = 0.6f)),
                 shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp),
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp)
                     .testTag("blueprint_save_file_btn")
             ) {
-                Icon(Icons.Rounded.SaveAlt, null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Save .fcblueprint.json", fontSize = 12.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-            }
-
-            OutlinedButton(
-                onClick = onCopyBlueprint,
-                enabled = !isLoading && blueprintJson.isNotBlank(),
-                border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.6f)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .height(48.dp)
-                    .testTag("blueprint_copy_btn")
-            ) {
-                Icon(Icons.Rounded.ContentCopy, null, tint = ElectricCyan, modifier = Modifier.size(17.dp))
+                Icon(Icons.Rounded.SaveAlt, null, tint = EmeraldLayer, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(5.dp))
-                Text("Copy", color = ElectricCyan, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Save .fcblueprint.json",
+                    color = EmeraldLayer,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
 
@@ -480,21 +775,27 @@ private fun ExportBlueprintTabContent(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = if (isLoading) "Generating blueprint..." else "Blueprint JSON Preview (${blueprintJson.length} chars)",
-                        fontSize = 12.sp,
+                        text = if (isLoading) {
+                            "Generating blueprint..."
+                        } else {
+                            "Blueprint JSON Preview (${exportMode.label} • ${blueprintJson.length} chars)"
+                        },
+                        fontSize = 11.5.sp,
                         fontWeight = FontWeight.Medium,
                         color = StudioTextSecondary
                     )
                     Icon(
                         imageVector = if (showPreview) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                        contentDescription = "Toggle preview",
+                        contentDescription = "Toggle blueprint preview",
                         tint = StudioTextSecondary
                     )
                 }
                 if (showPreview && !isLoading) {
                     HorizontalDivider(color = StudioBorderSubtle)
                     Text(
-                        text = blueprintJson.take(4500) + if (blueprintJson.length > 4500) "\n... (${blueprintJson.length - 4500} more chars)" else "",
+                        text = blueprintJson.take(4500) + if (blueprintJson.length > 4500) {
+                            "\n... (${blueprintJson.length - 4500} more chars)"
+                        } else "",
                         fontFamily = FontFamily.Monospace,
                         fontSize = 10.sp,
                         lineHeight = 14.sp,
@@ -507,325 +808,12 @@ private fun ExportBlueprintTabContent(
     }
 }
 
-@Composable
-private fun ImportDirectorScriptTabContent(
-    scriptInput: String,
-    onScriptInputChange: (String) -> Unit,
-    dryRunReport: DirectorScriptDryRunReport?,
-    importMode: DirectorScriptImportMode,
-    onImportModeChange: (DirectorScriptImportMode) -> Unit,
-    feedbackMessage: String?,
-    onPickFile: () -> Unit,
-    onPasteClipboard: () -> Unit,
-    onLoadDemoScript: () -> Unit,
-    onApply: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        // Quick Load Row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            OutlinedButton(
-                onClick = onPickFile,
-                border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.55f)),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .height(44.dp)
-                    .testTag("script_open_file_btn")
-            ) {
-                Icon(Icons.Rounded.FolderOpen, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("File", fontSize = 11.5.sp, color = ElectricCyan, maxLines = 1)
-            }
-            OutlinedButton(
-                onClick = onPasteClipboard,
-                border = BorderStroke(1.dp, StudioBorderSubtle),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .height(44.dp)
-                    .testTag("script_paste_btn")
-            ) {
-                Icon(Icons.Rounded.ContentPaste, null, tint = StudioTextPrimary, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Paste", fontSize = 11.5.sp, color = StudioTextPrimary, maxLines = 1)
-            }
-            OutlinedButton(
-                onClick = onLoadDemoScript,
-                border = BorderStroke(1.dp, AmberKeyframe.copy(alpha = 0.6f)),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .height(44.dp)
-                    .testTag("script_load_demo_btn")
-            ) {
-                Icon(Icons.Rounded.Bolt, null, tint = AmberKeyframe, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Demo", fontSize = 11.5.sp, color = AmberKeyframe, maxLines = 1)
-            }
-        }
-
-        // Script Editor Box
-        OutlinedTextField(
-            value = scriptInput,
-            onValueChange = onScriptInputChange,
-            label = { Text("Paste .fcscript.json here", fontSize = 12.sp) },
-            placeholder = {
-                Text(
-                    """{ "format": "framecraft.director_script", "scenes": [...] }""",
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp
-                )
-            },
-            textStyle = LocalTextStyle.current.copy(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
-                color = StudioTextPrimary
-            ),
-            minLines = 5,
-            maxLines = 8,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = ElectricCyan,
-                unfocusedBorderColor = StudioBorderSubtle,
-                focusedContainerColor = StudioObsidian,
-                unfocusedContainerColor = StudioObsidian
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("script_json_input")
-        )
-
-        if (!feedbackMessage.isNullOrBlank()) {
-            Text(
-                text = feedbackMessage,
-                fontSize = 11.sp,
-                color = ElectricCyan
-            )
-        }
-
-        // Dry-Run Validation Summary Card
-        if (dryRunReport != null) {
-            val borderColor = if (dryRunReport.isValid) EmeraldLayer else CoralPlayhead
-            Surface(
-                color = borderColor.copy(alpha = 0.10f),
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, borderColor.copy(alpha = 0.55f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (dryRunReport.isValid) Icons.Rounded.Verified else Icons.Rounded.ErrorOutline,
-                            contentDescription = null,
-                            tint = borderColor,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = if (dryRunReport.isValid) "Dry-Run Validated — Ready to Compile" else "Validation Failed",
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = borderColor
-                        )
-                    }
-
-                    if (dryRunReport.isValid) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            BlueprintStatChip("Scenes", "${dryRunReport.sceneCount}", StudioTextPrimary, Modifier.weight(1f))
-                            BlueprintStatChip("Inline SVGs", "${dryRunReport.inlineSvgCount}", ElectricCyan, Modifier.weight(1f))
-                            BlueprintStatChip("Custom Anims", "${dryRunReport.customAnimationCount}", EmeraldLayer, Modifier.weight(1f))
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            BlueprintStatChip("Transitions", "${dryRunReport.customTransitionCount}", AmberKeyframe, Modifier.weight(1f))
-                            BlueprintStatChip("Clips / Keys", "${dryRunReport.clipCount} / ${dryRunReport.keyframeCount}", StudioTextPrimary, Modifier.weight(1f))
-                            BlueprintStatChip("Cam Shots", "${dryRunReport.cameraShotCount}", ElectricCyan, Modifier.weight(1f))
-                        }
-                        if (dryRunReport.universalKeyframeTrackCount > 0) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                BlueprintStatChip(
-                                    "Universal Tracks",
-                                    "${dryRunReport.universalKeyframeTrackCount}",
-                                    EmeraldLayer,
-                                    Modifier.weight(1f)
-                                )
-                                BlueprintStatChip(
-                                    "Universal Keys",
-                                    "${dryRunReport.universalKeyframeCount}",
-                                    AmberKeyframe,
-                                    Modifier.weight(1f)
-                                )
-                            }
-                        }
-                    }
-
-                    dryRunReport.errors.forEach { err ->
-                        Text("• $err", fontSize = 11.sp, color = CoralPlayhead)
-                    }
-                    dryRunReport.warnings.take(4).forEach { warn ->
-                        Text("⚠ $warn", fontSize = 10.5.sp, color = AmberKeyframe)
-                    }
-                    if (dryRunReport.warnings.size > 4) {
-                        Text(
-                            "… +${dryRunReport.warnings.size - 4} more warning(s)",
-                            fontSize = 10.5.sp,
-                            color = AmberKeyframe
-                        )
-                    }
-                }
-            }
-        }
-
-        // Import Mode Selector (Replace Timeline vs Append Scenes)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            DirectorScriptImportMode.entries.forEach { mode ->
-                val selected = importMode == mode
-                Surface(
-                    color = if (selected) ElectricCyanDim else StudioCharcoal,
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(
-                        1.dp,
-                        if (selected) ElectricCyan else StudioBorderSubtle
-                    ),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(42.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable { onImportModeChange(mode) }
-                        .testTag("script_mode_${mode.name.lowercase()}")
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.padding(horizontal = 8.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (mode == DirectorScriptImportMode.REPLACE_TIMELINE) {
-                                Icons.Rounded.SwapHoriz
-                            } else {
-                                Icons.Rounded.PlaylistAdd
-                            },
-                            contentDescription = null,
-                            tint = if (selected) ElectricCyan else StudioTextSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(5.dp))
-                        Text(
-                            text = mode.label,
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (selected) ElectricCyan else StudioTextSecondary,
-                            maxLines = 1
-                        )
-                    }
-                }
-            }
-        }
-
-        // Undo & Editability safety notice
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Icon(Icons.Rounded.History, null, tint = EmeraldLayer, modifier = Modifier.size(14.dp))
-            Text(
-                text = "Auto-saves Undo snapshot before apply. All layers, SVGs, keyframes & camera cuts remain 100% manually editable.",
-                fontSize = 10.5.sp,
-                color = StudioTextSecondary,
-                lineHeight = 14.sp
-            )
-        }
-
-        // Primary Apply Button
-        Button(
-            onClick = onApply,
-            enabled = dryRunReport?.isValid == true,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = EmeraldLayer,
-                contentColor = StudioObsidian,
-                disabledContainerColor = StudioCharcoal,
-                disabledContentColor = StudioTextMuted
-            ),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .testTag("script_apply_btn")
-        ) {
-            Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(19.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = "Compile & Apply Director Script",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-}
-
-@Composable
-private fun BlueprintStatChip(
-    label: String,
-    value: String,
-    accent: Color,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        color = StudioObsidian,
-        shape = RoundedCornerShape(8.dp),
-        border = BorderStroke(0.8.dp, StudioBorderSubtle),
-        modifier = modifier
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(label, fontSize = 9.5.sp, color = StudioTextMuted, maxLines = 1)
-            Text(
-                text = value,
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.Bold,
-                color = accent,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-private fun copyTextToClipboard(context: Context, label: String, text: String) {
+internal fun copyTextToClipboard(context: Context, label: String, text: String) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
     cm.setPrimaryClip(ClipData.newPlainText(label, text))
 }
 
-private fun readTextFromClipboard(context: Context): String? {
+internal fun readTextFromClipboard(context: Context): String? {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return null
     val clip = cm.primaryClip ?: return null
     if (clip.itemCount == 0) return null

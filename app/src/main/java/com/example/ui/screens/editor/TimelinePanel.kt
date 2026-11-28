@@ -2,6 +2,8 @@ package com.example.ui.screens.editor
 
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -22,6 +24,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -35,10 +38,15 @@ import androidx.compose.ui.unit.sp
 import com.example.engine.FacialExpressionEngine
 import com.example.engine.FacialExpressionPreset
 import com.example.engine.ProceduralRigRenderer
+import com.example.engine.SnapDragMode
+import com.example.engine.TimelineNleEngine
 import com.example.model.*
 import com.example.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Compact, high-density CapCut Pro-style Timeline Panel:
@@ -112,7 +120,23 @@ fun TimelinePanel(
     onDuplicateCameraBox: (String) -> Unit = {},
     onSplitCameraBox: (String) -> Unit = {},
     onDeleteCameraBox: (String) -> Unit = {},
+    onDeleteCameraBoxRipple: (boxId: String, ripple: Boolean) -> Unit = { id, _ -> onDeleteCameraBox(id) },
+    onTrimCameraBoxToPlayhead: (String) -> Unit = {},
     onCycleCameraBoxEasing: (String) -> Unit = {},
+    onSetTimelineZoom: (Float) -> Unit = {},
+    onToggleClipHoldCut: (String) -> Unit = {},
+    onSplitClip: (String) -> Unit = {},
+    onDuplicateClip: (String) -> Unit = {},
+    onTrimClipToPlayhead: (String) -> Unit = {},
+    onDeleteClip: (clipId: String, ripple: Boolean) -> Unit = { _, _ -> },
+    onTrimOrMoveClip: (clipId: String, newStartFrame: Int, newDurationFrames: Int, isMoveOnly: Boolean) -> Unit = { _, _, _, _ -> },
+    onMoveClipAcrossTracks: (
+        clipId: String,
+        targetLayerId: String?,
+        targetStartFrame: Int,
+        createNewTrack: Boolean,
+        insertAtTop: Boolean
+    ) -> Unit = { _, _, _, _, _ -> },
     isMultiSelectMode: Boolean = false,
     selectedClipIds: Set<String> = emptySet(),
     onToggleMultiSelectMode: () -> Unit = {},
@@ -196,12 +220,138 @@ fun TimelinePanel(
         com.example.engine.KeyframeEvaluator.evaluateCamera(scene, currentFrame)
     }
 
-    // Drag-and-drop state for dropping algorithmic facial expressions onto Character layers
+    // Drag-and-drop state for facial expressions AND universal cross-track clip drag-and-drop
     var timelineRootTopLeft by remember { mutableStateOf(Offset.Zero) }
     var trackViewportRootLeftPx by remember { mutableFloatStateOf(0f) }
+    var trackViewportWidthPx by remember { mutableFloatStateOf(0f) }
     val layerRowBoundsY = remember { mutableStateMapOf<String, Pair<Float, Float>>() }
+    var newTrackTopBoundsY by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    var newTrackBottomBoundsY by remember { mutableStateOf<Pair<Float, Float>?>(null) }
     var draggingPreset by remember { mutableStateOf<FacialExpressionPreset?>(null) }
     var dragPointerRoot by remember { mutableStateOf(Offset.Zero) }
+    var activeClipDrag by remember { mutableStateOf<ActiveClipDragState?>(null) }
+    var trimSnapGuideFrame by remember { mutableStateOf<Int?>(null) }
+
+    val snapTolerancePx = with(density) { TimelineNleEngine.DEFAULT_SNAP_TOLERANCE_DP.dp.toPx() }
+    val edgeAutoScrollZonePx = with(density) { 44.dp.toPx() }
+    val majorMarkerStep = if (timelineZoom < 0.8f) 12 else 6
+
+    val latestTimelineZoom by rememberUpdatedState(timelineZoom)
+    val latestOnSetTimelineZoom by rememberUpdatedState(onSetTimelineZoom)
+    val latestOnAdjustTimelineZoom by rememberUpdatedState(onAdjustTimelineZoom)
+    val latestOnMoveClipAcrossTracks by rememberUpdatedState(onMoveClipAcrossTracks)
+
+    // Derived live target & magnetic snap preview while a timeline clip is being long-press dragged
+    data class ClipDragPreview(
+        val snappedStartFrame: Int,
+        val snappedGuideFrame: Int?,
+        val hoveredLayer: AnimationLayer?,
+        val hoveredNewTrackTop: Boolean,
+        val hoveredNewTrackBottom: Boolean,
+        val isCompatible: Boolean,
+        val destinationLabel: String
+    )
+
+    val clipDragPreview = remember(
+        activeClipDrag, sortedLayers, clipsByLayer, scene, currentFrame,
+        horizontalScroll.value, frameWidthPx, snapTolerancePx, majorMarkerStep,
+        newTrackTopBoundsY, newTrackBottomBoundsY
+    ) {
+        val drag = activeClipDrag ?: return@remember null
+        val dxPx = (drag.currentPointerRoot.x - drag.initialPointerRoot.x) +
+            (horizontalScroll.value.toFloat() - drag.initialScrollPx)
+        val deltaFrames = (dxPx / frameWidthPx.coerceAtLeast(1f)).roundToInt()
+        val rawStart = (drag.initialStartFrame + deltaFrames).coerceAtLeast(0)
+        val targets = TimelineNleEngine.collectSnapTargets(
+            scene = scene,
+            playheadFrame = currentFrame,
+            majorMarkerStep = majorMarkerStep,
+            excludeClipId = drag.clip.id
+        )
+        val snap = TimelineNleEngine.computeMagneticSnap(
+            candidateStartFrame = rawStart,
+            candidateEndFrame = rawStart + drag.clip.durationFrames,
+            mode = SnapDragMode.MOVE,
+            snapTargets = targets,
+            frameWidthPx = frameWidthPx,
+            snapTolerancePx = snapTolerancePx
+        )
+
+        val py = drag.currentPointerRoot.y
+        val inTopNew = newTrackTopBoundsY?.let { py in (it.first - 6f)..(it.second + 6f) } == true
+        val inBottomNew = !inTopNew && newTrackBottomBoundsY?.let { py in (it.first - 6f)..(it.second + 6f) } == true
+        val matchedLayer = if (!inTopNew && !inBottomNew) {
+            sortedLayers.firstOrNull { l ->
+                val b = layerRowBoundsY[l.id] ?: return@firstOrNull false
+                py in (b.first - 4f)..(b.second + 4f)
+            }
+        } else null
+
+        val isCompat = when {
+            inTopNew || inBottomNew -> true
+            matchedLayer == null -> true
+            matchedLayer.id == drag.sourceLayer.id -> !matchedLayer.isLocked
+            matchedLayer.isLocked -> false
+            else -> {
+                val otherClipsExist = clipsByLayer[matchedLayer.id].orEmpty().any { it.id != drag.clip.id }
+                TimelineNleEngine.areLayerTypesCompatible(
+                    sourceType = drag.sourceLayer.type,
+                    targetType = matchedLayer.type,
+                    targetHasClips = otherClipsExist
+                )
+            }
+        }
+        val destLabel = when {
+            inTopNew -> "+ New ${drag.sourceLayer.type.displayName} Track (Top)"
+            inBottomNew -> "+ New ${drag.sourceLayer.type.displayName} Track (Bottom)"
+            matchedLayer == null -> "Track: ${drag.sourceLayer.name}"
+            matchedLayer.isLocked -> "${matchedLayer.name} (Locked)"
+            !isCompat -> "Incompatible track (${matchedLayer.type.displayName})"
+            matchedLayer.id == drag.sourceLayer.id -> "Track: ${matchedLayer.name}"
+            else -> "Move -> ${matchedLayer.name}"
+        }
+        ClipDragPreview(
+            snappedStartFrame = snap.snappedStartFrame,
+            snappedGuideFrame = snap.snappedGuideFrame,
+            hoveredLayer = matchedLayer,
+            hoveredNewTrackTop = inTopNew,
+            hoveredNewTrackBottom = inBottomNew,
+            isCompatible = isCompat,
+            destinationLabel = destLabel
+        )
+    }
+
+    val effectiveSnapGuideFrame = clipDragPreview?.snappedGuideFrame ?: trimSnapGuideFrame
+
+    // Gentle horizontal edge auto-scroll while dragging any clip near left/right viewport edge
+    LaunchedEffect(activeClipDrag != null) {
+        while (activeClipDrag != null) {
+            val drag = activeClipDrag ?: break
+            if (trackViewportWidthPx > edgeAutoScrollZonePx * 2.5f) {
+                val relX = drag.currentPointerRoot.x - trackViewportRootLeftPx
+                when {
+                    relX < edgeAutoScrollZonePx -> {
+                        val intensity = ((edgeAutoScrollZonePx - relX) / edgeAutoScrollZonePx).coerceIn(0.2f, 1.2f)
+                        val step = (14f * intensity).roundToInt().coerceAtLeast(3)
+                        val next = (horizontalScroll.value - step).coerceAtLeast(0)
+                        if (next != horizontalScroll.value) {
+                            horizontalScroll.scrollTo(next)
+                        }
+                    }
+                    relX > trackViewportWidthPx - edgeAutoScrollZonePx -> {
+                        val intensity = ((relX - (trackViewportWidthPx - edgeAutoScrollZonePx)) / edgeAutoScrollZonePx)
+                            .coerceIn(0.2f, 1.2f)
+                        val step = (14f * intensity).roundToInt().coerceAtLeast(3)
+                        val next = (horizontalScroll.value + step).coerceAtMost(horizontalScroll.maxValue)
+                        if (next != horizontalScroll.value) {
+                            horizontalScroll.scrollTo(next)
+                        }
+                    }
+                }
+            }
+            delay(16L)
+        }
+    }
 
     val hoveredDropTarget = remember(
         draggingPreset, dragPointerRoot, sortedLayers, clipsByLayer,
@@ -902,17 +1052,32 @@ fun TimelinePanel(
             val selectedCamBox = remember(scene.cameraBoxes, selectedCameraBoxId) {
                 selectedCameraBoxId?.let { id -> scene.cameraBoxes.firstOrNull { it.id == id } }
             }
-            if (selectedCamBox != null && !isPlaying) {
-                CameraBoxQuickActionsStrip(
-                    selectedBox = selectedCamBox,
-                    isLocked = scene.cameraLayerLocked,
+            val selectedClipLayer = remember(selectedClip, scene.layers) {
+                selectedClip?.let { c -> scene.layers.firstOrNull { it.id == c.layerId } }
+            }
+            if ((selectedCamBox != null || selectedClip != null) && !isPlaying) {
+                UniversalClipActionStrip(
+                    selectedCameraBox = selectedCamBox,
+                    isCameraLocked = scene.cameraLayerLocked,
+                    selectedClip = if (selectedCamBox == null) selectedClip else null,
+                    selectedClipLayer = if (selectedCamBox == null) selectedClipLayer else null,
+                    currentFrame = currentFrame,
                     onAddCameraBox = onAddCameraBox,
-                    onCycleEasing = onCycleCameraBoxEasing,
+                    onCycleCameraBoxEasing = onCycleCameraBoxEasing,
                     onSplitCameraBox = onSplitCameraBox,
                     onDuplicateCameraBox = onDuplicateCameraBox,
-                    onDeleteCameraBox = onDeleteCameraBox
+                    onTrimCameraBoxToPlayhead = onTrimCameraBoxToPlayhead,
+                    onDeleteCameraBox = onDeleteCameraBoxRipple,
+                    onToggleClipHoldCut = onToggleClipHoldCut,
+                    onSplitClip = onSplitClip,
+                    onDuplicateClip = onDuplicateClip,
+                    onTrimClipToPlayhead = onTrimClipToPlayhead,
+                    onDeleteClip = onDeleteClip
                 )
-                HorizontalDivider(color = CameraPeachAccent.copy(alpha = 0.35f), thickness = 1.dp)
+                HorizontalDivider(
+                    color = if (selectedCamBox != null) CameraPeachAccent.copy(alpha = 0.35f) else ElectricCyan.copy(alpha = 0.32f),
+                    thickness = 1.dp
+                )
             }
 
             // 2. Synchronized Collapsible Layer Rail & Horizontal Keyframe Track Area
@@ -1072,6 +1237,26 @@ fun TimelinePanel(
                             }
                         }
                         HorizontalDivider(color = CameraPeachAccent.copy(alpha = 0.32f), thickness = 1.dp)
+
+                        if (activeClipDrag != null) {
+                            Box(
+                                contentAlignment = Alignment.CenterStart,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(28.dp)
+                                    .background(StudioObsidian.copy(alpha = 0.5f))
+                                    .padding(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = "+ New Track",
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = ElectricCyan,
+                                    maxLines = 1
+                                )
+                            }
+                            HorizontalDivider(color = StudioBorderSubtle.copy(alpha = 0.5f), thickness = 1.dp)
+                        }
 
                         sortedLayers.forEachIndexed { layerIdx, layer ->
                             val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))
@@ -1315,18 +1500,56 @@ fun TimelinePanel(
                             }
                             HorizontalDivider(color = StudioBorderSubtle.copy(alpha = 0.6f), thickness = 1.dp)
                         }
+                        if (activeClipDrag != null) {
+                            Box(
+                                contentAlignment = Alignment.CenterStart,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(28.dp)
+                                    .background(StudioObsidian.copy(alpha = 0.5f))
+                                    .padding(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = "+ New Track",
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = ElectricCyan,
+                                    maxLines = 1
+                                )
+                            }
+                        }
                     }
                 }
 
                 VerticalDivider(color = StudioBorderSubtle, thickness = 1.dp)
 
-                // Right Horizontally Scrollable Ruler + Tracks + Selectable Keyframe Nodes + Playhead
+                // Right Horizontally Scrollable Ruler + Tracks + 2-Finger Pinch-to-Zoom + Magnetic Snap + Playhead
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
                         .onGloballyPositioned { coords ->
                             trackViewportRootLeftPx = coords.positionInRoot().x
+                            trackViewportWidthPx = coords.size.width.toFloat()
+                        }
+                        .pointerInput(Unit) {
+                            // Smooth 2-finger pinch-to-zoom without interfering with 1-finger scroll/drag/trim
+                            awaitEachGesture {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    val pressed = event.changes.filter { it.pressed }
+                                    if (pressed.size >= 2) {
+                                        val zoomFactor = event.calculateZoom()
+                                        if (abs(zoomFactor - 1f) > 0.008f) {
+                                            val nextZoom = (latestTimelineZoom * zoomFactor).coerceIn(0.4f, 2.6f)
+                                            latestOnSetTimelineZoom(nextZoom)
+                                            pressed.forEach { it.consume() }
+                                        }
+                                    } else if (pressed.isEmpty()) {
+                                        break
+                                    }
+                                }
+                            }
                         }
                         .horizontalScroll(horizontalScroll)
                 ) {
@@ -1453,6 +1676,14 @@ fun TimelinePanel(
                             ) {
                                 if (camBoxesSorted.isNotEmpty()) {
                                     camBoxesSorted.forEach { box ->
+                                        val boxSnapTargets = remember(scene, currentFrame, majorMarkerStep, box.id) {
+                                            TimelineNleEngine.collectSnapTargets(
+                                                scene = scene,
+                                                playheadFrame = currentFrame,
+                                                majorMarkerStep = majorMarkerStep,
+                                                excludeCameraBoxId = box.id
+                                            )
+                                        }
                                         CameraBoxTimelineClipBar(
                                             box = box,
                                             isSelected = box.id == selectedCameraBoxId,
@@ -1461,6 +1692,9 @@ fun TimelinePanel(
                                             frameWidthDp = frameWidthDp,
                                             frameWidthPx = frameWidthPx,
                                             sceneDurationFrames = scene.durationFrames,
+                                            snapTargets = boxSnapTargets,
+                                            snapTolerancePx = snapTolerancePx,
+                                            onActiveSnapGuideChange = { trimSnapGuideFrame = it },
                                             onSelect = { onSelectCameraBox(box.id) },
                                             onCycleEasing = { onCycleCameraBoxEasing(box.id) },
                                             onTrimOrMove = { newStart, newEnd ->
@@ -1598,18 +1832,78 @@ fun TimelinePanel(
                             }
                             HorizontalDivider(color = CameraPeachAccent.copy(alpha = 0.32f), thickness = 1.dp)
 
+                            val commitActiveClipDrop: () -> Unit = {
+                                val drag = activeClipDrag
+                                val preview = clipDragPreview
+                                activeClipDrag = null
+                                trimSnapGuideFrame = null
+                                if (drag != null && preview != null && preview.isCompatible) {
+                                    when {
+                                        preview.hoveredNewTrackTop -> latestOnMoveClipAcrossTracks(
+                                            drag.clip.id, null, preview.snappedStartFrame, true, true
+                                        )
+                                        preview.hoveredNewTrackBottom -> latestOnMoveClipAcrossTracks(
+                                            drag.clip.id, null, preview.snappedStartFrame, true, false
+                                        )
+                                        else -> {
+                                            val destLayerId = preview.hoveredLayer?.id ?: drag.sourceLayer.id
+                                            latestOnMoveClipAcrossTracks(
+                                                drag.clip.id, destLayerId, preview.snappedStartFrame, false, true
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (activeClipDrag != null) {
+                                val dragAccentCol = Color(
+                                    ProceduralRigRenderer.parseColorSafe(
+                                        activeClipDrag!!.sourceLayer.colorHex,
+                                        0xFF38BDF8.toInt()
+                                    )
+                                )
+                                NewTrackDropZoneRow(
+                                    label = "+ Drop here for New ${activeClipDrag!!.sourceLayer.type.displayName} Track (Top)",
+                                    isHovered = clipDragPreview?.hoveredNewTrackTop == true,
+                                    accentColor = dragAccentCol,
+                                    onBoundsChanged = { top, bottom -> newTrackTopBoundsY = top to bottom },
+                                    testTag = "timeline_new_track_drop_top"
+                                )
+                                HorizontalDivider(color = StudioBorderSubtle.copy(alpha = 0.5f), thickness = 1.dp)
+                            } else {
+                                newTrackTopBoundsY = null
+                                newTrackBottomBoundsY = null
+                            }
+
                             sortedLayers.forEach { layer ->
                                 val layerColor = Color(ProceduralRigRenderer.parseColorSafe(layer.colorHex, 0xFF38BDF8.toInt()))
                                 val layerClips = clipsByLayer[layer.id].orEmpty()
                                 val rowHeight = layerRowHeight(layer.type)
                                 val clipHeight = rowHeight - 6.dp
 
-                                val isDragActive = draggingPreset != null
-                                val isCharDropEligible = isDragActive && layer.type == LayerType.CHARACTER && !layer.isLocked
-                                val isDropHovered = hoveredDropTarget?.first?.id == layer.id
-                                val dragAccent = draggingPreset?.let {
+                                val isExprDragActive = draggingPreset != null
+                                val isCharDropEligible = isExprDragActive && layer.type == LayerType.CHARACTER && !layer.isLocked
+                                val isExprDropHovered = hoveredDropTarget?.first?.id == layer.id
+                                val exprDragAccent = draggingPreset?.let {
                                     Color(ProceduralRigRenderer.parseColorSafe(it.accentHex, 0xFF38BDF8.toInt()))
                                 } ?: ElectricCyan
+
+                                val clipDrag = activeClipDrag
+                                val isClipDropHovered = clipDrag != null && clipDragPreview?.hoveredLayer?.id == layer.id
+                                val isClipTrackCompatible = clipDrag != null && !layer.isLocked && (
+                                    layer.id == clipDrag.sourceLayer.id ||
+                                        TimelineNleEngine.areLayerTypesCompatible(
+                                            sourceType = clipDrag.sourceLayer.type,
+                                            targetType = layer.type,
+                                            targetHasClips = layerClips.any { it.id != clipDrag.clip.id }
+                                        )
+                                    )
+                                val clipDropBorderColor = when {
+                                    isClipDropHovered && clipDragPreview?.isCompatible == true -> ElectricCyan
+                                    isClipDropHovered -> Color(0xFFEF4444)
+                                    clipDrag != null && isClipTrackCompatible -> layerColor.copy(alpha = 0.40f)
+                                    else -> Color.Transparent
+                                }
 
                                 Box(
                                     modifier = Modifier
@@ -1621,19 +1915,22 @@ fun TimelinePanel(
                                         }
                                         .background(
                                             when {
-                                                isDropHovered -> dragAccent.copy(alpha = 0.22f)
+                                                isClipDropHovered && clipDragPreview?.isCompatible == true -> ElectricCyan.copy(alpha = 0.18f)
+                                                isClipDropHovered -> Color(0xFFEF4444).copy(alpha = 0.15f)
+                                                isExprDropHovered -> exprDragAccent.copy(alpha = 0.22f)
                                                 isCharDropEligible -> ElectricCyan.copy(alpha = 0.08f)
+                                                clipDrag != null && isClipTrackCompatible -> layerColor.copy(alpha = 0.06f)
                                                 !layer.isVisible -> StudioObsidian.copy(alpha = 0.72f)
                                                 else -> StudioCharcoal
                                             }
                                         )
                                         .then(
-                                            if (isDropHovered) {
-                                                Modifier.border(1.5.dp, dragAccent)
-                                            } else if (isCharDropEligible) {
-                                                Modifier.border(1.dp, ElectricCyan.copy(alpha = 0.35f))
-                                            } else {
-                                                Modifier
+                                            when {
+                                                isClipDropHovered -> Modifier.border(1.6.dp, clipDropBorderColor)
+                                                clipDrag != null && isClipTrackCompatible -> Modifier.border(1.dp, clipDropBorderColor)
+                                                isExprDropHovered -> Modifier.border(1.5.dp, exprDragAccent)
+                                                isCharDropEligible -> Modifier.border(1.dp, ElectricCyan.copy(alpha = 0.35f))
+                                                else -> Modifier
                                             }
                                         )
                                 ) {
@@ -1641,8 +1938,17 @@ fun TimelinePanel(
                                         val isMultiChecked = isMultiSelectMode && clip.id in selectedClipIds
                                         val isSelected = if (isMultiSelectMode) isMultiChecked else (clip.id == selectedClipId)
                                         val isAudioClip = layer.type == LayerType.AUDIO || !clip.audioPath.isNullOrBlank()
+                                        val isThisClipDragging = activeClipDrag?.clip?.id == clip.id
                                         val clipTapHandler: (String) -> Unit = { clickedId ->
                                             if (isMultiSelectMode) onToggleClipMultiSelect(clickedId) else onSelectClip(clickedId)
+                                        }
+                                        val clipSnapTargets = remember(scene, currentFrame, majorMarkerStep, clip.id) {
+                                            TimelineNleEngine.collectSnapTargets(
+                                                scene = scene,
+                                                playheadFrame = currentFrame,
+                                                majorMarkerStep = majorMarkerStep,
+                                                excludeClipId = clip.id
+                                            )
                                         }
 
                                         if (isAudioClip) {
@@ -1662,163 +1968,141 @@ fun TimelinePanel(
                                                 onSelectClip = clipTapHandler,
                                                 onSelectKeyframeNode = onSelectKeyframeNode,
                                                 onTrimAudioClip = onTrimAudioClip,
-                                                waveformSensitivity = waveformSensitivity
+                                                waveformSensitivity = waveformSensitivity,
+                                                isBeingDragged = isThisClipDragging,
+                                                snapTargets = clipSnapTargets,
+                                                snapTolerancePx = snapTolerancePx,
+                                                onActiveSnapGuideChange = { trimSnapGuideFrame = it },
+                                                onStartLongPressDrag = { draggedClip, rootPos ->
+                                                    onSelectClip(draggedClip.id)
+                                                    activeClipDrag = ActiveClipDragState(
+                                                        clip = draggedClip,
+                                                        sourceLayer = layer,
+                                                        initialPointerRoot = rootPos,
+                                                        currentPointerRoot = rootPos,
+                                                        initialScrollPx = horizontalScroll.value.toFloat(),
+                                                        initialStartFrame = draggedClip.startFrame
+                                                    )
+                                                },
+                                                onUpdateLongPressDrag = { rootPos ->
+                                                    activeClipDrag = activeClipDrag?.copy(currentPointerRoot = rootPos)
+                                                },
+                                                onEndLongPressDrag = commitActiveClipDrop,
+                                                onCancelLongPressDrag = {
+                                                    activeClipDrag = null
+                                                    trimSnapGuideFrame = null
+                                                }
                                             )
                                         } else {
-                                            val clipOffsetX = frameWidthDp * clip.startFrame
-                                            val clipWidth = (frameWidthDp * clip.durationFrames).coerceAtLeast(32.dp)
-                                            val visAlpha = if (layer.isVisible) 1f else 0.35f
-
-                                            Box(
-                                                modifier = Modifier
-                                                    .offset(x = clipOffsetX, y = 3.dp)
-                                                    .width(clipWidth)
-                                                    .height(clipHeight)
-                                                    .clip(RoundedCornerShape(6.dp))
-                                                    .background(
-                                                        when {
-                                                            isMultiChecked -> CoralPlayhead.copy(alpha = 0.34f * visAlpha)
-                                                            isSelected -> layerColor.copy(alpha = 0.38f * visAlpha)
-                                                            else -> layerColor.copy(alpha = 0.20f * visAlpha)
-                                                        }
+                                            UniversalTimelineClipBar(
+                                                clip = clip,
+                                                layer = layer,
+                                                layerColor = layerColor,
+                                                isSelected = isSelected,
+                                                isMultiSelectMode = isMultiSelectMode,
+                                                isMultiChecked = isMultiChecked,
+                                                isBeingDragged = isThisClipDragging,
+                                                currentFrame = currentFrame,
+                                                sceneDurationFrames = scene.durationFrames,
+                                                frameWidthDp = frameWidthDp,
+                                                frameWidthPx = frameWidthPx,
+                                                clipHeight = clipHeight,
+                                                snapTargets = clipSnapTargets,
+                                                snapTolerancePx = snapTolerancePx,
+                                                onTapClip = clipTapHandler,
+                                                onSelectKeyframeNode = onSelectKeyframeNode,
+                                                onTrimClip = { cid, newStart, newDur ->
+                                                    onTrimOrMoveClip(cid, newStart, newDur, false)
+                                                },
+                                                onActiveSnapGuideChange = { trimSnapGuideFrame = it },
+                                                onStartLongPressDrag = { draggedClip, srcLayer, rootPos ->
+                                                    onSelectClip(draggedClip.id)
+                                                    activeClipDrag = ActiveClipDragState(
+                                                        clip = draggedClip,
+                                                        sourceLayer = srcLayer,
+                                                        initialPointerRoot = rootPos,
+                                                        currentPointerRoot = rootPos,
+                                                        initialScrollPx = horizontalScroll.value.toFloat(),
+                                                        initialStartFrame = draggedClip.startFrame
                                                     )
-                                                    .border(
-                                                        width = if (isSelected || isMultiChecked) 1.5.dp else 1.dp,
-                                                        color = when {
-                                                            isMultiChecked -> CoralPlayhead
-                                                            isSelected -> ElectricCyan
-                                                            else -> layerColor.copy(alpha = 0.62f * visAlpha)
-                                                        },
-                                                        shape = RoundedCornerShape(6.dp)
-                                                    )
-                                                    .clickable { clipTapHandler(clip.id) }
-                                                    .testTag("timeline_clip_${clip.id}")
-                                            ) {
-                                                Row(
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                                                    modifier = Modifier
-                                                        .align(Alignment.TopStart)
-                                                        .padding(horizontal = 5.dp, vertical = 1.dp)
-                                                ) {
-                                                    if (isMultiSelectMode) {
-                                                        Icon(
-                                                            imageVector = if (isMultiChecked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                                                            contentDescription = if (isMultiChecked) "Selected clip ${clip.name}" else "Unselected clip ${clip.name}",
-                                                            tint = if (isMultiChecked) CoralPlayhead else StudioTextSecondary,
-                                                            modifier = Modifier.size(11.dp)
-                                                        )
-                                                    }
-                                                    Text(
-                                                        text = clip.name,
-                                                        fontSize = 10.sp,
-                                                        color = StudioTextPrimary.copy(alpha = visAlpha),
-                                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
+                                                },
+                                                onUpdateLongPressDrag = { rootPos ->
+                                                    activeClipDrag = activeClipDrag?.copy(currentPointerRoot = rootPos)
+                                                },
+                                                onEndLongPressDrag = commitActiveClipDrop,
+                                                onCancelLongPressDrag = {
+                                                    activeClipDrag = null
+                                                    trimSnapGuideFrame = null
                                                 }
-
-                                                // Individually Selectable Keyframe Diamond Nodes (with Facial Expression color coding)
-                                                clip.keyframes.forEach { kf ->
-                                                    val kfGlobalFrame = clip.startFrame + kf.frame
-                                                    val isNodeSelected = isSelected && currentFrame == kfGlobalFrame
-                                                    val rawX = frameWidthDp * kf.frame - 9.dp
-                                                    val clampedX = rawX.coerceIn(0.dp, (clipWidth - 20.dp).coerceAtLeast(0.dp))
-                                                    val kfPreset = kf.facialPresetId?.let { FacialExpressionEngine.presetById(it) }
-                                                        ?: kf.expressionOverride?.takeIf { it != FacialExpression.AUTO }?.let {
-                                                            FacialExpressionEngine.presetForExpression(it)
-                                                        }
-                                                    val nodeColor = when {
-                                                        isNodeSelected -> ElectricCyan
-                                                        kfPreset != null -> Color(
-                                                            ProceduralRigRenderer.parseColorSafe(
-                                                                kfPreset.accentHex,
-                                                                0xFFFBBF24.toInt()
-                                                            )
-                                                        ).copy(alpha = visAlpha)
-                                                        else -> AmberKeyframe.copy(alpha = visAlpha)
-                                                    }
-
-                                                    Box(
-                                                        contentAlignment = Alignment.Center,
-                                                        modifier = Modifier
-                                                            .offset(x = clampedX, y = 10.dp)
-                                                            .size(20.dp)
-                                                            .clip(CircleShape)
-                                                            .clickable {
-                                                                onSelectKeyframeNode(clip.id, kfGlobalFrame)
-                                                            }
-                                                            .testTag("keyframe_node_${clip.id}_${kf.frame}")
-                                                    ) {
-                                                        Canvas(modifier = Modifier.size(11.dp)) {
-                                                            val side = size.minDimension * 0.66f
-                                                            val topLeft = Offset((size.width - side) / 2f, (size.height - side) / 2f)
-                                                            rotate(45f) {
-                                                                drawRect(
-                                                                    color = nodeColor,
-                                                                    topLeft = topLeft,
-                                                                    size = Size(side, side)
-                                                                )
-                                                                if (isNodeSelected || kfPreset != null) {
-                                                                    drawRect(
-                                                                        color = if (isNodeSelected) Color.White else StudioObsidian.copy(alpha = 0.85f),
-                                                                        topLeft = topLeft,
-                                                                        size = Size(side, side),
-                                                                        style = Stroke(width = if (isNodeSelected) 2f else 1.2f)
-                                                                    )
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // Compact inline expression tag pill next to expression keyframes
-                                                    if (kfPreset != null && clipWidth >= 60.dp) {
-                                                        val tagOffsetX = (frameWidthDp * kf.frame + 6.dp)
-                                                            .coerceIn(4.dp, (clipWidth - 42.dp).coerceAtLeast(4.dp))
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .offset(x = tagOffsetX, y = 14.dp)
-                                                                .background(
-                                                                    StudioObsidian.copy(alpha = 0.82f),
-                                                                    RoundedCornerShape(4.dp)
-                                                                )
-                                                                .border(
-                                                                    0.75.dp,
-                                                                    nodeColor.copy(alpha = 0.78f),
-                                                                    RoundedCornerShape(4.dp)
-                                                                )
-                                                                .padding(horizontal = 3.dp, vertical = 0.5.dp)
-                                                        ) {
-                                                            Text(
-                                                                text = kfPreset.shortLabel,
-                                                                fontSize = 7.5.sp,
-                                                                fontWeight = FontWeight.Bold,
-                                                                color = nodeColor,
-                                                                maxLines = 1
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                            )
                                         }
                                     }
 
-                                    // Vertical snap-frame drop indicator line inside hovered Character track
-                                    if (isDropHovered && hoveredDropTarget != null) {
+                                    // Live ghost preview bar on destination track while cross-track dragging
+                                    if (clipDrag != null && clipDragPreview != null && isClipDropHovered && clipDragPreview.isCompatible) {
+                                        val ghostStart = clipDragPreview.snappedStartFrame
+                                        val ghostLeftDp = frameWidthDp * ghostStart
+                                        val ghostWidthDp = (frameWidthDp * clipDrag.clip.durationFrames).coerceAtLeast(36.dp)
+                                        Box(
+                                            contentAlignment = Alignment.CenterStart,
+                                            modifier = Modifier
+                                                .offset(x = ghostLeftDp, y = 3.dp)
+                                                .width(ghostWidthDp)
+                                                .height(clipHeight)
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(ElectricCyan.copy(alpha = 0.24f))
+                                                .border(1.5.dp, ElectricCyan, RoundedCornerShape(6.dp))
+                                                .padding(horizontal = 6.dp)
+                                        ) {
+                                            Text(
+                                                text = "F${ghostStart + 1}–F${ghostStart + clipDrag.clip.durationFrames}",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+
+                                    // Vertical snap-frame drop indicator line inside hovered Character track (facial expression drag)
+                                    if (isExprDropHovered && hoveredDropTarget != null) {
                                         val snapFrame = hoveredDropTarget.third
                                         Box(
                                             modifier = Modifier
                                                 .offset(x = frameWidthDp * snapFrame, y = 0.dp)
                                                 .width(2.5.dp)
                                                 .fillMaxHeight()
-                                                .background(dragAccent)
+                                                .background(exprDragAccent)
                                         )
                                     }
                                 }
                                 HorizontalDivider(color = StudioBorderSubtle.copy(alpha = 0.6f), thickness = 1.dp)
                             }
+
+                            if (activeClipDrag != null) {
+                                val dragAccentCol = Color(
+                                    ProceduralRigRenderer.parseColorSafe(
+                                        activeClipDrag!!.sourceLayer.colorHex,
+                                        0xFF38BDF8.toInt()
+                                    )
+                                )
+                                NewTrackDropZoneRow(
+                                    label = "+ Drop here for New ${activeClipDrag!!.sourceLayer.type.displayName} Track (Bottom)",
+                                    isHovered = clipDragPreview?.hoveredNewTrackBottom == true,
+                                    accentColor = dragAccentCol,
+                                    onBoundsChanged = { top, bottom -> newTrackBottomBoundsY = top to bottom },
+                                    testTag = "timeline_new_track_drop_bottom"
+                                )
+                            }
                         }
+                    }
+
+                    // Crisp Vertical Cyan Magnetic Snap Guide Line across all tracks
+                    effectiveSnapGuideFrame?.let { snapF ->
+                        MagneticSnapGuideOverlay(
+                            snapFrame = snapF,
+                            frameWidthDp = frameWidthDp
+                        )
                     }
 
                     // GPU-accelerated Playhead Indicator Line & Draggable Horizontal Scrub Handle
@@ -1830,6 +2114,27 @@ fun TimelinePanel(
                     )
                 }
             }
+        }
+
+        // Floating lifted clip ghost card following finger during long-press cross-track drag
+        val activeDragNow = activeClipDrag
+        val dragPreviewNow = clipDragPreview
+        if (activeDragNow != null && dragPreviewNow != null) {
+            val dragAccent = Color(
+                ProceduralRigRenderer.parseColorSafe(
+                    activeDragNow.sourceLayer.colorHex,
+                    0xFF38BDF8.toInt()
+                )
+            )
+            FloatingDraggedClipGhost(
+                clip = activeDragNow.clip,
+                accentColor = dragAccent,
+                localOffsetPx = activeDragNow.currentPointerRoot - timelineRootTopLeft,
+                previewStartFrame = dragPreviewNow.snappedStartFrame,
+                destinationLabel = dragPreviewNow.destinationLabel,
+                isCompatible = dragPreviewNow.isCompatible,
+                isSnapped = dragPreviewNow.snappedGuideFrame != null
+            )
         }
 
         // Floating expression drag ghost badge following finger over TimelinePanel

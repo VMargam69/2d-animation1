@@ -6,6 +6,8 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.BuiltInCatalog
+import com.example.data.DirectorScriptHistoryEntry
+import com.example.data.DirectorScriptHistoryStorage
 import com.example.data.LocalAssetStorage
 import com.example.data.PoseLibraryStorage
 import com.example.data.StudioRepository
@@ -105,6 +107,7 @@ data class StudioUiState(
     val activeSheet: ActiveEditorSheet = ActiveEditorSheet.NONE,
     val ikStudioInitialTab: Int = 1,
     val savedPoses: List<SavedPose> = emptyList(),
+    val directorScriptHistory: List<DirectorScriptHistoryEntry> = emptyList(),
     val exportState: ExportUiState = ExportUiState.Idle,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
@@ -123,6 +126,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val db = FrameCraftDatabase.getInstance(application)
     val assetStorage = LocalAssetStorage(application)
     val poseLibraryStorage = PoseLibraryStorage(application)
+    val directorScriptHistoryStorage = DirectorScriptHistoryStorage(application)
     val repository = StudioRepository(
         projectDao = db.projectDao(),
         characterDao = db.characterDao(),
@@ -227,6 +231,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             val loadedPoses = poseLibraryStorage.loadPoses()
             _uiState.update { it.copy(savedPoses = loadedPoses) }
+        }
+        viewModelScope.launch {
+            val loadedHistory = directorScriptHistoryStorage.loadHistory()
+            _uiState.update { it.copy(directorScriptHistory = loadedHistory) }
         }
     }
 
@@ -681,7 +689,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val layerId = clipId?.let { id ->
             _uiState.value.project.activeScene.clips.firstOrNull { it.id == id }?.layerId
         }
-        _uiState.update { it.copy(selectedClipId = clipId, selectedLayerId = layerId ?: it.selectedLayerId) }
+        _uiState.update {
+            it.copy(
+                selectedClipId = clipId,
+                selectedLayerId = layerId ?: it.selectedLayerId,
+                selectedCameraBoxId = if (clipId != null) null else it.selectedCameraBoxId
+            )
+        }
     }
 
     /** Commits a completed clip drag gesture once on finger lift (zero mid-drag ProjectDocument copies). */
@@ -979,39 +993,149 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun splitSelectedClipAtPlayhead() {
         val state = _uiState.value
         val clipId = state.selectedClipId ?: return
+        splitClipAtPlayhead(clipId)
+    }
+
+    fun splitClipAtPlayhead(clipId: String) {
+        stopPlayback()
+        val state = _uiState.value
         val frame = _playbackFrame.value
-        val updated = ProjectMutator.splitClipAtFrame(state.project, clipId, frame)
-        if (updated != state.project) {
-            commitProjectChange(updated)
-            showStatus("Clip split at F${frame + 1}")
+        val result = com.example.engine.TimelineNleEngine.splitClipUniversal(state.project, clipId, frame)
+        if (result.changed) {
+            val synced = refreshAudioSyncTracks(result.project, state.waveformSensitivity)
+            commitProjectChange(synced)
+            if (result.createdClipId != null) {
+                _uiState.update { it.copy(selectedClipId = result.createdClipId) }
+            }
+            showStatus(result.message.ifBlank { "Clip split at F${frame + 1}" })
         } else {
-            showStatus("Move playhead inside the clip to split")
+            showStatus(result.message.ifBlank { "Move playhead inside the clip to split" })
         }
     }
 
     fun duplicateSelectedClip() {
+        val clipId = _uiState.value.selectedClipId ?: return
+        duplicateClipById(clipId)
+    }
+
+    fun duplicateClipById(clipId: String) {
+        stopPlayback()
         val state = _uiState.value
-        val clipId = state.selectedClipId ?: return
-        val (updated, newId) = ProjectMutator.duplicateClip(state.project, clipId)
-        if (newId != null) {
-            commitProjectChange(updated)
-            _uiState.update { it.copy(selectedClipId = newId) }
-            showStatus("Clip duplicated")
+        val result = com.example.engine.TimelineNleEngine.duplicateClipUniversal(state.project, clipId)
+        if (result.changed && result.createdClipId != null) {
+            val synced = refreshAudioSyncTracks(result.project, state.waveformSensitivity)
+            commitProjectChange(synced)
+            val newClip = synced.activeScene.clips.firstOrNull { it.id == result.createdClipId }
+            _uiState.update {
+                it.copy(
+                    selectedClipId = result.createdClipId,
+                    selectedLayerId = newClip?.layerId ?: it.selectedLayerId,
+                    selectedCameraBoxId = null
+                )
+            }
+            showStatus(result.message.ifBlank { "Clip duplicated" })
+        } else if (result.message.isNotBlank()) {
+            showStatus(result.message)
         }
     }
 
-    fun deleteSelectedClip() {
+    fun deleteSelectedClip(ripple: Boolean = false) {
+        val clipId = _uiState.value.selectedClipId ?: return
+        deleteClipById(clipId, ripple = ripple)
+    }
+
+    fun deleteClipById(clipId: String, ripple: Boolean = false) {
+        stopPlayback()
         val state = _uiState.value
-        val clipId = state.selectedClipId ?: return
-        val updated = ProjectMutator.deleteClips(state.project, setOf(clipId))
-        commitProjectChange(updated)
+        val result = ProjectMutator.deleteClipUniversal(state.project, clipId, ripple = ripple)
+        if (!result.changed) {
+            if (result.message.isNotBlank()) showStatus(result.message)
+            return
+        }
+        val synced = refreshAudioSyncTracks(result.project, state.waveformSensitivity)
+        commitProjectChange(synced)
         _uiState.update {
             it.copy(
-                selectedClipId = null,
+                selectedClipId = if (it.selectedClipId == clipId) null else it.selectedClipId,
                 selectedTimelineClipIds = it.selectedTimelineClipIds - clipId
             )
         }
-        showStatus("Clip deleted")
+        showStatus(result.message.ifBlank { if (ripple) "Ripple-deleted clip" else "Clip deleted" })
+    }
+
+    fun toggleClipHoldCut(clipId: String) {
+        stopPlayback()
+        val state = _uiState.value
+        val result = ProjectMutator.toggleClipHoldCutAtFrame(state.project, clipId, _playbackFrame.value)
+        if (result.changed) {
+            commitProjectChange(result.project)
+        }
+        if (result.message.isNotBlank()) showStatus(result.message)
+    }
+
+    fun trimClipToPlayhead(clipId: String, trimStart: Boolean? = null) {
+        stopPlayback()
+        val state = _uiState.value
+        val result = ProjectMutator.trimClipToPlayhead(state.project, clipId, _playbackFrame.value, trimStart)
+        if (result.changed) {
+            val synced = refreshAudioSyncTracks(result.project, state.waveformSensitivity)
+            commitProjectChange(synced)
+        }
+        if (result.message.isNotBlank()) showStatus(result.message)
+    }
+
+    fun trimOrMoveTimelineClip(
+        clipId: String,
+        newStartFrame: Int,
+        newDurationFrames: Int,
+        isMoveOnly: Boolean
+    ) {
+        stopPlayback()
+        val state = _uiState.value
+        val result = ProjectMutator.trimOrMoveClip(
+            project = state.project,
+            clipId = clipId,
+            newStartFrame = newStartFrame,
+            newDurationFrames = newDurationFrames,
+            isMoveOnly = isMoveOnly
+        )
+        if (result.changed) {
+            val synced = refreshAudioSyncTracks(result.project, state.waveformSensitivity)
+            commitProjectChange(synced)
+        }
+        if (result.message.isNotBlank()) showStatus(result.message)
+    }
+
+    fun moveClipAcrossTracks(
+        clipId: String,
+        targetLayerId: String?,
+        targetStartFrame: Int,
+        createNewTrack: Boolean = false,
+        insertNewTrackAtTop: Boolean = true
+    ) {
+        stopPlayback()
+        val state = _uiState.value
+        val result = ProjectMutator.moveClipAcrossTracks(
+            project = state.project,
+            clipId = clipId,
+            targetLayerId = targetLayerId,
+            targetStartFrame = targetStartFrame,
+            createNewTrack = createNewTrack,
+            insertNewTrackAtTop = insertNewTrackAtTop
+        )
+        if (result.changed) {
+            val synced = refreshAudioSyncTracks(result.project, state.waveformSensitivity)
+            commitProjectChange(synced)
+            val moved = synced.activeScene.clips.firstOrNull { it.id == clipId }
+            _uiState.update {
+                it.copy(
+                    selectedClipId = clipId,
+                    selectedLayerId = moved?.layerId ?: it.selectedLayerId,
+                    selectedCameraBoxId = null
+                )
+            }
+        }
+        if (result.message.isNotBlank()) showStatus(result.message)
     }
 
     fun toggleTimelineMultiSelectMode() {
@@ -1320,20 +1444,31 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun deleteCameraBox(boxId: String) {
+    fun deleteCameraBox(boxId: String, ripple: Boolean = false) {
         stopPlayback()
         val state = _uiState.value
         if (state.project.activeScene.cameraLayerLocked) {
             showStatus("Camera Control layer is locked")
             return
         }
-        val updated = ProjectMutator.deleteCameraBox(state.project, boxId)
-        commitProjectChange(updated)
-        val nextSel = updated.activeScene.cameraBoxes.firstOrNull()?.id
+        val result = ProjectMutator.deleteCameraBoxUniversal(state.project, boxId, ripple = ripple)
+        if (!result.changed) return
+        commitProjectChange(result.project)
+        val nextSel = result.project.activeScene.cameraBoxes.firstOrNull()?.id
         _uiState.update {
             it.copy(selectedCameraBoxId = if (it.selectedCameraBoxId == boxId) nextSel else it.selectedCameraBoxId)
         }
-        showStatus("Deleted Camera Box")
+        showStatus(result.message.ifBlank { if (ripple) "Ripple-deleted Camera Box" else "Deleted Camera Box" })
+    }
+
+    fun trimCameraBoxToPlayhead(boxId: String, trimStart: Boolean? = null) {
+        stopPlayback()
+        val state = _uiState.value
+        val result = ProjectMutator.trimCameraBoxToPlayhead(state.project, boxId, _playbackFrame.value, trimStart)
+        if (result.changed) {
+            commitProjectChange(result.project)
+        }
+        if (result.message.isNotBlank()) showStatus(result.message)
     }
 
     fun cycleCameraBoxEasing(boxId: String, explicitEasing: EasingType? = null) {
@@ -2029,7 +2164,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun adjustTimelineZoom(delta: Float) {
-        _uiState.update { it.copy(timelineZoom = (it.timelineZoom + delta).coerceIn(0.5f, 2.5f)) }
+        _uiState.update { it.copy(timelineZoom = (it.timelineZoom + delta).coerceIn(0.4f, 2.6f)) }
+    }
+
+    fun setTimelineZoom(newZoom: Float) {
+        val clamped = newZoom.coerceIn(0.4f, 2.6f)
+        if (kotlin.math.abs(clamped - _uiState.value.timelineZoom) > 0.005f) {
+            _uiState.update { it.copy(timelineZoom = clamped) }
+        }
     }
 
     // --- Playback Engine (Drift-Free Monotonic Clock + Zero Full-Screen Recomposition) ---
@@ -2243,7 +2385,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun applyDirectorScript(scriptJson: String, mode: com.example.engine.DirectorScriptImportMode) {
+    fun applyDirectorScript(
+        scriptJson: String,
+        mode: com.example.engine.DirectorScriptImportMode,
+        trackSelection: com.example.engine.DirectorScriptTrackSelection = com.example.engine.DirectorScriptTrackSelection()
+    ) {
         stopPlayback()
         val stateSnapshot = _uiState.value
         viewModelScope.launch {
@@ -2254,7 +2400,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     currentProject = stateSnapshot.project,
                     existingCharacters = stateSnapshot.characters,
                     existingMediaAssets = stateSnapshot.mediaAssets,
-                    importMode = mode
+                    importMode = mode,
+                    trackSelection = trackSelection
                 )
             }
             result.onSuccess { compiled ->
@@ -2279,6 +2426,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     stateSnapshot.mediaAssets
                 }
 
+                // Persist applied script into offline Director Script History (last 10)
+                val r = compiled.report
+                val updatedHistory = directorScriptHistoryStorage.recordAppliedScript(
+                    title = r.scriptTitle ?: compiled.project.name,
+                    scriptJson = r.sanitizedJson.ifBlank { scriptJson },
+                    sceneCount = r.sceneCount,
+                    totalDurationSec = r.totalDurationSec,
+                    clipCount = r.clipCount,
+                    cameraShotCount = r.cameraShotCount,
+                    importMode = mode.name
+                )
+
                 // Automatic Undo snapshot before committing compiled director script
                 commitProjectChange(compiled.project)
                 _playbackFrame.value = 0
@@ -2286,6 +2445,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     cur.copy(
                         characters = mergedCharacters,
                         mediaAssets = mergedMedia,
+                        directorScriptHistory = updatedHistory,
                         currentFrame = 0,
                         selectedClipId = compiled.project.activeScene.clips.firstOrNull()?.id,
                         activeSheet = ActiveEditorSheet.NONE
@@ -2296,13 +2456,29 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     mergedCharacters.associateBy { it.id }
                 )
                 saveCurrentProject(silent = true)
-                val r = compiled.report
+                val selectiveNote = if (trackSelection.allSelected) "" else " (selective)"
                 showStatus(
-                    "Script applied: ${r.sceneCount} scene(s), ${r.clipCount} clip(s), ${r.inlineSvgCount} SVG(s), ${r.cameraShotCount} cam shot(s)"
+                    "Script applied$selectiveNote: ${r.sceneCount} scene(s), ${r.clipCount} clip(s), ${r.inlineSvgCount} SVG(s), ${r.cameraShotCount} cam shot(s)"
                 )
             }.onFailure { err ->
                 showStatus("Director script error: ${err.message ?: "invalid JSON"}")
             }
+        }
+    }
+
+    fun deleteDirectorScriptHistoryEntry(entryId: String) {
+        viewModelScope.launch {
+            val updated = directorScriptHistoryStorage.deleteEntry(entryId)
+            _uiState.update { it.copy(directorScriptHistory = updated) }
+            showStatus("Removed script from history")
+        }
+    }
+
+    fun clearDirectorScriptHistory() {
+        viewModelScope.launch {
+            val updated = directorScriptHistoryStorage.clearAll()
+            _uiState.update { it.copy(directorScriptHistory = updated) }
+            showStatus("Cleared director script history")
         }
     }
 

@@ -20,6 +20,78 @@ object AIBlueprintExporter {
     const val SCHEMA_VERSION = 3
     const val GROUND_Y_NORMALIZED = 0.82f
 
+    enum class BlueprintExportMode(val label: String) {
+        COMPACT("Compact"),
+        FULL("Full")
+    }
+
+    data class BlueprintExportOptions(
+        val mode: BlueprintExportMode = BlueprintExportMode.FULL,
+        val includeCurrentTimelineState: Boolean = false
+    )
+
+    data class TimelineKeyframeSnapshot(
+        val tSec: Double,
+        val x: Float,
+        val y: Float,
+        val scaleX: Float = 1f,
+        val scaleY: Float = 1f,
+        val rotation: Float = 0f,
+        val opacity: Float = 1f,
+        val easing: String = "LINEAR",
+        val expression: String? = null
+    )
+
+    data class TimelineClipSnapshot(
+        val id: String,
+        val name: String,
+        val layerId: String,
+        val layerType: String,
+        val characterId: String? = null,
+        val startSec: Double,
+        val durationSec: Double,
+        val animationPreset: String? = null,
+        val facialExpression: String? = null,
+        val textContent: String? = null,
+        val audioLabel: String? = null,
+        val audioTrackRole: String? = null,
+        val keyframes: List<TimelineKeyframeSnapshot> = emptyList()
+    )
+
+    data class TimelineDialogueSnapshot(
+        val id: String,
+        val speakerName: String,
+        val speakerCharacterId: String? = null,
+        val text: String,
+        val language: String,
+        val startSec: Double,
+        val endSec: Double,
+        val showSpeechBubble: Boolean,
+        val showSubtitle: Boolean
+    )
+
+    data class TimelineCameraKeyframeSnapshot(
+        val tSec: Double,
+        val x: Float,
+        val y: Float,
+        val zoom: Float,
+        val rotation: Float,
+        val easing: String
+    )
+
+    data class CurrentTimelineStatePayload(
+        val activeSceneIndex: Int,
+        val sceneName: String,
+        val durationSec: Double,
+        val backgroundColorHex: String,
+        val colourGrading: String,
+        val particleVfx: String,
+        val clips: List<TimelineClipSnapshot> = emptyList(),
+        val dialogueTimings: List<TimelineDialogueSnapshot> = emptyList(),
+        val cameraKeyframes: List<TimelineCameraKeyframeSnapshot> = emptyList(),
+        val cameraBoxes: List<BlueprintCameraBox> = emptyList()
+    )
+
     data class CoordinateSystemSpec(
         val origin: String = "top-left",
         val xRange: List<Float> = listOf(0.0f, 1.0f),
@@ -168,10 +240,23 @@ object AIBlueprintExporter {
     data class BlueprintDocumentV3(
         val format: String = "framecraft.blueprint",
         val schemaVersion: Int = SCHEMA_VERSION,
+        val exportMode: String = BlueprintExportMode.FULL.name,
         val projectMeta: ProjectMetaPayload,
         val projectAssets: ProjectAssetsPayload,
+        val currentTimelineState: CurrentTimelineStatePayload? = null,
         val capabilities: BlueprintCapabilitiesPayload,
-        val universalExtensionSchemas: UniversalExtensionSchemasPayload
+        val universalExtensionSchemas: UniversalExtensionSchemasPayload? = null
+    )
+
+    data class CompactBlueprintDocumentV3(
+        val format: String = "framecraft.blueprint",
+        val schemaVersion: Int = SCHEMA_VERSION,
+        val exportMode: String = BlueprintExportMode.COMPACT.name,
+        val projectMeta: ProjectMetaPayload,
+        val projectAssets: ProjectAssetsPayload,
+        val currentTimelineState: CurrentTimelineStatePayload? = null,
+        val capabilities: Map<String, Any>,
+        val rules: List<String>
     )
 
     private val moshi: Moshi by lazy {
@@ -188,7 +273,8 @@ object AIBlueprintExporter {
         project: ProjectDocument,
         characters: List<CharacterRigDefinition>,
         mediaAssets: List<LocalMediaAsset>,
-        audioDurationResolver: (String?) -> Long? = { path -> probeAudioDurationMs(path) }
+        audioDurationResolver: (String?) -> Long? = { path -> probeAudioDurationMs(path) },
+        options: BlueprintExportOptions = BlueprintExportOptions()
     ): BlueprintDocumentV3 {
         val caps = StudioCapabilityRegistry.introspect()
 
@@ -520,27 +606,217 @@ object AIBlueprintExporter {
             )
         )
 
+        val currentTimelineSnapshot = if (options.includeCurrentTimelineState) {
+            buildCurrentTimelineState(project, blueprintCameraBoxes)
+        } else {
+            null
+        }
+
         return BlueprintDocumentV3(
+            exportMode = options.mode.name,
             projectMeta = meta,
             projectAssets = assetsPayload,
+            currentTimelineState = currentTimelineSnapshot,
             capabilities = capabilitiesPayload,
-            universalExtensionSchemas = extensionSchemas
+            universalExtensionSchemas = if (options.mode == BlueprintExportMode.FULL) extensionSchemas else null
+        )
+    }
+
+    private fun buildCurrentTimelineState(
+        project: ProjectDocument,
+        blueprintCameraBoxes: List<BlueprintCameraBox>
+    ): CurrentTimelineStatePayload {
+        val scene = project.activeScene
+        val fpsD = project.fps.coerceAtLeast(1).toDouble()
+        fun framesToSec(f: Int): Double = ((f / fpsD) * 1000.0).roundToInt() / 1000.0
+        val layerTypeById = scene.layers.associate { it.id to it.type.name }
+
+        val clipSnapshots = scene.clips.map { clip ->
+            TimelineClipSnapshot(
+                id = clip.id,
+                name = clip.name,
+                layerId = clip.layerId,
+                layerType = layerTypeById[clip.layerId] ?: LayerType.IMAGE.name,
+                characterId = clip.characterId,
+                startSec = framesToSec(clip.startFrame),
+                durationSec = framesToSec(clip.durationFrames),
+                animationPreset = if (clip.characterId != null) clip.animationPresetType.name else null,
+                facialExpression = if (clip.characterId != null && clip.facialExpression != FacialExpression.AUTO) {
+                    clip.facialExpression.name
+                } else null,
+                textContent = clip.textContent?.takeIf { it.isNotBlank() },
+                audioLabel = clip.audioPath?.let { clip.audioLabel ?: clip.name },
+                audioTrackRole = clip.audioPath?.let { AudioDuckingEngine.inferEffectiveRole(clip).name },
+                keyframes = clip.keyframes.sortedBy { it.frame }.map { kf ->
+                    TimelineKeyframeSnapshot(
+                        tSec = framesToSec(clip.startFrame + kf.frame),
+                        x = (kf.x * 1000f).roundToInt() / 1000f,
+                        y = (kf.y * 1000f).roundToInt() / 1000f,
+                        scaleX = (kf.scaleX * 100f).roundToInt() / 100f,
+                        scaleY = (kf.scaleY * 100f).roundToInt() / 100f,
+                        rotation = (kf.rotation * 10f).roundToInt() / 10f,
+                        opacity = (kf.opacity * 100f).roundToInt() / 100f,
+                        easing = kf.easing.name,
+                        expression = kf.expressionOverride?.takeIf { it != FacialExpression.AUTO }?.name
+                    )
+                }
+            )
+        }
+
+        val dialogueSnapshots = scene.dialogueOverlays.map { beat ->
+            TimelineDialogueSnapshot(
+                id = beat.id,
+                speakerName = beat.speakerName,
+                speakerCharacterId = beat.speakerCharacterId,
+                text = beat.text,
+                language = beat.language,
+                startSec = framesToSec(beat.startFrame),
+                endSec = framesToSec(beat.endFrame),
+                showSpeechBubble = beat.showSpeechBubble,
+                showSubtitle = beat.showSubtitle
+            )
+        }
+
+        val camKfSnapshots = scene.cameraKeyframes.sortedBy { it.frame }.map { kf ->
+            TimelineCameraKeyframeSnapshot(
+                tSec = framesToSec(kf.frame),
+                x = (kf.x * 1000f).roundToInt() / 1000f,
+                y = (kf.y * 1000f).roundToInt() / 1000f,
+                zoom = (kf.zoom * 100f).roundToInt() / 100f,
+                rotation = (kf.rotation * 10f).roundToInt() / 10f,
+                easing = kf.easing.name
+            )
+        }
+
+        return CurrentTimelineStatePayload(
+            activeSceneIndex = project.activeSceneIndex,
+            sceneName = scene.name,
+            durationSec = framesToSec(scene.durationFrames),
+            backgroundColorHex = scene.backgroundColorHex,
+            colourGrading = scene.vfxConfig.lightingMood.name,
+            particleVfx = scene.vfxConfig.particleType.name,
+            clips = clipSnapshots,
+            dialogueTimings = dialogueSnapshots,
+            cameraKeyframes = camKfSnapshots,
+            cameraBoxes = blueprintCameraBoxes
         )
     }
 
     /**
      * Serializes the `.fcblueprint.json` v3 document to compact or pretty-printed JSON.
+     * In [BlueprintExportMode.COMPACT], omits verbose example schemas/skeletons and trims redundant
+     * metadata so external LLMs receive a much smaller token footprint while keeping all live IDs & enums.
      */
     fun exportToJson(
         project: ProjectDocument,
         characters: List<CharacterRigDefinition>,
         mediaAssets: List<LocalMediaAsset>,
         prettyPrint: Boolean = true,
-        audioDurationResolver: (String?) -> Long? = { path -> probeAudioDurationMs(path) }
+        audioDurationResolver: (String?) -> Long? = { path -> probeAudioDurationMs(path) },
+        options: BlueprintExportOptions = BlueprintExportOptions()
     ): String {
-        val doc = buildBlueprint(project, characters, mediaAssets, audioDurationResolver)
+        val doc = buildBlueprint(project, characters, mediaAssets, audioDurationResolver, options)
+        if (options.mode == BlueprintExportMode.COMPACT) {
+            val c = doc.capabilities
+            val compactCaps = linkedMapOf<String, Any>(
+                "animationPresets" to c.animationPresets,
+                "facialExpressions" to c.facialExpressions,
+                "armGestures" to c.armGesturePresets,
+                "handPoses" to c.handPoses,
+                "orientations" to c.orientations,
+                "ikJoints" to c.ikJointIds,
+                "cameraShots" to c.cameraShotTypes,
+                "easings" to c.curveAndEasingTypes,
+                "vfx" to c.vfxStyles,
+                "weather" to c.weatherParticleStyles,
+                "colourGrading" to c.colourGradingPresets,
+                "transitions" to c.transitions,
+                "customTransitionClips" to c.customTransitionClipTypes,
+                "inlineSvgTypes" to c.inlineSvgAssetTypes,
+                "audioRoles" to c.audioTrackRoles,
+                "dialogueLanguages" to c.dialogueOverlayLanguages,
+                "universalCurves" to c.universalCurveTypes,
+                "universalLoops" to c.universalLoopModes
+            )
+            val compactDoc = CompactBlueprintDocumentV3(
+                projectMeta = doc.projectMeta,
+                projectAssets = doc.projectAssets,
+                currentTimelineState = doc.currentTimelineState,
+                capabilities = compactCaps,
+                rules = listOf(
+                    "Normalized stage 0..1 (ground y=0.82).",
+                    "Output strict .fcscript.json v3 with scenes[], clips[], cameraShots[]/cameraBoxes[], weatherLayers[], dialogueOverlays[], inlineSvgAssets[], customAnimations{}, customTransitions{}, keyframeTracks[].",
+                    "Dialogue overlays showSpeechBubble & showSubtitle default false; set true only when requested."
+                )
+            )
+            val compactAdapter = moshi.adapter(CompactBlueprintDocumentV3::class.java)
+            return compactAdapter.toJson(compactDoc)
+        }
         val adapter = moshi.adapter(BlueprintDocumentV3::class.java)
         return if (prettyPrint) adapter.indent("  ").toJson(doc) else adapter.toJson(doc)
+    }
+
+    /**
+     * Deterministic offline LLM token estimator (~3.8 chars/token weighted for JSON punctuation & Unicode).
+     */
+    fun estimateTokenCount(text: String): Int {
+        if (text.isBlank()) return 0
+        val charBased = text.length / 3.85
+        val punctuationCount = text.count { it == '{' || it == '}' || it == '[' || it == ']' || it == ':' || it == ',' || it == '"' }
+        val nonAsciiCount = text.count { it.code > 127 }
+        // Non-ASCII Indic scripts (Odia/Hindi) typically use slightly more tokens per character
+        val estimated = charBased + (punctuationCount * 0.08) + (nonAsciiCount * 0.45)
+        return estimated.roundToInt().coerceAtLeast(1)
+    }
+
+    fun formatTokenEstimate(tokens: Int): String {
+        val rounded = if (tokens >= 100) ((tokens + 25) / 50) * 50 else tokens
+        return "~%,d tokens".format(java.util.Locale.US, rounded)
+    }
+
+    /**
+     * Builds a 1-tap Ready-to-Paste Master AI Director Prompt combining:
+     * (a) FrameCraft's Master Film Director System Rules,
+     * (b) the live exported `.fcblueprint.json`, and
+     * (c) the user's optional Story / Scene Instructions (Odia / Hindi / English).
+     */
+    fun buildCompleteAiPrompt(
+        blueprintJson: String,
+        storyInstructions: String = "",
+        options: BlueprintExportOptions = BlueprintExportOptions()
+    ): String {
+        val cleanStory = storyInstructions.trim()
+        val sb = StringBuilder(blueprintJson.length + cleanStory.length + 2200)
+        sb.appendLine("# FRAMECRAFT MASTER FILM DIRECTOR PROMPT (SCHEMA v$SCHEMA_VERSION)")
+        sb.appendLine("You are an expert 2D Animation Film Director generating a 100% valid `.fcscript.json` (format: \"framecraft.director_script\", schemaVersion: $SCHEMA_VERSION) for the offline FrameCraft Android Studio.")
+        sb.appendLine()
+        sb.appendLine("## MASTER FILM DIRECTOR RULES")
+        sb.appendLine("1. PURE JSON OUTPUT: Reply with a single valid JSON object only (no markdown prose outside JSON, no trailing commas, no comments).")
+        sb.appendLine("2. COORDINATES & ASSETS: Stage is normalized 0.0..1.0 (x: left->right, y: top->bottom, ground y=0.82). Reuse exact IDs from `projectAssets` (characters, backgrounds, propsAndImages, audioClips, savedPoses) whenever available.")
+        sb.appendLine("3. DIALOGUE-DRIVEN CAMERA FOCUS: Direct cinematic shots via `scenes[].cameraShots[]` (`WIDE_ESTABLISHING`, `CLOSE_UP_SPEAKER`, `TWO_SHOT`, `REACTION_CUT`, `DRAMATIC_ZOOM_IN`, etc. with `focusTargetCharacterId`) and/or editable visual multi-camera boxes `scenes[].cameraBoxes[]` (`id: \"A\"|\"B\"|\"C\"`, `startSec`, `endSec`, `centerX`, `centerY`, `zoom`, `rotation`, `easing: \"EASE_IN_OUT\"|\"LINEAR\"|\"HOLD\"|\"CUSTOM_CUBIC\"`).")
+        sb.appendLine("4. MULTI-TRACK CHARACTER ACTING: Layer `animationPreset` + `armGesturePreset` + `facialExpression` / `facialOverridesEnabled` (`mouthShapeOverride`, `eyeShapeOverride`, `eyebrowShapeOverride`) + `ikPose` (`enforceJointLimits: true`) + `lipSyncAudioId` simultaneously without overwriting tracks.")
+        sb.appendLine("5. 2.5D PARALLAX & ATMOSPHERE: Assign `layers[].parallaxDepth` (0.2 Far, 0.6 Mid, 1.0 Stage, 1.35 Near). Use `colourGrading`, `vfx`, and deterministic `scenes[].weatherLayers[]` (`RAIN`, `FOG`, `FALLING_LEAVES`, `FIRE_SPARKS`, `SMOKE`, `DUST_MOTES`, `SNOW`).")
+        sb.appendLine("6. SELECTIVE SUBTITLES & SPEECH BUBBLES: Put dialogue in `scenes[].dialogueOverlays[]` (`language`: \"en\", \"hi\", or \"or\" for Odia). Keep `showSpeechBubble` and `showSubtitle` `false` by default — set `true` ONLY when on-screen captions/bubbles are explicitly wanted.")
+        sb.appendLine("7. AUDIO & AUTO DUCKING: Tag audio clips with `audioTrackRole` (`DIALOGUE`, `BGM`, `SFX`) and configure top-level `audioDucking` so BGM dips cleanly under dialogue.")
+        sb.appendLine("8. UNIVERSAL EXTENSIBILITY: If the story needs a character, animal, tree, prop, background, motion, or scene transition not in `projectAssets`, invent it cleanly using `inlineSvgAssets[]` (AndroidSVG-safe `<path>/<circle>/<rect>/<g id='...' data-pivot='x,y'>`, zero `<script>/<filter>`), `customAnimations{}`, `customTransitions{}`, and `keyframeTracks[]`.")
+        if (options.includeCurrentTimelineState) {
+            sb.appendLine("9. REFINE EXISTING TIMELINE: `currentTimelineState` in the blueprint below contains the currently animated active scene. Preserve and refine existing clip timings, framing, and dialogue unless the instructions ask to replace them.")
+        }
+        sb.appendLine()
+        sb.appendLine("## LIVE FRAMECRAFT BLUEPRINT (.fcblueprint.json — ${options.mode.label} Mode)")
+        sb.appendLine("```json")
+        sb.appendLine(blueprintJson.trim())
+        sb.appendLine("```")
+        sb.appendLine()
+        sb.appendLine("## STORY / SCENE INSTRUCTIONS (ODIA / HINDI / ENGLISH)")
+        if (cleanStory.isNotEmpty()) {
+            sb.appendLine(cleanStory)
+        } else {
+            sb.appendLine("[Write your story, dialogue, mood, and scene beats here — Odia, Hindi, or English supported.]")
+        }
+        sb.appendLine()
+        sb.append("Return ONLY the complete, valid `.fcscript.json` JSON object now.")
+        return sb.toString()
     }
 
     /**

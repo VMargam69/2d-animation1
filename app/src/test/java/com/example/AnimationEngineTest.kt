@@ -3497,10 +3497,10 @@ class AnimationEngineTest {
                 val zoomedIn = com.example.engine.CameraBoxEngine.applyAspectLockedResize(
                     box = baseBox,
                     handle = handle,
-                    pointerX = initialGeom.centerX + 42f,
-                    pointerY = initialGeom.centerY - 28f,
-                    stageW = w,
-                    stageH = h
+                    pointerPxX = initialGeom.centerX + 42f,
+                    pointerPxY = initialGeom.centerY - 28f,
+                    canvasWidth = w,
+                    canvasHeight = h
                 )
                 val geomIn = com.example.engine.CameraBoxEngine.computeBoxGeometry(zoomedIn, w, h)
                 assertEquals(
@@ -3514,10 +3514,10 @@ class AnimationEngineTest {
                 val zoomedOut = com.example.engine.CameraBoxEngine.applyAspectLockedResize(
                     box = baseBox,
                     handle = handle,
-                    pointerX = initialGeom.centerX + w * 0.45f,
-                    pointerY = initialGeom.centerY + h * 0.45f,
-                    stageW = w,
-                    stageH = h
+                    pointerPxX = initialGeom.centerX + w * 0.45f,
+                    pointerPxY = initialGeom.centerY + h * 0.45f,
+                    canvasWidth = w,
+                    canvasHeight = h
                 )
                 val geomOut = com.example.engine.CameraBoxEngine.computeBoxGeometry(zoomedOut, w, h)
                 assertEquals(
@@ -3534,11 +3534,11 @@ class AnimationEngineTest {
         val stageW = 1280f
         val stageH = 720f
         val panned = com.example.engine.CameraBoxEngine.applyPanDrag(
-            box = baseBox,
-            deltaPxX = 128f * com.example.engine.CameraBoxEngine.DIRECTOR_STAGE_ZOOM,
-            deltaPxY = -72f * com.example.engine.CameraBoxEngine.DIRECTOR_STAGE_ZOOM,
-            stageW = stageW,
-            stageH = stageH
+            baseBox = baseBox,
+            totalDeltaPxX = 128f * com.example.engine.CameraBoxEngine.DIRECTOR_STAGE_ZOOM,
+            totalDeltaPxY = -72f * com.example.engine.CameraBoxEngine.DIRECTOR_STAGE_ZOOM,
+            canvasWidth = stageW,
+            canvasHeight = stageH
         )
         assertEquals(0.6f, panned.centerX, 0.005f)
         assertEquals(0.4f, panned.centerY, 0.005f)
@@ -3547,20 +3547,20 @@ class AnimationEngineTest {
         // Pointer straight above center -> snaps cleanly to 0 degrees
         val snappedRot = com.example.engine.CameraBoxEngine.applyRotationDrag(
             box = baseBox,
-            pointerX = geomBase.centerX + 2f,
-            pointerY = geomBase.centerY - 220f,
-            stageW = stageW,
-            stageH = stageH
+            pointerPxX = geomBase.centerX + 2f,
+            pointerPxY = geomBase.centerY - 220f,
+            canvasWidth = stageW,
+            canvasHeight = stageH
         )
         assertEquals(0f, snappedRot.rotation, 0.01f)
 
         // Pointer to the right of center -> ~90 degrees clockwise
         val tiltedRot = com.example.engine.CameraBoxEngine.applyRotationDrag(
             box = baseBox,
-            pointerX = geomBase.centerX + 220f,
-            pointerY = geomBase.centerY,
-            stageW = stageW,
-            stageH = stageH
+            pointerPxX = geomBase.centerX + 220f,
+            pointerPxY = geomBase.centerY,
+            canvasWidth = stageW,
+            canvasHeight = stageH
         )
         assertEquals(90f, tiltedRot.rotation, 1.0f)
 
@@ -3568,12 +3568,12 @@ class AnimationEngineTest {
         val rotHit = com.example.engine.CameraBoxEngine.hitTestBoxes(
             boxes = listOf(baseBox),
             selectedBoxId = baseBox.id,
-            pointerX = geomBase.rotHandleX,
-            pointerY = geomBase.rotHandleY,
-            stageW = stageW,
-            stageH = stageH
+            touchPxX = geomBase.rotateHandle.first,
+            touchPxY = geomBase.rotateHandle.second,
+            canvasWidth = stageW,
+            canvasHeight = stageH
         )
-        assertEquals(com.example.engine.CameraBoxHandle.ROTATE, rotHit?.handle)
+        assertEquals(com.example.engine.CameraBoxHandle.ROTATE_STEM, rotHit?.second)
     }
 
     @Test
@@ -3682,8 +3682,10 @@ class AnimationEngineTest {
         assertNotNull(splitRightId)
         assertEquals(listOf("A", "B", "C", "D"), pSplit.activeScene.cameraBoxes.map { it.label })
 
-        // Cycle easing on A -> switches through EASE_IN_OUT -> HOLD -> LINEAR -> CUSTOM_CUBIC
-        val pHold = ProjectMutator.cycleCameraBoxEasing(pSplit, idA)
+        // Cycle easing on A -> switches through EASE_IN_OUT -> LINEAR -> HOLD -> CUSTOM_CUBIC
+        val pLinear = ProjectMutator.cycleCameraBoxEasing(pSplit, idA)
+        assertEquals(EasingType.LINEAR, pLinear.activeScene.cameraBoxes.first { it.id == idA }.easing)
+        val pHold = ProjectMutator.cycleCameraBoxEasing(pLinear, idA)
         assertEquals(EasingType.HOLD, pHold.activeScene.cameraBoxes.first { it.id == idA }.easing)
 
         // Duplicate C -> adds 5th box E
@@ -3702,7 +3704,7 @@ class AnimationEngineTest {
         assertEquals(listOf("A", "B", "C", "D"), pDel.activeScene.cameraBoxes.map { it.label })
 
         // Locked camera layer blocks mutations
-        val lockedProject = ProjectMutator.toggleCameraLayerLock(pDel)
+        val lockedProject = ProjectMutator.toggleCameraLayerLocked(pDel)
         assertTrue(lockedProject.activeScene.cameraLayerLocked)
         val (afterLockedAdd, lockedNewId) = ProjectMutator.addCameraBox(lockedProject, atFrame = 10)
         assertNull(lockedNewId)
@@ -3715,7 +3717,6 @@ class AnimationEngineTest {
         val baseScene = AnimationScene(
             id = "scene_cam_sync",
             name = "Camera Sync",
-            fps = 24,
             durationFrames = 96,
             cameraLayerEnabled = true,
             cameraBoxes = listOf(
@@ -3753,8 +3754,8 @@ class AnimationEngineTest {
         )
         assertEquals(2, blueprint.projectAssets.cameraBoxes.size)
         assertEquals("A", blueprint.projectAssets.cameraBoxes[0].id)
-        assertEquals(0.0f, blueprint.projectAssets.cameraBoxes[0].startSec, 0.01f)
-        assertEquals(2.0f, blueprint.projectAssets.cameraBoxes[0].endSec, 0.01f)
+        assertEquals(0.0, blueprint.projectAssets.cameraBoxes[0].startSec, 0.01)
+        assertEquals(2.0, blueprint.projectAssets.cameraBoxes[0].endSec, 0.01)
         assertEquals("B", blueprint.projectAssets.cameraBoxes[1].id)
         assertEquals(1.85f, blueprint.projectAssets.cameraBoxes[1].zoom, 0.01f)
         assertEquals("HOLD", blueprint.projectAssets.cameraBoxes[1].easing)
@@ -3762,7 +3763,7 @@ class AnimationEngineTest {
         // 2. Import .fcscript.json with explicit cameraBoxes[] AND verify dry-run + compiled boxes
         val explicitScript = """
             {
-              "schemaVersion": "3.0",
+              "schemaVersion": 3,
               "projectName": "MultiCam Film",
               "fps": 24,
               "scenes": [
@@ -3779,7 +3780,12 @@ class AnimationEngineTest {
             }
         """.trimIndent()
 
-        val dryRun = com.example.engine.DirectorScriptReceiver.dryRunInspect(explicitScript).getOrThrow()
+        val (_, dryRun) = com.example.engine.DirectorScriptReceiver.validateAndDryRun(
+            scriptJson = explicitScript,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = emptyList()
+        )
+        assertTrue(dryRun.isValid)
         assertEquals(3, dryRun.cameraBoxCount)
 
         val compiledExplicit = com.example.engine.DirectorScriptReceiver.compileIntoProject(
@@ -3802,7 +3808,7 @@ class AnimationEngineTest {
         // 3. Import .fcscript.json using cameraShots[] -> must auto-populate editable visual A/B boxes!
         val shotsScript = """
             {
-              "schemaVersion": "3.0",
+              "schemaVersion": 3,
               "projectName": "Shots To Boxes",
               "fps": 24,
               "scenes": [
@@ -3810,8 +3816,8 @@ class AnimationEngineTest {
                   "name": "Dialog",
                   "durationSec": 4.0,
                   "cameraShots": [
-                    { "atSec": 0.0, "shotType": "WIDE", "x": 0.5, "y": 0.5, "zoom": 1.0, "easing": "EASE_IN_OUT" },
-                    { "atSec": 2.0, "shotType": "CLOSE_UP", "x": 0.62, "y": 0.38, "zoom": 1.8, "easing": "HOLD" }
+                    { "tSec": 0.0, "shotType": "WIDE_ESTABLISHING", "x": 0.5, "y": 0.5, "zoom": 1.0, "easing": "EASE_IN_OUT" },
+                    { "tSec": 2.0, "shotType": "CLOSE_UP_SPEAKER", "x": 0.62, "y": 0.38, "zoom": 1.8, "easing": "HOLD" }
                   ]
                 }
               ]
@@ -3843,13 +3849,725 @@ class AnimationEngineTest {
         assertEquals(listOf("A", "B", "C"), restored.activeScene.cameraBoxes.map { it.label })
         assertEquals(EasingType.HOLD, restored.activeScene.cameraBoxes[1].easing)
     }
+
+    @Test
+    fun `json auto-sanitizer cleans markdown fences, leading prose, comments, trailing commas, and builds error fix prompt`() {
+        val messyLlmResponse = """
+            Sure! Here is your cinematic FrameCraft director script:
+            ```json
+            {
+              // Single-line comment that would normally break JSON
+              "format": "framecraft.director_script",
+              "schemaVersion": 3,
+              "projectName": "Monsoon Drama",
+              /* Multi-line block comment
+                 describing inline SVG with http:// URL that MUST NOT be stripped */
+              "inlineSvgAssets": [
+                {
+                  "id": "svg_lamp",
+                  "type": "PROP",
+                  "viewBox": "0 0 64 64",
+                  "svgXml": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='16' fill='#FDE047'/></svg>",
+                },
+              ],
+              "scenes": [
+                {
+                  "name": "Rainy Street",
+                  "durationSec": 5.0,
+                  "colourGrading": "NIGHT_MOONLIGHT",
+                  "weatherLayers": [
+                    { "style": "RAIN", "density": 0.75, },
+                  ],
+                  "cameraBoxes": [
+                    { "id": "A", "startSec": 0.0, "endSec": 5.0, "centerX": 0.5, "centerY": 0.5, "zoom": 1.15, "rotation": 0.0, "easing": "EASE_IN_OUT", },
+                  ],
+                },
+              ],
+            }
+            ```
+            Hope you love this animation! Let me know if you want changes.
+        """.trimIndent()
+
+        val sanitized = com.example.engine.DirectorScriptJsonSanitizer.sanitizeLlmJson(messyLlmResponse)
+        assertTrue(sanitized.extractedFromFence)
+        assertTrue(sanitized.fixesApplied.isNotEmpty())
+        // Must preserve http:// inside string literals
+        assertTrue(sanitized.sanitizedJson.contains("http://www.w3.org/2000/svg"))
+
+        val (dto, report) = com.example.engine.DirectorScriptReceiver.validateAndDryRun(
+            scriptJson = messyLlmResponse,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = emptyList()
+        )
+        assertNotNull(dto)
+        assertTrue("Expected messy LLM JSON to validate cleanly, errors=${report.errors}", report.isValid)
+        assertEquals("Monsoon Drama", report.scriptTitle)
+        assertEquals(1, report.sceneCount)
+        assertEquals(5.0f, report.totalDurationSec, 0.05f)
+        assertEquals(1, report.inlineSvgCount)
+        assertEquals(1, report.weatherLayerCount)
+        assertEquals(1, report.cameraBoxCount)
+        assertTrue(report.sanitizationFixes.isNotEmpty())
+
+        // Verify broken JSON produces actionable errorHint + errorSnippet + 1-tap Fix Prompt
+        val brokenJson = """
+            Here is your script:
+            {
+              "format": "framecraft.director_script",
+              "scenes": [
+                { "name": "Broken", "durationSec": "NOT_A_NUMBER" }
+              ]
+            }
+        """.trimIndent()
+        val (_, failReport) = com.example.engine.DirectorScriptReceiver.validateAndDryRun(
+            scriptJson = brokenJson,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = emptyList()
+        )
+        assertFalse(failReport.isValid)
+        assertTrue(failReport.errors.isNotEmpty())
+        assertFalse(failReport.errorHint.isNullOrBlank())
+        assertFalse(failReport.errorSnippet.isNullOrBlank())
+
+        val fixPrompt = com.example.engine.DirectorScriptReceiver.buildErrorFixPrompt(brokenJson, failReport)
+        assertTrue(fixPrompt.contains("REPAIR REQUEST"))
+        assertTrue(fixPrompt.contains("EXACT ERROR"))
+        assertTrue(fixPrompt.contains("durationSec"))
+    }
+
+    @Test
+    fun `blueprint compact mode shrinks tokens, Include Current Timeline State snapshots active scene, and Complete Prompt bundles instructions`() {
+        val heroId = BuiltInCatalog.builtInCharacters.first().id
+        val scene = AnimationScene(
+            id = "scene_refine",
+            name = "Village Sunset",
+            durationFrames = 120,
+            backgroundColorHex = "#1E293B",
+            vfxConfig = SceneVfxConfig(lightingMood = SceneLightingMood.GOLDEN_HOUR, particleType = SceneParticleType.FIREFLIES),
+            layers = listOf(
+                AnimationLayer(id = "l_char", name = "Hero", type = LayerType.CHARACTER, orderIndex = 0)
+            ),
+            clips = listOf(
+                TimelineClip(
+                    id = "clip_hero_1",
+                    layerId = "l_char",
+                    name = "Aarav",
+                    startFrame = 0,
+                    durationFrames = 96,
+                    characterId = heroId,
+                    animationPresetType = AnimationPresetType.TALKING,
+                    keyframes = listOf(
+                        TransformKeyframe(frame = 0, x = 0.35f, y = 0.82f),
+                        TransformKeyframe(frame = 48, x = 0.55f, y = 0.82f, easing = EasingType.EASE_IN_OUT)
+                    )
+                )
+            ),
+            dialogueOverlays = listOf(
+                DialogueOverlayBeat(
+                    id = "dlg_1",
+                    speakerName = "Aarav",
+                    speakerCharacterId = heroId,
+                    text = "ନମସ୍କାର ସାଙ୍ଗ!",
+                    language = "or",
+                    startFrame = 12,
+                    endFrame = 72,
+                    showSpeechBubble = false,
+                    showSubtitle = true
+                )
+            ),
+            cameraKeyframes = listOf(
+                CameraKeyframe(frame = 0, x = 0.5f, y = 0.5f, zoom = 1.0f),
+                CameraKeyframe(frame = 48, x = 0.45f, y = 0.48f, zoom = 1.6f, easing = EasingType.EASE_IN_OUT)
+            )
+        )
+        val project = ProjectDocument(name = "Refine Test", fps = 24, scenes = listOf(scene))
+
+        // 1. Default (Include Current Timeline State = OFF)
+        val fullDefaultBp = com.example.engine.AIBlueprintExporter.buildBlueprint(
+            project = project,
+            characters = BuiltInCatalog.builtInCharacters,
+            mediaAssets = emptyList()
+        )
+        assertNull(fullDefaultBp.currentTimelineState)
+
+        // 2. Include Current Timeline State = ON
+        val refineOptions = com.example.engine.AIBlueprintExporter.BlueprintExportOptions(
+            mode = com.example.engine.AIBlueprintExporter.BlueprintExportMode.FULL,
+            includeCurrentTimelineState = true
+        )
+        val refineBp = com.example.engine.AIBlueprintExporter.buildBlueprint(
+            project = project,
+            characters = BuiltInCatalog.builtInCharacters,
+            mediaAssets = emptyList(),
+            options = refineOptions
+        )
+        val timelineState = refineBp.currentTimelineState
+        assertNotNull(timelineState)
+        assertEquals("Village Sunset", timelineState!!.sceneName)
+        assertEquals(5.0, timelineState.durationSec, 0.01)
+        assertEquals(1, timelineState.clips.size)
+        assertEquals("clip_hero_1", timelineState.clips[0].id)
+        assertEquals(2, timelineState.clips[0].keyframes.size)
+        assertEquals(1, timelineState.dialogueTimings.size)
+        assertEquals("or", timelineState.dialogueTimings[0].language)
+        assertEquals(2, timelineState.cameraKeyframes.size)
+
+        // 3. Compact mode produces significantly fewer tokens than Full mode
+        val fullJson = com.example.engine.AIBlueprintExporter.exportToJson(
+            project = project,
+            characters = BuiltInCatalog.builtInCharacters,
+            mediaAssets = emptyList(),
+            prettyPrint = true,
+            options = com.example.engine.AIBlueprintExporter.BlueprintExportOptions(
+                mode = com.example.engine.AIBlueprintExporter.BlueprintExportMode.FULL,
+                includeCurrentTimelineState = true
+            )
+        )
+        val compactJson = com.example.engine.AIBlueprintExporter.exportToJson(
+            project = project,
+            characters = BuiltInCatalog.builtInCharacters,
+            mediaAssets = emptyList(),
+            prettyPrint = false,
+            options = com.example.engine.AIBlueprintExporter.BlueprintExportOptions(
+                mode = com.example.engine.AIBlueprintExporter.BlueprintExportMode.COMPACT,
+                includeCurrentTimelineState = true
+            )
+        )
+        val fullTokens = com.example.engine.AIBlueprintExporter.estimateTokenCount(fullJson)
+        val compactTokens = com.example.engine.AIBlueprintExporter.estimateTokenCount(compactJson)
+        assertTrue("Expected compact ($compactTokens) < full ($fullTokens)", compactTokens < fullTokens)
+        assertTrue(compactJson.contains("\"currentTimelineState\""))
+        assertTrue(com.example.engine.AIBlueprintExporter.formatTokenEstimate(compactTokens).contains("tokens"))
+
+        // 4. Complete Ready-to-Paste AI Prompt bundles rules + blueprint + Odia/Hindi/English story
+        val story = "ଆରଭ ଓ ପ୍ରିୟା ସନ୍ଧ୍ୟାରେ ଗପସପ କରୁଛନ୍ତି — add warm golden hour close-up!"
+        val completePrompt = com.example.engine.AIBlueprintExporter.buildCompleteAiPrompt(
+            blueprintJson = compactJson,
+            storyInstructions = story,
+            options = com.example.engine.AIBlueprintExporter.BlueprintExportOptions(
+                mode = com.example.engine.AIBlueprintExporter.BlueprintExportMode.COMPACT,
+                includeCurrentTimelineState = true
+            )
+        )
+        assertTrue(completePrompt.contains("MASTER FILM DIRECTOR RULES"))
+        assertTrue(completePrompt.contains("REFINE EXISTING TIMELINE"))
+        assertTrue(completePrompt.contains(compactJson.take(120)))
+        assertTrue(completePrompt.contains(story))
+    }
+
+    @Test
+    fun `selective track import merges only checked categories and preserves unchecked tracks`() {
+        val heroId = BuiltInCatalog.builtInCharacters.first().id
+        val existingScene = AnimationScene(
+            id = "existing_s1",
+            name = "Original Scene",
+            durationFrames = 96,
+            backgroundColorHex = "#112233",
+            vfxConfig = SceneVfxConfig(lightingMood = SceneLightingMood.NONE, particleType = SceneParticleType.NONE),
+            weatherLayers = emptyList(),
+            cameraBoxes = listOf(
+                CameraBoxClip(id = "old_cam", label = "A", startFrame = 0, endFrame = 96, centerX = 0.5f, centerY = 0.5f, zoom = 1.0f)
+            ),
+            dialogueOverlays = listOf(
+                DialogueOverlayBeat(
+                    id = "orig_dlg",
+                    speakerName = "Orig",
+                    text = "Keep original subtitle",
+                    language = "en",
+                    startFrame = 0,
+                    endFrame = 48,
+                    showSubtitle = true
+                )
+            ),
+            layers = listOf(
+                AnimationLayer(id = "orig_char_layer", name = "Orig Hero", type = LayerType.CHARACTER, orderIndex = 0),
+                AnimationLayer(id = "orig_audio_layer", name = "Orig BGM", type = LayerType.AUDIO, orderIndex = 1)
+            ),
+            clips = listOf(
+                TimelineClip(id = "orig_hero_clip", layerId = "orig_char_layer", name = "Original Hero", characterId = heroId),
+                TimelineClip(id = "orig_audio_clip", layerId = "orig_audio_layer", name = "Original BGM", audioPath = "/tmp/orig.wav")
+            )
+        )
+        val existingProject = ProjectDocument(
+            name = "Selective Base",
+            fps = 24,
+            audioDucking = AudioDuckingConfig(duckingEnabled = true, duckTargetVolume = 0.22f),
+            scenes = listOf(existingScene)
+        )
+
+        val incomingScript = """
+            {
+              "format": "framecraft.director_script",
+              "schemaVersion": 3,
+              "audioDucking": { "duckingEnabled": false, "duckTargetVolume": 0.75 },
+              "scenes": [
+                {
+                  "name": "Upgraded Scene",
+                  "durationSec": 4.0,
+                  "backgroundColorHex": "#FF00AA",
+                  "colourGrading": "GOLDEN_HOUR",
+                  "weatherLayers": [
+                    { "style": "RAIN", "density": 0.8 }
+                  ],
+                  "cameraBoxes": [
+                    { "id": "A", "startSec": 0.0, "endSec": 2.0, "centerX": 0.3, "centerY": 0.5, "zoom": 1.2, "easing": "EASE_IN_OUT" },
+                    { "id": "B", "startSec": 2.0, "endSec": 4.0, "centerX": 0.7, "centerY": 0.4, "zoom": 2.0, "easing": "HOLD" }
+                  ],
+                  "dialogueOverlays": [
+                    { "speakerName": "New", "text": "Incoming subtitle should be skipped", "language": "en", "startSec": 0.0, "endSec": 2.0, "showSubtitle": true }
+                  ],
+                  "clips": [
+                    { "id": "new_char_clip", "name": "Incoming Char", "characterId": "$heroId", "startSec": 0.0, "durationSec": 4.0, "animationPreset": "WALKING" }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        // Import ONLY Camera Shots + VFX/Weather/Grading!
+        val cameraAndVfxOnly = com.example.engine.DirectorScriptTrackSelection(
+            charactersAndActing = false,
+            cameraShots = true,
+            backgroundsAndParallax = false,
+            vfxWeatherAndGrading = true,
+            audioAndDucking = false,
+            subtitlesAndBubbles = false
+        )
+
+        val compiled = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = incomingScript,
+            currentProject = existingProject,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = emptyList(),
+            importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE,
+            trackSelection = cameraAndVfxOnly
+        ).getOrThrow()
+
+        val resultScene = compiled.project.activeScene
+        // Checked categories MUST update:
+        assertEquals(2, resultScene.cameraBoxes.size)
+        assertEquals(2.0f, resultScene.cameraBoxes[1].zoom, 0.01f)
+        assertEquals(SceneLightingMood.GOLDEN_HOUR, resultScene.vfxConfig.lightingMood)
+        assertEquals(1, resultScene.weatherLayers.size)
+        assertEquals(WeatherParticleStyle.RAIN, resultScene.weatherLayers[0].style)
+
+        // Unchecked categories MUST be preserved untouched:
+        assertEquals("#112233", resultScene.backgroundColorHex)
+        assertTrue(resultScene.clips.any { it.id == "orig_hero_clip" })
+        assertFalse(resultScene.clips.any { it.id == "new_char_clip" })
+        assertTrue(resultScene.clips.any { it.id == "orig_audio_clip" })
+        assertEquals(0.22f, compiled.project.audioDucking.duckTargetVolume, 0.001f)
+        assertTrue(compiled.project.audioDucking.duckingEnabled)
+        assertEquals(1, resultScene.dialogueOverlays.size)
+        assertEquals("Keep original subtitle", resultScene.dialogueOverlays[0].text)
+
+        // Zero checked tracks must cleanly fail
+        val emptySelection = com.example.engine.DirectorScriptTrackSelection(
+            charactersAndActing = false,
+            cameraShots = false,
+            backgroundsAndParallax = false,
+            vfxWeatherAndGrading = false,
+            audioAndDucking = false,
+            subtitlesAndBubbles = false
+        )
+        val emptyResult = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = incomingScript,
+            currentProject = existingProject,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = emptyList(),
+            importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE,
+            trackSelection = emptySelection
+        )
+        assertTrue(emptyResult.isFailure)
+    }
+
+    @Test
+    fun `offline director script history caps at 10 entries, deduplicates, and persists to local json`() {
+        val tempFile = java.io.File.createTempFile("director_script_history_test_", ".json")
+        tempFile.deleteOnExit()
+        try {
+            val storage = com.example.data.DirectorScriptHistoryStorage(tempFile)
+            assertTrue(storage.loadHistoryBlocking().isEmpty())
+
+            // Record 12 distinct scripts -> strictly capped at 10 newest
+            for (i in 1..12) {
+                storage.recordAppliedScriptBlocking(
+                    title = "Draft #$i",
+                    scriptJson = """{"format":"framecraft.director_script","projectName":"Draft #$i","scenes":[{"name":"S$i","durationSec":3.0}]}""",
+                    sceneCount = i,
+                    totalDurationSec = i * 3.0f,
+                    clipCount = i * 2,
+                    cameraShotCount = i,
+                    appliedAtMs = 1_700_000_000_000L + i * 1000L
+                )
+            }
+
+            // Reload via a brand new storage instance to verify disk persistence
+            val reloaded = com.example.data.DirectorScriptHistoryStorage(tempFile).loadHistoryBlocking()
+            assertEquals(10, reloaded.size)
+            assertEquals("Draft #12", reloaded.first().title)
+            assertEquals("Draft #3", reloaded.last().title)
+
+            // Re-applying identical JSON of Draft #5 deduplicates and bumps it to top
+            val dupJson = reloaded.first { it.title == "Draft #5" }.scriptJson
+            val afterDedup = storage.recordAppliedScriptBlocking(
+                title = "Draft #5 Re-Run",
+                scriptJson = dupJson,
+                sceneCount = 5,
+                totalDurationSec = 15.0f,
+                appliedAtMs = 1_700_000_999_000L
+            )
+            assertEquals(10, afterDedup.size)
+            assertEquals("Draft #5 Re-Run", afterDedup.first().title)
+            assertEquals(1, afterDedup.count { it.scriptJson.trim() == dupJson.trim() })
+
+            // Delete 1 entry & verify persisted count = 9
+            val afterDelete = storage.deleteEntryBlocking(afterDedup.first().id)
+            assertEquals(9, afterDelete.size)
+            assertEquals(9, com.example.data.DirectorScriptHistoryStorage(tempFile).loadHistoryBlocking().size)
+
+            // Clear all
+            assertTrue(storage.clearAllBlocking().isEmpty())
+            assertTrue(com.example.data.DirectorScriptHistoryStorage(tempFile).loadHistoryBlocking().isEmpty())
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    @Test
+    fun `universal NLE split preserves character keyframes expressions and audio trim offsets`() {
+        val charLayer = AnimationLayer(id = "layer_char", name = "Hero", type = LayerType.CHARACTER, orderIndex = 1)
+        val audioLayer = AnimationLayer(id = "layer_audio", name = "BGM", type = LayerType.AUDIO, orderIndex = 0)
+        val lockedLayer = AnimationLayer(id = "layer_locked", name = "Locked", type = LayerType.TEXT, isLocked = true, orderIndex = 2)
+
+        val charClip = TimelineClip(
+            id = "clip_char",
+            layerId = charLayer.id,
+            name = "Hero Walk",
+            startFrame = 10,
+            durationFrames = 60,
+            characterId = "char_1",
+            keyframes = listOf(
+                TransformKeyframe(frame = 0, x = 0.2f, y = 0.5f, expressionOverride = FacialExpression.HAPPY),
+                TransformKeyframe(frame = 30, x = 0.5f, y = 0.5f, expressionOverride = FacialExpression.SAD),
+                TransformKeyframe(frame = 50, x = 0.8f, y = 0.5f, expressionOverride = FacialExpression.ANGRY)
+            ),
+            simultaneousTracks = listOf(
+                SimultaneousTrackClip(
+                    id = "sim_1",
+                    trackType = SimultaneousTrackType.HAND_GESTURE,
+                    startLocalFrame = 10,
+                    durationFrames = 40,
+                    armGesturePreset = ArmGestureTrackPreset.WAVE
+                )
+            )
+        )
+        val audioClip = TimelineClip(
+            id = "clip_audio",
+            layerId = audioLayer.id,
+            name = "Voiceover",
+            startFrame = 0,
+            durationFrames = 48, // 2.0s @ 24fps
+            audioPath = "/tmp/voice.wav",
+            audioTrimStartMs = 1000L,
+            audioTrimEndMs = 3000L
+        )
+        val lockedClip = TimelineClip(
+            id = "clip_locked",
+            layerId = lockedLayer.id,
+            name = "Locked Title",
+            startFrame = 0,
+            durationFrames = 40,
+            textContent = "Keep Me"
+        )
+
+        val project = ProjectDocument(
+            name = "NLE Split Test",
+            fps = 24,
+            scenes = listOf(
+                AnimationScene(
+                    name = "Scene 1",
+                    durationFrames = 120,
+                    layers = listOf(audioLayer, charLayer, lockedLayer),
+                    clips = listOf(audioClip, charClip, lockedClip)
+                )
+            )
+        )
+
+        // 1. Split Character clip at global frame 40 (local frame 30)
+        val charSplit = com.example.engine.TimelineNleEngine.splitClipUniversal(project, charClip.id, globalFrame = 40)
+        assertTrue(charSplit.changed)
+        assertNotNull(charSplit.createdClipId)
+        val charHalves = charSplit.project.activeScene.clips.filter { it.layerId == charLayer.id }.sortedBy { it.startFrame }
+        assertEquals(2, charHalves.size)
+        assertEquals(10, charHalves[0].startFrame)
+        assertEquals(30, charHalves[0].durationFrames)
+        assertEquals(40, charHalves[1].startFrame)
+        assertEquals(30, charHalves[1].durationFrames)
+        // Second half starts with evaluated keyframe at local 0 (x ~= 0.5) and shifted keyframe at local 20 (x = 0.8)
+        assertEquals(0.5f, charHalves[1].keyframes.first().x, 0.02f)
+        assertEquals(20, charHalves[1].keyframes.last().frame)
+        assertEquals(0.8f, charHalves[1].keyframes.last().x, 0.01f)
+        assertEquals(FacialExpression.ANGRY, charHalves[1].keyframes.last().expressionOverride)
+        // Simultaneous track was cleanly split across both halves
+        assertEquals(1, charHalves[0].simultaneousTracks.size)
+        assertEquals(1, charHalves[1].simultaneousTracks.size)
+
+        // 2. Split Audio clip at global frame 24 (1.0s into 2.0s clip starting at trimStart 1000ms)
+        val audioSplit = com.example.engine.TimelineNleEngine.splitClipUniversal(charSplit.project, audioClip.id, globalFrame = 24)
+        assertTrue(audioSplit.changed)
+        val audioHalves = audioSplit.project.activeScene.clips.filter { it.layerId == audioLayer.id }.sortedBy { it.startFrame }
+        assertEquals(2, audioHalves.size)
+        assertEquals(1000L, audioHalves[0].audioTrimStartMs)
+        assertEquals(2000L, audioHalves[0].audioTrimEndMs)
+        assertEquals(2000L, audioHalves[1].audioTrimStartMs)
+        assertEquals(3000L, audioHalves[1].audioTrimEndMs)
+
+        // 3. Locked layer blocks split cleanly
+        val lockedSplit = com.example.engine.TimelineNleEngine.splitClipUniversal(audioSplit.project, lockedClip.id, globalFrame = 20)
+        assertFalse(lockedSplit.changed)
+    }
+
+    @Test
+    fun `universal NLE duplicate ripple delete hold cut and trim to playhead anchor keyframes`() {
+        val layer = AnimationLayer(id = "layer_main", name = "Text Track", type = LayerType.TEXT, orderIndex = 0)
+        val c1 = TimelineClip(
+            id = "c1",
+            layerId = layer.id,
+            name = "Title 1",
+            startFrame = 0,
+            durationFrames = 24,
+            textContent = "Intro",
+            keyframes = listOf(
+                TransformKeyframe(frame = 0, x = 0.2f, easing = EasingType.LINEAR),
+                TransformKeyframe(frame = 12, x = 0.5f, easing = EasingType.LINEAR),
+                TransformKeyframe(frame = 20, x = 0.8f, easing = EasingType.LINEAR)
+            )
+        )
+        val project = ProjectDocument(
+            name = "NLE Ops Test",
+            fps = 24,
+            scenes = listOf(
+                AnimationScene(name = "S1", durationFrames = 120, layers = listOf(layer), clips = listOf(c1))
+            )
+        )
+
+        // 1. Duplicate onto SAME track right after endFrame (frame 24) because slot [24..48) is clear
+        val dup1 = com.example.engine.TimelineNleEngine.duplicateClipUniversal(project, c1.id)
+        assertTrue(dup1.changed)
+        assertNull(dup1.createdLayerId)
+        val c2 = dup1.project.activeScene.clips.first { it.id == dup1.createdClipId }
+        assertEquals(layer.id, c2.layerId)
+        assertEquals(24, c2.startFrame)
+        assertEquals(24, c2.durationFrames)
+
+        // 2. Duplicate c1 AGAIN when [24..48) is now occupied -> spawns adjacent lane cleanly!
+        val dup2 = com.example.engine.TimelineNleEngine.duplicateClipUniversal(dup1.project, c1.id)
+        assertTrue(dup2.changed)
+        assertNotNull(dup2.createdLayerId)
+        val c3 = dup2.project.activeScene.clips.first { it.id == dup2.createdClipId }
+        assertEquals(dup2.createdLayerId, c3.layerId)
+        assertEquals(24, c3.startFrame)
+
+        // 3. Toggle Hold (Cut) on c1 at frame 12 -> switches to HOLD, toggling again returns to EASE_IN_OUT
+        val holdOn = com.example.engine.TimelineNleEngine.toggleClipHoldCutAtFrame(dup1.project, c1.id, globalFrame = 12)
+        assertTrue(holdOn.changed)
+        val kfHold = holdOn.project.activeScene.clips.first { it.id == c1.id }.keyframes.first { it.frame == 12 }
+        assertEquals(EasingType.HOLD, kfHold.easing)
+        val holdOff = com.example.engine.TimelineNleEngine.toggleClipHoldCutAtFrame(holdOn.project, c1.id, globalFrame = 12)
+        val kfSmooth = holdOff.project.activeScene.clips.first { it.id == c1.id }.keyframes.first { it.frame == 12 }
+        assertEquals(EasingType.EASE_IN_OUT, kfSmooth.easing)
+
+        // 4. Left-Trim to Playhead at frame 8 anchors world keyframes (frame 12 -> local 4, frame 20 -> local 12)
+        val trimmed = com.example.engine.TimelineNleEngine.trimClipToPlayhead(dup1.project, c1.id, globalFrame = 8, trimStart = true)
+        assertTrue(trimmed.changed)
+        val c1Trimmed = trimmed.project.activeScene.clips.first { it.id == c1.id }
+        assertEquals(8, c1Trimmed.startFrame)
+        assertEquals(16, c1Trimmed.durationFrames)
+        assertTrue(c1Trimmed.keyframes.any { it.frame == 0 })
+        assertTrue(c1Trimmed.keyframes.any { it.frame == 4 && kotlin.math.abs(it.x - 0.5f) < 0.01f })
+        assertTrue(c1Trimmed.keyframes.any { it.frame == 12 && kotlin.math.abs(it.x - 0.8f) < 0.01f })
+
+        // 5. Ripple Delete c1 -> closes gap automatically so c2 shifts left from frame 24 to frame 0!
+        val rippleDel = com.example.engine.TimelineNleEngine.deleteClipUniversal(dup1.project, c1.id, ripple = true)
+        assertTrue(rippleDel.changed)
+        assertEquals(1, rippleDel.project.activeScene.clips.size)
+        val c2AfterRipple = rippleDel.project.activeScene.clips.first()
+        assertEquals(c2.id, c2AfterRipple.id)
+        assertEquals(0, c2AfterRipple.startFrame)
+    }
+
+    @Test
+    fun `cross track drag and drop enforces compatibility resolves overlap and supports undo rollback`() {
+        val charL1 = AnimationLayer(id = "char_1", name = "Hero 1", type = LayerType.CHARACTER, orderIndex = 0)
+        val charL2 = AnimationLayer(id = "char_2", name = "Hero 2", type = LayerType.CHARACTER, orderIndex = 1)
+        val audioL1 = AnimationLayer(id = "aud_1", name = "BGM 1", type = LayerType.AUDIO, orderIndex = 2)
+        val audioL2 = AnimationLayer(id = "aud_2", name = "SFX 2", type = LayerType.AUDIO, orderIndex = 3)
+
+        val heroA = TimelineClip(id = "hero_a", layerId = charL1.id, name = "Hero A", startFrame = 0, durationFrames = 20, characterId = "cA")
+        val heroB = TimelineClip(id = "hero_b", layerId = charL2.id, name = "Hero B", startFrame = 10, durationFrames = 20, characterId = "cB")
+        val bgm = TimelineClip(id = "bgm_1", layerId = audioL1.id, name = "Music", startFrame = 0, durationFrames = 40, audioPath = "/tmp/m.wav")
+
+        val initialProject = ProjectDocument(
+            name = "Cross-Track Test",
+            scenes = listOf(
+                AnimationScene(
+                    name = "Scene 1",
+                    durationFrames = 120,
+                    layers = listOf(charL1, charL2, audioL1, audioL2),
+                    clips = listOf(heroA, heroB, bgm)
+                )
+            )
+        )
+
+        // Undo stack simulation
+        val undoStack = ArrayDeque<ProjectDocument>()
+        undoStack.addLast(initialProject)
+
+        // 1. Incompatible drop: Audio -> Character track is cleanly rejected
+        val invalidDrop = com.example.engine.TimelineNleEngine.moveClipAcrossTracks(
+            project = initialProject,
+            clipId = bgm.id,
+            targetLayerId = charL1.id,
+            targetStartFrame = 15
+        )
+        assertFalse(invalidDrop.changed)
+        assertTrue(invalidDrop.message.contains("Audio", ignoreCase = true))
+
+        // 2. Compatible Audio -> Audio cross-track move succeeds
+        val audioMove = com.example.engine.TimelineNleEngine.moveClipAcrossTracks(
+            project = initialProject,
+            clipId = bgm.id,
+            targetLayerId = audioL2.id,
+            targetStartFrame = 12
+        )
+        assertTrue(audioMove.changed)
+        val movedBgm = audioMove.project.activeScene.clips.first { it.id == bgm.id }
+        assertEquals(audioL2.id, movedBgm.layerId)
+        assertEquals(12, movedBgm.startFrame)
+
+        // 3. Smart overlap collision handling: Dropping Hero A (dur 20) onto charL2 at frame 15
+        // collides with Hero B [10..30) -> snaps cleanly adjacent to frame 30 (no silent overlap!)
+        val overlapMove = com.example.engine.TimelineNleEngine.moveClipAcrossTracks(
+            project = audioMove.project,
+            clipId = heroA.id,
+            targetLayerId = charL2.id,
+            targetStartFrame = 15
+        )
+        assertTrue(overlapMove.changed)
+        val movedHeroA = overlapMove.project.activeScene.clips.first { it.id == heroA.id }
+        assertEquals(charL2.id, movedHeroA.layerId)
+        assertEquals(30, movedHeroA.startFrame)
+
+        // 4. Drop onto "+ New Track" spawns a matching CHARACTER track and moves clip there
+        val newTrackMove = com.example.engine.TimelineNleEngine.moveClipAcrossTracks(
+            project = overlapMove.project,
+            clipId = heroA.id,
+            targetLayerId = null,
+            targetStartFrame = 5,
+            createNewTrack = true,
+            insertNewTrackAtTop = true
+        )
+        assertTrue(newTrackMove.changed)
+        assertNotNull(newTrackMove.createdLayerId)
+        assertEquals(5, newTrackMove.project.activeScene.layers.size)
+        val heroOnNew = newTrackMove.project.activeScene.clips.first { it.id == heroA.id }
+        assertEquals(newTrackMove.createdLayerId, heroOnNew.layerId)
+        assertEquals(5, heroOnNew.startFrame)
+
+        // 5. Undo rollback restores original state untouched (immutability verification)
+        val rolledBack = undoStack.removeLast()
+        assertEquals(4, rolledBack.activeScene.layers.size)
+        assertEquals(charL1.id, rolledBack.activeScene.clips.first { it.id == heroA.id }.layerId)
+        assertEquals(audioL1.id, rolledBack.activeScene.clips.first { it.id == bgm.id }.layerId)
+    }
+
+    @Test
+    fun `magnetic snapping engine snaps move and trim edges within 10dp tolerance to playhead clips and markers`() {
+        val layer1 = AnimationLayer(id = "l1", name = "Hero", type = LayerType.CHARACTER, orderIndex = 0)
+        val layer2 = AnimationLayer(id = "l2", name = "Title", type = LayerType.TEXT, orderIndex = 1)
+        val moving = TimelineClip(id = "moving", layerId = layer1.id, name = "Hero", startFrame = 0, durationFrames = 20)
+        val anchor = TimelineClip(id = "anchor", layerId = layer2.id, name = "Title", startFrame = 35, durationFrames = 15) // [35..50)
+        val scene = AnimationScene(
+            name = "Snap Scene",
+            durationFrames = 120,
+            layers = listOf(layer1, layer2),
+            clips = listOf(moving, anchor)
+        )
+
+        val targets = com.example.engine.TimelineNleEngine.collectSnapTargets(
+            scene = scene,
+            playheadFrame = 22,
+            majorMarkerStep = 12,
+            excludeClipId = moving.id
+        )
+        // Assume frameWidthPx = 10px, snapTolerancePx = 15px (1.5 frames tolerance)
+        // 1. MOVE start near Playhead (21 -> snaps to 22)
+        val snapPlayhead = com.example.engine.TimelineNleEngine.computeMagneticSnap(
+            candidateStartFrame = 21,
+            candidateEndFrame = 41,
+            mode = com.example.engine.SnapDragMode.MOVE,
+            snapTargets = targets,
+            frameWidthPx = 10f,
+            snapTolerancePx = 15f
+        )
+        assertEquals(22, snapPlayhead.snappedStartFrame)
+        assertEquals(42, snapPlayhead.snappedEndFrame)
+        assertEquals(22, snapPlayhead.snappedGuideFrame)
+        assertEquals(com.example.engine.SnapSource.PLAYHEAD, snapPlayhead.snapSource)
+
+        // 2. MOVE end edge near other clip's end (candidate [29..49) -> end snaps to 50 -> [30..50))
+        val snapClipEnd = com.example.engine.TimelineNleEngine.computeMagneticSnap(
+            candidateStartFrame = 29,
+            candidateEndFrame = 49,
+            mode = com.example.engine.SnapDragMode.MOVE,
+            snapTargets = targets,
+            frameWidthPx = 10f,
+            snapTolerancePx = 15f
+        )
+        assertEquals(30, snapClipEnd.snappedStartFrame)
+        assertEquals(50, snapClipEnd.snappedEndFrame)
+        assertEquals(50, snapClipEnd.snappedGuideFrame)
+        assertEquals(com.example.engine.SnapSource.CLIP_END, snapClipEnd.snapSource)
+
+        // 3. TRIM_LEFT near other clip's start (34 -> snaps to 35)
+        val snapTrimLeft = com.example.engine.TimelineNleEngine.computeMagneticSnap(
+            candidateStartFrame = 34,
+            candidateEndFrame = 60,
+            mode = com.example.engine.SnapDragMode.TRIM_LEFT,
+            snapTargets = targets,
+            frameWidthPx = 10f,
+            snapTolerancePx = 15f
+        )
+        assertEquals(35, snapTrimLeft.snappedStartFrame)
+        assertEquals(35, snapTrimLeft.snappedGuideFrame)
+        assertEquals(com.example.engine.SnapSource.CLIP_START, snapTrimLeft.snapSource)
+
+        // 4. TRIM_RIGHT near major ruler marker (47 -> snaps to 48)
+        val snapTrimRight = com.example.engine.TimelineNleEngine.computeMagneticSnap(
+            candidateStartFrame = 10,
+            candidateEndFrame = 47,
+            mode = com.example.engine.SnapDragMode.TRIM_RIGHT,
+            snapTargets = targets,
+            frameWidthPx = 10f,
+            snapTolerancePx = 15f
+        )
+        assertEquals(48, snapTrimRight.snappedEndFrame)
+        assertEquals(48, snapTrimRight.snappedGuideFrame)
+        assertEquals(com.example.engine.SnapSource.RULER_MARKER, snapTrimRight.snapSource)
+
+        // 5. Outside tolerance -> does not snap
+        val noSnap = com.example.engine.TimelineNleEngine.computeMagneticSnap(
+            candidateStartFrame = 16,
+            candidateEndFrame = 31,
+            mode = com.example.engine.SnapDragMode.MOVE,
+            snapTargets = targets,
+            frameWidthPx = 10f,
+            snapTolerancePx = 10f
+        )
+        assertNull(noSnap.snappedGuideFrame)
+        assertEquals(16, noSnap.snappedStartFrame)
+    }
 }
-
-
-
-
-
-
-
-
-

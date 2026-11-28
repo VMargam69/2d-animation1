@@ -25,6 +25,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.engine.CameraBoxEngine
+import com.example.engine.SnapDragMode
+import com.example.engine.SnapTarget
+import com.example.engine.TimelineNleEngine
 import com.example.model.CameraBoxClip
 import com.example.model.EasingType
 import com.example.ui.theme.*
@@ -89,7 +92,7 @@ internal fun CameraBoxQuickActionsStrip(
             }
             item {
                 CameraStripChip(
-                    label = "+ Cam",
+                    label = "Cam",
                     icon = Icons.Rounded.Add,
                     accent = CameraPeachAccent,
                     enabled = !isLocked,
@@ -196,6 +199,9 @@ internal fun CameraBoxTimelineClipBar(
     frameWidthDp: Dp,
     frameWidthPx: Float,
     sceneDurationFrames: Int,
+    snapTargets: List<SnapTarget> = emptyList(),
+    snapTolerancePx: Float = 0f,
+    onActiveSnapGuideChange: (Int?) -> Unit = {},
     onSelect: () -> Unit,
     onCycleEasing: () -> Unit,
     onTrimOrMove: (newStartFrame: Int, newEndFrame: Int) -> Unit
@@ -205,6 +211,8 @@ internal fun CameraBoxTimelineClipBar(
     var isDragging by remember(box.id) { mutableStateOf(false) }
 
     val latestBox by rememberUpdatedState(box)
+    val latestSnapTargets by rememberUpdatedState(snapTargets)
+    val latestOnSnapGuide by rememberUpdatedState(onActiveSnapGuideChange)
     val latestOnSelect by rememberUpdatedState(onSelect)
     val latestOnTrimOrMove by rememberUpdatedState(onTrimOrMove)
 
@@ -280,19 +288,34 @@ internal fun CameraBoxTimelineClipBar(
                             val deltaF = (accumDx / frameWidthPx.coerceAtLeast(1f)).roundToInt()
                             val dur = (origEnd - origStart).coerceAtLeast(CameraBoxEngine.MIN_BOX_DURATION_FRAMES)
                             val maxStart = (sceneDurationFrames - dur).coerceAtLeast(0)
-                            val nextStart = (origStart + deltaF).coerceIn(0, maxStart)
+                            val rawStart = (origStart + deltaF).coerceIn(0, maxStart)
+                            val snapped = TimelineNleEngine.computeMagneticSnap(
+                                candidateStartFrame = rawStart,
+                                candidateEndFrame = rawStart + dur,
+                                mode = SnapDragMode.MOVE,
+                                snapTargets = latestSnapTargets,
+                                frameWidthPx = frameWidthPx,
+                                snapTolerancePx = snapTolerancePx,
+                                minDurationFrames = CameraBoxEngine.MIN_BOX_DURATION_FRAMES
+                            )
+                            val nextStart = snapped.snappedStartFrame.coerceIn(0, maxStart)
                             previewStart = nextStart
                             previewEnd = (nextStart + dur).coerceAtMost(sceneDurationFrames.coerceAtLeast(nextStart + dur))
+                            latestOnSnapGuide(snapped.snappedGuideFrame)
                         },
                         onDragEnd = {
                             val s = previewStart
                             val e = previewEnd
                             isDragging = false
+                            latestOnSnapGuide(null)
                             if (s != latestBox.startFrame || e != latestBox.endFrame) {
                                 latestOnTrimOrMove(s, e)
                             }
                         },
-                        onDragCancel = { isDragging = false }
+                        onDragCancel = {
+                            isDragging = false
+                            latestOnSnapGuide(null)
+                        }
                     )
                 }
         ) {
@@ -360,18 +383,33 @@ internal fun CameraBoxTimelineClipBar(
                             accumDx += dragAmount
                             val deltaF = (accumDx / frameWidthPx.coerceAtLeast(1f)).roundToInt()
                             val maxStart = (origEnd - CameraBoxEngine.MIN_BOX_DURATION_FRAMES).coerceAtLeast(0)
-                            previewStart = (origStart + deltaF).coerceIn(0, maxStart)
+                            val rawStart = (origStart + deltaF).coerceIn(0, maxStart)
+                            val snapped = TimelineNleEngine.computeMagneticSnap(
+                                candidateStartFrame = rawStart,
+                                candidateEndFrame = origEnd,
+                                mode = SnapDragMode.TRIM_LEFT,
+                                snapTargets = latestSnapTargets,
+                                frameWidthPx = frameWidthPx,
+                                snapTolerancePx = snapTolerancePx,
+                                minDurationFrames = CameraBoxEngine.MIN_BOX_DURATION_FRAMES
+                            )
+                            previewStart = snapped.snappedStartFrame
                             previewEnd = origEnd
+                            latestOnSnapGuide(snapped.snappedGuideFrame)
                         },
                         onDragEnd = {
                             val s = previewStart
                             val e = previewEnd
                             isDragging = false
+                            latestOnSnapGuide(null)
                             if (s != latestBox.startFrame) {
                                 latestOnTrimOrMove(s, e)
                             }
                         },
-                        onDragCancel = { isDragging = false }
+                        onDragCancel = {
+                            isDragging = false
+                            latestOnSnapGuide(null)
+                        }
                     )
                 }
                 .testTag("camera_box_trim_left_${box.label}")
@@ -412,18 +450,35 @@ internal fun CameraBoxTimelineClipBar(
                             accumDx += dragAmount
                             val deltaF = (accumDx / frameWidthPx.coerceAtLeast(1f)).roundToInt()
                             val minEnd = origStart + CameraBoxEngine.MIN_BOX_DURATION_FRAMES
+                            val maxEnd = sceneDurationFrames.coerceAtLeast(minEnd)
+                            val rawEnd = (origEnd + deltaF).coerceIn(minEnd, maxEnd)
+                            val snapped = TimelineNleEngine.computeMagneticSnap(
+                                candidateStartFrame = origStart,
+                                candidateEndFrame = rawEnd,
+                                mode = SnapDragMode.TRIM_RIGHT,
+                                snapTargets = latestSnapTargets,
+                                frameWidthPx = frameWidthPx,
+                                snapTolerancePx = snapTolerancePx,
+                                minDurationFrames = CameraBoxEngine.MIN_BOX_DURATION_FRAMES,
+                                maxFrame = maxEnd
+                            )
                             previewStart = origStart
-                            previewEnd = (origEnd + deltaF).coerceIn(minEnd, sceneDurationFrames.coerceAtLeast(minEnd))
+                            previewEnd = snapped.snappedEndFrame
+                            latestOnSnapGuide(snapped.snappedGuideFrame)
                         },
                         onDragEnd = {
                             val s = previewStart
                             val e = previewEnd
                             isDragging = false
+                            latestOnSnapGuide(null)
                             if (e != latestBox.endFrame) {
                                 latestOnTrimOrMove(s, e)
                             }
                         },
-                        onDragCancel = { isDragging = false }
+                        onDragCancel = {
+                            isDragging = false
+                            latestOnSnapGuide(null)
+                        }
                     )
                 }
                 .testTag("camera_box_trim_right_${box.label}")

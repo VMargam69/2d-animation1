@@ -194,6 +194,7 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 },
                 onApplyQuickMotion = { presetId, label -> viewModel.applyQuickMotionPreset(presetId, label) },
                 onAdjustTimelineZoom = { viewModel.adjustTimelineZoom(it) },
+                onSetTimelineZoom = { viewModel.setTimelineZoom(it) },
                 onToggleLayerVisibility = { viewModel.toggleLayerVisibility(it) },
                 onToggleLayerLock = { viewModel.toggleLayerLock(it) },
                 onAddLayer = { type, name -> viewModel.addEmptyLayer(type, name) },
@@ -208,9 +209,20 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 onUpdateTransform = { viewModel.updateSelectedClipTransform(it) },
                 onUpdateSelectedClip = { viewModel.updateSelectedClipProps(it) },
                 onSplitClip = { viewModel.splitSelectedClipAtPlayhead() },
+                onSplitClipById = { clipId -> viewModel.splitClipAtPlayhead(clipId) },
                 onDuplicateClip = { viewModel.duplicateSelectedClip() },
+                onDuplicateClipById = { clipId -> viewModel.duplicateClipById(clipId) },
                 onFlipClip = { viewModel.flipSelectedClip(it) },
                 onDeleteClip = { viewModel.deleteSelectedClip() },
+                onDeleteClipById = { clipId, ripple -> viewModel.deleteClipById(clipId, ripple) },
+                onToggleClipHoldCut = { clipId -> viewModel.toggleClipHoldCut(clipId) },
+                onTrimClipToPlayhead = { clipId -> viewModel.trimClipToPlayhead(clipId) },
+                onTrimOrMoveClip = { clipId, startF, durF, isMoveOnly ->
+                    viewModel.trimOrMoveTimelineClip(clipId, startF, durF, isMoveOnly)
+                },
+                onMoveClipAcrossTracks = { clipId, targetLayerId, targetStartF, createNewTrack, insertAtTop ->
+                    viewModel.moveClipAcrossTracks(clipId, targetLayerId, targetStartF, createNewTrack, insertAtTop)
+                },
                 onToggleTimelineMultiSelectMode = { viewModel.toggleTimelineMultiSelectMode() },
                 onToggleTimelineClipMultiSelect = { viewModel.toggleTimelineClipSelection(it) },
                 onSelectAllTimelineClips = { viewModel.selectAllTimelineClips() },
@@ -245,7 +257,9 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                 },
                 onDuplicateCameraBox = { id -> viewModel.duplicateCameraBox(id) },
                 onSplitCameraBox = { id -> viewModel.splitCameraBox(id) },
-                onDeleteCameraBox = { id -> viewModel.deleteCameraBox(id) },
+                onDeleteCameraBox = { id -> viewModel.deleteCameraBox(id, ripple = false) },
+                onDeleteCameraBoxRipple = { id, ripple -> viewModel.deleteCameraBox(id, ripple = ripple) },
+                onTrimCameraBoxToPlayhead = { id -> viewModel.trimCameraBoxToPlayhead(id) },
                 onCycleCameraBoxEasing = { id -> viewModel.cycleCameraBoxEasing(id) },
                 onStepAdjacentKeyframe = { forward -> viewModel.stepToAdjacentKeyframe(forward) },
                 onStampPoseKey = { viewModel.stampPoseAndCameraKeyframe() },
@@ -285,8 +299,14 @@ fun FrameCraftApp(viewModel: StudioViewModel = viewModel()) {
                     viewModel.setFacialShapeOverride(mouth, eye, eyebrow)
                 },
                 onClearFacialShapeOverrides = { viewModel.clearFacialShapeOverrides() },
-                onApplyDirectorScript = { scriptJson, mode ->
-                    viewModel.applyDirectorScript(scriptJson, mode)
+                onApplyDirectorScript = { scriptJson, mode, trackSelection ->
+                    viewModel.applyDirectorScript(scriptJson, mode, trackSelection)
+                },
+                onDeleteScriptHistoryEntry = { entryId ->
+                    viewModel.deleteDirectorScriptHistoryEntry(entryId)
+                },
+                onClearScriptHistory = {
+                    viewModel.clearDirectorScriptHistory()
                 },
                 onExportBlueprintToSaf = { uri, json ->
                     viewModel.exportBlueprintToSafUri(uri, json)
