@@ -212,6 +212,8 @@ object AIBlueprintExporter {
         val builtInProps: List<String>,
         val textBubbleStyles: List<String>,
         val modularActions: List<String>,
+        val speakingModes: List<String>,
+        val eyeblinkModes: List<String>,
         val savedPoseIds: List<String>,
         val clipOperations: List<String>,
         val armGesturePresets: List<String>,
@@ -468,6 +470,8 @@ object AIBlueprintExporter {
             builtInProps = caps.builtInProps.map { it.id },
             textBubbleStyles = caps.textBubbleStyles.map { it.id },
             modularActions = caps.modularActions.map { it.id },
+            speakingModes = caps.speakingModes.map { it.id },
+            eyeblinkModes = caps.eyeblinkModes.map { it.id },
             savedPoseIds = caps.savedPoses.map { it.id },
             clipOperations = caps.clipOperations.map { it.id },
             armGesturePresets = caps.armGesturePresets.map { it.id },
@@ -743,6 +747,9 @@ object AIBlueprintExporter {
                 "inlineSvgTypes" to c.inlineSvgAssetTypes,
                 "audioRoles" to c.audioTrackRoles,
                 "dialogueLanguages" to c.dialogueOverlayLanguages,
+                "modularActions" to c.modularActions,
+                "speakingModes" to c.speakingModes,
+                "eyeblinkModes" to c.eyeblinkModes,
                 "universalCurves" to c.universalCurveTypes,
                 "universalLoops" to c.universalLoopModes
             )

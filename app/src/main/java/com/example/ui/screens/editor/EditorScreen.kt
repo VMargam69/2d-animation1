@@ -183,6 +183,8 @@ fun EditorScreen(
     onDeleteSavedPoses: (Set<String>) -> Unit = { ids -> ids.forEach(onDeleteSavedPose) },
     onApplySavedPose: (SavedPose) -> Unit = {},
     onInsertModularAction: (clipId: String, action: com.example.engine.ModularActionDef) -> Unit = { _, _ -> },
+    onApplyModularControl: (clipId: String, selection: com.example.engine.ModularControlSelection) -> Unit = { _, _ -> },
+    onBakeMocapKeyframes: (clipId: String, frames: List<com.example.engine.MocapRetargetedFrame>, config: com.example.engine.MocapBakeConfig) -> Unit = { _, _, _ -> },
     loadPoseThumbnail: (String?) -> android.graphics.Bitmap? = { null },
     loadCharacterBitmap: (String?) -> android.graphics.Bitmap? = { null },
     loadAtlasSlices: (String?) -> Map<AtlasPartSlot, android.graphics.Bitmap>? = { null }
@@ -594,6 +596,7 @@ fun EditorScreen(
                 },
                 onToggleIkPosing = onToggleIkPosingMode,
                 onOpenIkStudio = onOpenIkStudio,
+                onOpenMocapStudio = { onOpenSheet(ActiveEditorSheet.MOCAP_STUDIO) },
                 onStampPoseKey = onStampPoseKey,
                 onStepAdjacentKeyframe = onStepAdjacentKeyframe,
                 onResetPoseAtCurrentFrame = onResetPoseAtCurrentFrame,
@@ -782,6 +785,7 @@ fun EditorScreen(
                     },
                     onFlipHorizontal = { onFlipClip(true) },
                     onFlipVertical = { onFlipClip(false) },
+                    onOpenModularControl = { onOpenIkStudio(1) },
                     onDismiss = onCloseSheet
                 )
             }
@@ -944,7 +948,35 @@ fun EditorScreen(
                     onDeleteSavedPoses = onDeleteSavedPoses,
                     onApplySavedPose = onApplySavedPose,
                     onInsertModularAction = onInsertModularAction,
+                    onApplyModularControl = onApplyModularControl,
                     onCommitIkPose = onCommitIkStudioPose,
+                    onDismiss = onCloseSheet
+                )
+            } else {
+                onCloseSheet()
+            }
+        }
+        ActiveEditorSheet.MOCAP_STUDIO -> {
+            val charClip = state.selectedClip?.takeIf { it.characterId != null }
+                ?: state.project.activeScene.clips.firstOrNull { it.characterId != null }
+            val charRig = charClip?.characterId?.let { state.charactersById[it] } ?: state.characters.firstOrNull()
+            if (charClip != null && charRig != null) {
+                val bmpVer by bitmapVersionFlow.collectAsState()
+                val customBmp = remember(charRig.customImagePath, bmpVer) {
+                    loadCharacterBitmap(charRig.customImagePath)
+                }
+                val atlasPath = charRig.spriteAtlasRig?.importedFullSheetPath ?: charRig.customImagePath
+                val atlasSlices = remember(atlasPath, bmpVer) {
+                    loadAtlasSlices(atlasPath)
+                }
+                MocapStudioScreen(
+                    clip = charClip,
+                    rig = charRig,
+                    currentFrame = state.currentFrame,
+                    fps = state.project.fps,
+                    customBitmap = customBmp,
+                    atlasSlices = atlasSlices,
+                    onBakeMocapKeyframes = onBakeMocapKeyframes,
                     onDismiss = onCloseSheet
                 )
             } else {

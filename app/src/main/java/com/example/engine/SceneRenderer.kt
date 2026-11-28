@@ -851,14 +851,30 @@ class SceneRenderer(
                 val clipRefW = min(w, h) * 0.52f
                 val clipRefH = min(w, h) * 0.52f
 
+                // Pre-evaluate simultaneous character tracks once so both Ground Shadow and Rig Renderer share exact modular bob/squash
+                val preMultiTrack = if (layer.type == LayerType.CHARACTER && clip.characterId != null) {
+                    KeyframeEvaluator.evaluateSimultaneousCharacterTracks(
+                        clip = clip,
+                        eval = transform,
+                        globalFrame = frame,
+                        fps = fps,
+                        audioSyncTracks = audioSyncTracks
+                    )
+                } else null
+
                 // Dynamic Ground / Drop Shadow (drawn cleanly behind the clip before mask & colorAdjust layers)
                 if (clip.shadowConfig.isActive && tintOverlay == null) {
                     val isCharLayer = layer.type == LayerType.CHARACTER
                     val liveBodyBobY = if (isCharLayer) {
-                        val cycleF = clip.animationPresetType.defaultDurationFrames.coerceAtLeast(8).toFloat()
-                        val rawP = (localFrame * clip.speedMultiplier) / cycleF
-                        val ph = if (clip.loopAnimation) rawP % 1f else rawP.coerceIn(0f, 0.999f)
-                        ProceduralRigRenderer.computePose(clip.animationPresetType, ph).bodyBobY
+                        val baseBob = if (preMultiTrack?.overrideLegTrack == true) {
+                            0f
+                        } else {
+                            val cycleF = clip.animationPresetType.defaultDurationFrames.coerceAtLeast(8).toFloat()
+                            val rawP = (localFrame * clip.speedMultiplier) / cycleF
+                            val ph = if (clip.loopAnimation) rawP % 1f else rawP.coerceIn(0f, 0.999f)
+                            ProceduralRigRenderer.computePose(clip.animationPresetType, ph).bodyBobY
+                        }
+                        baseBob + (preMultiTrack?.bodyBobDelta ?: 0f)
                     } else 0f
                     ClipVisualFxEngine.drawClipShadow(
                         canvas = canvas,
@@ -897,7 +913,7 @@ class SceneRenderer(
                     LayerType.CHARACTER -> {
                         val rig = clip.characterId?.let { charactersById[it] }
                         if (rig != null) {
-                            val multiTrack = KeyframeEvaluator.evaluateSimultaneousCharacterTracks(
+                            val multiTrack = preMultiTrack ?: KeyframeEvaluator.evaluateSimultaneousCharacterTracks(
                                 clip = clip,
                                 eval = transform,
                                 globalFrame = frame,
@@ -1011,7 +1027,12 @@ class SceneRenderer(
                                 tearsConfig = clip.tearsConfig,
                                 globalFrame = frame,
                                 fps = fps,
-                                clipSeed = clip.id.hashCode()
+                                clipSeed = clip.id.hashCode(),
+                                bodyBobDelta = multiTrack.bodyBobDelta,
+                                squashOverrideX = multiTrack.squashX,
+                                squashOverrideY = multiTrack.squashY,
+                                overrideHandTrack = multiTrack.overrideHandTrack,
+                                overrideLegTrack = multiTrack.overrideLegTrack
                             )
                         }
                     }

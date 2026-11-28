@@ -83,6 +83,7 @@ fun BottomEditingToolbar(
     onOpenPresetsForSelectedChar: () -> Unit,
     onToggleIkPosing: () -> Unit,
     onOpenIkStudio: (initialTab: Int) -> Unit = {},
+    onOpenMocapStudio: () -> Unit = {},
     onStampPoseKey: () -> Unit,
     onStepAdjacentKeyframe: (Boolean) -> Unit,
     onResetPoseAtCurrentFrame: () -> Unit,
@@ -166,13 +167,16 @@ fun BottomEditingToolbar(
             DockSubMenu.CHAR_POSE -> listOf(
                 DockToolAction("ik_pose", "IK Pose", Icons.Rounded.Hub, isActive = isIkPosingMode, onClick = onToggleIkPosing),
                 DockToolAction("ik_poses_lib", "Poses", Icons.Rounded.Bookmarks, accentTint = ElectricCyan, onClick = { onOpenIkStudio(2) }),
-                DockToolAction("ik_actions", "Actions", Icons.Rounded.AutoAwesomeMotion, accentTint = AmberKeyframe, onClick = { onOpenIkStudio(1) }),
+                DockToolAction("ik_actions", "Control", Icons.Rounded.AutoAwesomeMotion, accentTint = AmberKeyframe, onClick = { onOpenIkStudio(1) }),
+                DockToolAction("mocap_pose", "Mocap", Icons.Rounded.Videocam, accentTint = ElectricCyan, onClick = onOpenMocapStudio),
                 DockToolAction("pose_key", "Pose Key", Icons.Rounded.Diamond, accentTint = AmberKeyframe, onClick = onStampPoseKey),
                 DockToolAction("prev_kf", "Prev KF", Icons.Rounded.SkipPrevious, onClick = { onStepAdjacentKeyframe(false) }),
                 DockToolAction("next_kf", "Next KF", Icons.Rounded.SkipNext, onClick = { onStepAdjacentKeyframe(true) }),
                 DockToolAction("reset_pose", "Reset", Icons.Rounded.RestartAlt, onClick = onResetPoseAtCurrentFrame)
             )
             DockSubMenu.CHAR_FACE -> listOf(
+                DockToolAction("face_control", "Control", Icons.Rounded.AutoAwesomeMotion, accentTint = AmberKeyframe, onClick = { onOpenIkStudio(1) }),
+                DockToolAction("mocap_face", "Mocap", Icons.Rounded.Videocam, accentTint = ElectricCyan, onClick = onOpenMocapStudio),
                 DockToolAction("acting_props", "Acting", Icons.Rounded.EmojiEmotions, onClick = onOpenCharacterActingProps),
                 DockToolAction(
                     "tears",

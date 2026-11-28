@@ -800,10 +800,27 @@ data class TimelineClip(
     val shadowConfig: ShadowConfig = ShadowConfig(),
     val colorAdjust: ClipColorAdjust = ClipColorAdjust(),
     val motionPathControlPoints: List<NormalizedPoint> = emptyList(),
-    val lipSyncAudioClipId: String? = null
+    val lipSyncAudioClipId: String? = null,
+    val speakingMode: CharacterSpeakingMode = CharacterSpeakingMode.AUTO_LIP_SYNC,
+    val eyeblinkMode: CharacterEyeblinkMode = CharacterEyeblinkMode.ENABLE,
+    val modularExpressionId: String? = null,
+    val modularHandId: String? = null,
+    val modularLegId: String? = null
 ) {
     val endFrame: Int get() = startFrame + durationFrames
     val effectiveMaskType: ClipMaskType get() = maskConfig.resolvedType(maskType)
+}
+
+enum class CharacterSpeakingMode(val displayName: String) {
+    AUTO_LIP_SYNC("Auto Lip Sync"),
+    YES("Yes"),
+    NO("No")
+}
+
+enum class CharacterEyeblinkMode(val displayName: String) {
+    ENABLE("Enable"),
+    DISABLE("Disable"),
+    EYE_CLOSED("Eye Closed")
 }
 
 enum class ParallaxDepthPreset(val displayName: String, val depth: Float) {

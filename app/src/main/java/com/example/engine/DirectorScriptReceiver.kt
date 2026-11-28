@@ -400,6 +400,11 @@ object DirectorScriptReceiver {
         val eyeShapeOverride: String? = null,
         val eyebrowShapeOverride: String? = null,
         val handPose: String? = null,
+        val modularExpressionId: String? = null,
+        val modularHandId: String? = null,
+        val modularLegId: String? = null,
+        val speakingMode: String? = null,
+        val eyeblinkMode: String? = null,
         val enforceJointLimits: Boolean? = null,
         val propType: String? = null,
         val propAttachment: String? = null,
@@ -1057,7 +1062,13 @@ object DirectorScriptReceiver {
                     shadowConfig = buildShadowConfigFromDto(cDto.shadow),
                     colorAdjust = buildColorAdjustFromDto(cDto.colorAdjust ?: cDto.adjust),
                     motionPathControlPoints = motionPoints,
-                    lipSyncAudioClipId = cDto.lipSyncAudioId
+                    lipSyncAudioClipId = cDto.lipSyncAudioId,
+                    speakingMode = parseEnumIgnoreCase<CharacterSpeakingMode>(cDto.speakingMode) ?: CharacterSpeakingMode.AUTO_LIP_SYNC,
+                    eyeblinkMode = parseEnumIgnoreCase<CharacterEyeblinkMode>(cDto.eyeblinkMode) ?: CharacterEyeblinkMode.ENABLE,
+                    modularExpressionId = ModularActionEngine.findById(cDto.modularExpressionId)?.id,
+                    modularHandId = ModularActionEngine.findById(cDto.modularHandId)?.id,
+                    modularLegId = ModularActionEngine.findById(cDto.modularLegId)?.id,
+                    forceBlink = parseEnumIgnoreCase<CharacterEyeblinkMode>(cDto.eyeblinkMode) == CharacterEyeblinkMode.EYE_CLOSED
                 )
                 clips.add(clip)
             }

@@ -73,6 +73,8 @@ object StudioCapabilityRegistry {
         val brushStyles: List<CapabilityItem>,
         val shapeKinds: List<CapabilityItem>,
         val modularActions: List<CapabilityItem>,
+        val speakingModes: List<CapabilityItem>,
+        val eyeblinkModes: List<CapabilityItem>,
         val savedPoses: List<CapabilityItem>,
         val clipOperations: List<ClipOperationCapability>,
         val armGesturePresets: List<CapabilityItem>,
@@ -262,6 +264,14 @@ object StudioCapabilityRegistry {
             )
         }
 
+        val speakingModes = CharacterSpeakingMode.entries.map {
+            CapabilityItem(id = it.name, label = it.displayName)
+        }
+
+        val eyeblinkModes = CharacterEyeblinkMode.entries.map {
+            CapabilityItem(id = it.name, label = it.displayName)
+        }
+
         val savedPoses = registeredSavedPoses.map { pose ->
             CapabilityItem(
                 id = pose.id,
@@ -393,6 +403,8 @@ object StudioCapabilityRegistry {
             brushStyles = brushStyles,
             shapeKinds = shapeKinds,
             modularActions = modularActions,
+            speakingModes = speakingModes,
+            eyeblinkModes = eyeblinkModes,
             savedPoses = savedPoses,
             clipOperations = clipOperations,
             armGesturePresets = armGesturePresets,
@@ -447,6 +459,8 @@ object StudioCapabilityRegistry {
             snapshot.aspectRatios.size +
             snapshot.builtInProps.size +
             snapshot.modularActions.size +
+            snapshot.speakingModes.size +
+            snapshot.eyeblinkModes.size +
             snapshot.savedPoses.size +
             snapshot.clipOperations.size +
             snapshot.armGesturePresets.size +

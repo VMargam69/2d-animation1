@@ -16,8 +16,12 @@ import com.example.data.db.ProjectSummary
 import com.example.engine.AnimationExporter
 import com.example.engine.ExportOutput
 import com.example.engine.ExportRequest
+import com.example.engine.MediaPipeMocapRetargeter
+import com.example.engine.MocapBakeConfig
+import com.example.engine.MocapRetargetedFrame
 import com.example.engine.ModularActionDef
 import com.example.engine.ModularActionEngine
+import com.example.engine.ModularControlSelection
 import com.example.engine.SceneRenderer
 import com.example.model.*
 import com.example.navigation.HashRoute
@@ -61,6 +65,7 @@ enum class ActiveEditorSheet {
     WAVEFORM_EXPORT,
     DIRECTOR_SCRIPT_STUDIO,
     IK_STUDIO,
+    MOCAP_STUDIO,
     TEARS_FX_INSPECTOR,
     SHADOW_INSPECTOR,
     COLOR_ADJUST_INSPECTOR,
@@ -950,6 +955,28 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         )
         commitProjectChange(updated)
         showStatus("Inserted ${action.name} on ${action.track.timelineTrackLabel} track (F$frame)")
+    }
+
+    /** Non-destructively layers Expression + Hand Part + Leg Part + Speaking + Eyeblink onto the clip with Undo. */
+    fun applyModularControlConfig(clipId: String, selection: ModularControlSelection) {
+        val state = _uiState.value
+        val updated = ModularActionEngine.applyModularControlConfigToProject(
+            project = state.project,
+            clipId = clipId,
+            selection = selection
+        )
+        commitProjectChange(updated)
+        val summary = buildList {
+            ModularActionEngine.findById(selection.expressionId)?.let { add(it.name) }
+            ModularActionEngine.findById(selection.handId)?.let { add(it.name) }
+            ModularActionEngine.findById(selection.legId)?.let { add(it.name) }
+        }
+        val msg = if (summary.isEmpty()) {
+            "Applied Control: Speaking=${selection.speakingMode.displayName}, Blink=${selection.eyeblinkMode.displayName}"
+        } else {
+            "Applied Control (${summary.joinToString(" + ")})"
+        }
+        showStatus(msg)
     }
 
     /** Commits a completed stage camera pan drag once on finger lift. */
@@ -2772,6 +2799,34 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         exportJob = null
         _uiState.update { it.copy(exportState = ExportUiState.Idle) }
         showStatus("Export cancelled")
+    }
+
+    // --- Stage 2: Offline MediaPipe Motion Capture Baking ---
+    fun bakeMocapRecording(
+        clipId: String,
+        frames: List<MocapRetargetedFrame>,
+        config: MocapBakeConfig
+    ) {
+        if (frames.isEmpty()) {
+            showStatus("No mocap frames captured to bake")
+            return
+        }
+        val stateSnap = _uiState.value
+        val (updatedProject, stampedCount) = MediaPipeMocapRetargeter.bakeMocapRecordingToProject(
+            project = stateSnap.project,
+            clipId = clipId,
+            startGlobalFrame = stateSnap.currentFrame,
+            frames = frames,
+            config = config,
+            fps = stateSnap.project.fps
+        )
+        if (stampedCount > 0) {
+            commitProjectChange(updatedProject)
+            _uiState.update { it.copy(activeSheet = ActiveEditorSheet.NONE) }
+            showStatus("Baked $stampedCount mocap keyframes onto timeline")
+        } else {
+            showStatus("Unable to bake mocap frames on selected clip")
+        }
     }
 
     // --- Undo / Redo ---

@@ -4,22 +4,21 @@ import com.example.model.*
 import com.example.viewmodel.ProjectMutator
 import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * Independent modular body tracks that can be previewed and inserted cleanly
+ * Independent modular body tracks that can be previewed and layered cleanly
  * without disturbing the character's other body tracks.
  */
 enum class ModularActionTrack(val displayName: String, val timelineTrackLabel: String, val accentHex: String) {
-    FACIAL("Facial", "Expression", "#F59E0B"),
-    HANDS("Hands", "Hands", "#38BDF8"),
-    LEGS("Legs", "Legs", "#34D399")
+    FACIAL("Expressions", "Expression", "#F59E0B"),
+    HANDS("Hand Parts", "Hands", "#38BDF8"),
+    LEGS("Leg Parts", "Legs", "#34D399")
 }
 
 /**
- * Declarative modular action card selectable inside the IK Studio's Actions tab.
+ * Declarative modular action card selectable inside the Pro Control Modular Action Library.
  */
 data class ModularActionDef(
     val id: String,
@@ -27,12 +26,40 @@ data class ModularActionDef(
     val track: ModularActionTrack,
     val durationFrames: Int,
     val subtitle: String,
-    val accentHex: String = track.accentHex
+    val accentHex: String = track.accentHex,
+    val propHint: String? = null
 )
 
 /**
+ * Combined non-destructive modular control selection applied via the sticky `Apply Changes` button.
+ */
+data class ModularControlSelection(
+    val expressionId: String? = null,
+    val handId: String? = null,
+    val legId: String? = null,
+    val speakingMode: CharacterSpeakingMode = CharacterSpeakingMode.AUTO_LIP_SYNC,
+    val eyeblinkMode: CharacterEyeblinkMode = CharacterEyeblinkMode.ENABLE
+) {
+    val activeCount: Int
+        get() = listOfNotNull(expressionId, handId, legId).size
+
+    companion object {
+        fun fromClip(clip: TimelineClip): ModularControlSelection = ModularControlSelection(
+            expressionId = clip.modularExpressionId,
+            handId = clip.modularHandId,
+            legId = clip.modularLegId,
+            speakingMode = clip.speakingMode,
+            eyeblinkMode = clip.eyeblinkMode
+        )
+    }
+}
+
+/**
  * Track-isolated evaluated sample of a [ModularActionDef] at normalized progress `0f..1f`.
- * Only populates fields belonging to its own [ModularActionTrack] so unrelated body tracks stay untouched!
+ * Follows Android Canvas anatomical rotation convention (`ProceduralRigRenderer` / `SpriteAtlasRigRenderer`):
+ * - Left arm: `+arm` swings outward-left/up; `-forearm` folds elbow inward across torso/face.
+ * - Right arm: `-arm` swings outward-right/up; `+forearm` folds elbow inward across torso/face.
+ * - Legs: `-leg` lifts thigh forward; `+knee` bends shin downward/back.
  */
 data class ModularActionSample(
     val track: ModularActionTrack,
@@ -44,6 +71,8 @@ data class ModularActionSample(
     val eyebrowShapeOverride: EyebrowShapeOverride? = null,
     val blinkOverride: Boolean? = null,
     val headNodDelta: Float = 0f,
+    val gazeX: Float = 0f,
+    val gazeY: Float = 0f,
     // HANDS track channels
     val handPoseOverride: HandPoseType? = null,
     val leftArmDelta: Float = 0f,
@@ -55,11 +84,19 @@ data class ModularActionSample(
     val leftLegDelta: Float = 0f,
     val leftKneeDelta: Float = 0f,
     val rightLegDelta: Float = 0f,
-    val rightKneeDelta: Float = 0f
+    val rightKneeDelta: Float = 0f,
+    // Whole-body vertical bob + volume-preserving squash & stretch
+    val bodyBobDelta: Float = 0f,
+    val squashX: Float = 1f,
+    val squashY: Float = 1f,
+    // Silhouette framing/posture hints (`single_right_arm`, `cross_legged`, `figure_four`, `seated_profile`, `head_turn_left/right/behind`)
+    val silhouetteStyle: String? = null,
+    val propSilhouetteHint: String? = null
 )
 
 /**
- * Non-destructive blended preview state returned by [ModularActionEngine.blendPreviewOntoBase].
+ * Non-destructive blended preview state returned by [ModularActionEngine.blendPreviewOntoBase]
+ * and [ModularActionEngine.blendControlSelectionOntoBase].
  */
 data class BlendedPreviewPose(
     val poseOffsets: PoseKeyframeOffsets,
@@ -71,290 +108,74 @@ data class BlendedPreviewPose(
     val handPose: HandPoseType,
     val blinkOverride: Boolean?,
     val gazeTarget: GazeTarget,
-    val headTilt: Float
+    val headTilt: Float,
+    val bodyBobDelta: Float = 0f,
+    val squashX: Float = 1f,
+    val squashY: Float = 1f,
+    val overrideHandTrack: Boolean = false,
+    val overrideLegTrack: Boolean = false
 )
 
 /**
- * Offline Modular Action Catalog, Non-Destructive Preview Blender, and Track-Isolated Timeline Inserter.
- *
- * Powers Modular Action Preview Mode:
- * - Animators tap any `Facial`, `Hands`, or `Legs` action card to scrub `0%..100%` or loop-play
- *   live on the character WITHOUT modifying the timeline or disturbing other body tracks.
- * - Tapping **Insert at Playhead** stamps track-isolated keyframes onto the active clip cleanly.
- * - Tapping **Cancel** or switching tabs discards the preview instantly with zero leftover state.
+ * Offline Pro "Control" Modular Action Engine, Non-Destructive Multi-Track Blender,
+ * Speaking/Eyeblink Evaluator, and Track-Isolated Timeline Committer.
  */
 object ModularActionEngine {
 
-    val catalog: List<ModularActionDef> = listOf(
-        // ─── FACIAL (Expression Track) ───
-        ModularActionDef("act_face_smile", "Warm Smile", ModularActionTrack.FACIAL, 24, "Happy smile + gentle nod"),
-        ModularActionDef("act_face_gasp", "Shock Gasp", ModularActionTrack.FACIAL, 20, "Wide eyes + shock O mouth"),
-        ModularActionDef("act_face_angry", "Fierce Glare", ModularActionTrack.FACIAL, 24, "Furrowed brows + gritted teeth"),
-        ModularActionDef("act_face_laugh", "Hearty Laugh", ModularActionTrack.FACIAL, 28, "Bouncing laugh rhythm"),
-        ModularActionDef("act_face_wink", "Playful Wink", ModularActionTrack.FACIAL, 18, "Asymmetric right wink + smirk"),
-        ModularActionDef("act_face_talk", "Talk Cadence", ModularActionTrack.FACIAL, 30, "Natural AA / EE syllable cycle"),
-        ModularActionDef("act_face_sad", "Sad Sigh", ModularActionTrack.FACIAL, 26, "Drooping gaze + soft head drop"),
-        ModularActionDef("act_face_blink", "Double Blink", ModularActionTrack.FACIAL, 18, "Crisp double eye blink"),
-
-        // ─── HANDS (Hands Track) ───
-        ModularActionDef("act_hand_wave", "Friendly Wave", ModularActionTrack.HANDS, 28, "High right-hand wave arc"),
-        ModularActionDef("act_hand_point", "Point Forward", ModularActionTrack.HANDS, 20, "Confident extended point"),
-        ModularActionDef("act_hand_peace", "Victory Peace", ModularActionTrack.HANDS, 22, "Raised peace sign pose"),
-        ModularActionDef("act_hand_thumbs", "Thumbs Up", ModularActionTrack.HANDS, 22, "Heroic thumbs-up lift"),
-        ModularActionDef("act_hand_fist", "Fist Pump", ModularActionTrack.HANDS, 24, "Energetic double fist pump"),
-        ModularActionDef("act_hand_present", "Open Present", ModularActionTrack.HANDS, 26, "Wide welcoming arms sweep"),
-        ModularActionDef("act_hand_think", "Chin Think", ModularActionTrack.HANDS, 28, "Right hand raised to chin"),
-        ModularActionDef("act_hand_clap", "Clap Beat", ModularActionTrack.HANDS, 24, "Rhythmic two-hand clap"),
-
-        // ─── LEGS (Legs Track) ───
-        ModularActionDef("act_leg_walk", "Walk Stride", ModularActionTrack.LEGS, 28, "Smooth alternating stride"),
-        ModularActionDef("act_leg_sprint", "Sprint Cycle", ModularActionTrack.LEGS, 20, "Fast high-knee run swing"),
-        ModularActionDef("act_leg_jump", "Hero Jump", ModularActionTrack.LEGS, 26, "Crouch -> launch -> tuck -> land"),
-        ModularActionDef("act_leg_sit", "Sit Relaxed", ModularActionTrack.LEGS, 24, "Bent thighs + grounded calves"),
-        ModularActionDef("act_leg_kick", "Kick Strike", ModularActionTrack.LEGS, 22, "Chamber -> snap kick -> recover"),
-        ModularActionDef("act_leg_sneak", "Tip-Toe Sneak", ModularActionTrack.LEGS, 30, "Cautious bent-knee step"),
-        ModularActionDef("act_leg_squat", "Squat Bounce", ModularActionTrack.LEGS, 24, "Deep knee bend & spring"),
-        ModularActionDef("act_leg_stance", "Wide Stance", ModularActionTrack.LEGS, 20, "Braced hero power stance")
-    )
+    val catalog: List<ModularActionDef>
+        get() = ModularActionCatalog.allActions
 
     fun actionsForTrack(track: ModularActionTrack): List<ModularActionDef> =
         catalog.filter { it.track == track }
 
-    fun findById(id: String?): ModularActionDef? =
-        if (id.isNullOrBlank()) null else catalog.firstOrNull { it.id == id }
+    fun search(query: String, trackFilter: ModularActionTrack? = null): List<ModularActionDef> {
+        val q = query.trim().lowercase()
+        return catalog.filter { act ->
+            (trackFilter == null || act.track == trackFilter) &&
+                (q.isEmpty() ||
+                    act.name.lowercase().contains(q) ||
+                    act.subtitle.lowercase().contains(q) ||
+                    act.id.lowercase().contains(q))
+        }
+    }
+
+    fun findById(id: String?): ModularActionDef? {
+        if (id.isNullOrBlank()) return null
+        val q = id.trim()
+        return catalog.firstOrNull { it.id.equals(q, ignoreCase = true) }
+            ?: catalog.firstOrNull { it.name.equals(q, ignoreCase = true) }
+    }
 
     /**
      * Evaluates a modular action deterministically at normalized progress [progress] in `0f..1f`.
      */
-    fun evaluateAtProgress(action: ModularActionDef, progress: Float): ModularActionSample {
-        val p = progress.coerceIn(0f, 1f)
-        val env = sin(p * PI).toFloat().coerceIn(0f, 1f) // smooth 0 -> 1 -> 0 envelope
-        val wave = sin(p * 2.0 * PI).toFloat()
-        val wave2 = sin(p * 4.0 * PI).toFloat()
+    fun evaluateAtProgress(action: ModularActionDef, progress: Float): ModularActionSample =
+        ModularActionCatalog.evaluate(action, progress)
 
-        return when (action.id) {
-            // ─── FACIAL ───
-            "act_face_smile" -> ModularActionSample(
-                track = ModularActionTrack.FACIAL,
-                expressionOverride = FacialExpression.HAPPY,
-                facialPresetId = FacialExpressionEngine.PRESET_HAPPY,
-                mouthShapeOverride = MouthShapeOverride.SMILE,
-                eyeShapeOverride = EyeShapeOverride.HAPPY_ARC,
-                eyebrowShapeOverride = EyebrowShapeOverride.ARCHED_HAPPY,
-                headNodDelta = -6f * env
-            )
-            "act_face_gasp" -> ModularActionSample(
-                track = ModularActionTrack.FACIAL,
-                expressionOverride = FacialExpression.SHOCKED,
-                facialPresetId = FacialExpressionEngine.PRESET_SHOCKED,
-                mouthShapeOverride = if (p > 0.15f) MouthShapeOverride.SHOCK_O else MouthShapeOverride.NEUTRAL,
-                eyeShapeOverride = EyeShapeOverride.WIDE_SHOCK,
-                eyebrowShapeOverride = EyebrowShapeOverride.RAISED_SURPRISE,
-                headNodDelta = -10f * env
-            )
-            "act_face_angry" -> ModularActionSample(
-                track = ModularActionTrack.FACIAL,
-                expressionOverride = FacialExpression.ANGRY,
-                facialPresetId = FacialExpressionEngine.PRESET_ANGRY,
-                mouthShapeOverride = MouthShapeOverride.GRIT_ANGRY,
-                eyeShapeOverride = EyeShapeOverride.SQUINT_ANGRY,
-                eyebrowShapeOverride = EyebrowShapeOverride.FURROWED_ANGRY,
-                headNodDelta = 7f * env
-            )
-            "act_face_laugh" -> ModularActionSample(
-                track = ModularActionTrack.FACIAL,
-                expressionOverride = FacialExpression.LAUGHING,
-                facialPresetId = FacialExpressionEngine.PRESET_LAUGH,
-                mouthShapeOverride = if (abs(wave2) > 0.35f) MouthShapeOverride.OPEN_LAUGH else MouthShapeOverride.SMILE,
-                eyeShapeOverride = EyeShapeOverride.HAPPY_ARC,
-                eyebrowShapeOverride = EyebrowShapeOverride.ARCHED_HAPPY,
-                headNodDelta = -8f * abs(wave2)
-            )
-            "act_face_wink" -> ModularActionSample(
-                track = ModularActionTrack.FACIAL,
-                expressionOverride = FacialExpression.HAPPY,
-                facialPresetId = FacialExpressionEngine.PRESET_WINK,
-                mouthShapeOverride = MouthShapeOverride.SMIRK,
-                eyeShapeOverride = if (p in 0.15f..0.85f) EyeShapeOverride.WINK_RIGHT else EyeShapeOverride.NORMAL,
-                eyebrowShapeOverride = EyebrowShapeOverride.ARCHED_HAPPY,
-                headNodDelta = 5f * env
-            )
-            "act_face_talk" -> {
-                val mouth = when {
-                    p < 0.18f || p > 0.88f -> MouthShapeOverride.NEUTRAL
-                    abs(wave2) > 0.65f -> MouthShapeOverride.TALK_AA
-                    abs(wave2) > 0.25f -> MouthShapeOverride.TALK_EE
-                    else -> MouthShapeOverride.SMILE
-                }
-                ModularActionSample(
-                    track = ModularActionTrack.FACIAL,
-                    expressionOverride = FacialExpression.TALKING,
-                    mouthShapeOverride = mouth,
-                    headNodDelta = 4f * wave
-                )
-            }
-            "act_face_sad" -> ModularActionSample(
-                track = ModularActionTrack.FACIAL,
-                expressionOverride = FacialExpression.SAD,
-                facialPresetId = FacialExpressionEngine.PRESET_SAD,
-                mouthShapeOverride = MouthShapeOverride.FROWN,
-                eyeShapeOverride = EyeShapeOverride.SAD_DROOP,
-                eyebrowShapeOverride = EyebrowShapeOverride.WORRIED_SAD,
-                headNodDelta = 14f * env
-            )
-            "act_face_blink" -> {
-                val closed = p in 0.18f..0.34f || p in 0.56f..0.72f
-                ModularActionSample(
-                    track = ModularActionTrack.FACIAL,
-                    blinkOverride = closed,
-                    eyeShapeOverride = if (closed) EyeShapeOverride.CLOSED_SLEEP else EyeShapeOverride.NORMAL,
-                    headNodDelta = if (closed) 2.5f else 0f
-                )
-            }
-
-            // ─── HANDS ───
-            "act_hand_wave" -> ModularActionSample(
-                track = ModularActionTrack.HANDS,
-                handPoseOverride = HandPoseType.OPEN,
-                rightArmDelta = -115f * env,
-                rightForearmDelta = (-32f + 26f * wave2) * env
-            )
-            "act_hand_point" -> ModularActionSample(
-                track = ModularActionTrack.HANDS,
-                handPoseOverride = HandPoseType.POINT,
-                rightArmDelta = -82f * env,
-                rightForearmDelta = -12f * env
-            )
-            "act_hand_peace" -> ModularActionSample(
-                track = ModularActionTrack.HANDS,
-                handPoseOverride = HandPoseType.POINT,
-                rightArmDelta = -102f * env,
-                rightForearmDelta = -48f * env,
-                leftArmDelta = 12f * env
-            )
-            "act_hand_thumbs" -> ModularActionSample(
-                track = ModularActionTrack.HANDS,
-                handPoseOverride = HandPoseType.PROP_GRIP,
-                rightArmDelta = -76f * env,
-                rightForearmDelta = -54f * env
-            )
-            "act_hand_fist" -> {
-                val pump = 0.5f + 0.5f * sin(p * 4.0 * PI).toFloat()
-                ModularActionSample(
-                    track = ModularActionTrack.HANDS,
-                    handPoseOverride = HandPoseType.FIST,
-                    leftArmDelta = (58f + 28f * pump) * env,
-                    leftForearmDelta = (68f + 16f * pump) * env,
-                    rightArmDelta = (-58f - 28f * pump) * env,
-                    rightForearmDelta = (-68f - 16f * pump) * env
-                )
-            }
-            "act_hand_present" -> ModularActionSample(
-                track = ModularActionTrack.HANDS,
-                handPoseOverride = HandPoseType.OPEN,
-                leftArmDelta = 72f * env,
-                leftForearmDelta = 24f * env,
-                rightArmDelta = -72f * env,
-                rightForearmDelta = -24f * env
-            )
-            "act_hand_think" -> ModularActionSample(
-                track = ModularActionTrack.HANDS,
-                handPoseOverride = HandPoseType.POINT,
-                rightArmDelta = -56f * env,
-                rightForearmDelta = -112f * env,
-                leftArmDelta = 28f * env,
-                leftForearmDelta = 70f * env
-            )
-            "act_hand_clap" -> {
-                val clap = abs(sin(p * 3.0 * PI).toFloat())
-                ModularActionSample(
-                    track = ModularActionTrack.HANDS,
-                    handPoseOverride = HandPoseType.OPEN,
-                    leftArmDelta = (32f + 26f * clap) * env,
-                    leftForearmDelta = (54f + 36f * clap) * env,
-                    rightArmDelta = (-32f - 26f * clap) * env,
-                    rightForearmDelta = (-54f - 36f * clap) * env
-                )
-            }
-
-            // ─── LEGS ───
-            "act_leg_walk" -> ModularActionSample(
-                track = ModularActionTrack.LEGS,
-                leftLegDelta = 28f * wave,
-                leftKneeDelta = (26f * (-wave).coerceAtLeast(0f)),
-                rightLegDelta = -28f * wave,
-                rightKneeDelta = (26f * wave.coerceAtLeast(0f)),
-                torsoTiltDelta = 3f * abs(wave)
-            )
-            "act_leg_sprint" -> ModularActionSample(
-                track = ModularActionTrack.LEGS,
-                leftLegDelta = 52f * wave,
-                leftKneeDelta = 58f * (-wave).coerceAtLeast(0f),
-                rightLegDelta = -52f * wave,
-                rightKneeDelta = 58f * wave.coerceAtLeast(0f),
-                torsoTiltDelta = 12f * env
-            )
-            "act_leg_jump" -> {
-                val crouch = if (p < 0.25f) sin((p / 0.25f) * PI).toFloat() else if (p > 0.78f) sin(((p - 0.78f) / 0.22f) * PI).toFloat() else 0f
-                val air = if (p in 0.25f..0.78f) sin(((p - 0.25f) / 0.53f) * PI).toFloat() else 0f
-                ModularActionSample(
-                    track = ModularActionTrack.LEGS,
-                    leftLegDelta = -32f * crouch - 24f * air,
-                    leftKneeDelta = 62f * crouch + 52f * air,
-                    rightLegDelta = -28f * crouch - 18f * air,
-                    rightKneeDelta = 58f * crouch + 44f * air,
-                    torsoTiltDelta = 10f * crouch - 6f * air
-                )
-            }
-            "act_leg_sit" -> ModularActionSample(
-                track = ModularActionTrack.LEGS,
-                leftLegDelta = -68f * env,
-                leftKneeDelta = 78f * env,
-                rightLegDelta = -64f * env,
-                rightKneeDelta = 74f * env,
-                torsoTiltDelta = -5f * env
-            )
-            "act_leg_kick" -> {
-                val snap = sin(p * PI).toFloat().coerceIn(0f, 1f)
-                ModularActionSample(
-                    track = ModularActionTrack.LEGS,
-                    rightLegDelta = -88f * snap,
-                    rightKneeDelta = 18f * (1f - snap) * env,
-                    leftLegDelta = 14f * snap,
-                    leftKneeDelta = 10f * snap,
-                    torsoTiltDelta = -14f * snap
-                )
-            }
-            "act_leg_sneak" -> ModularActionSample(
-                track = ModularActionTrack.LEGS,
-                leftLegDelta = -20f * env + 22f * wave,
-                leftKneeDelta = 46f * env + 18f * (-wave).coerceAtLeast(0f),
-                rightLegDelta = -20f * env - 22f * wave,
-                rightKneeDelta = 46f * env + 18f * wave.coerceAtLeast(0f),
-                torsoTiltDelta = 14f * env
-            )
-            "act_leg_squat" -> ModularActionSample(
-                track = ModularActionTrack.LEGS,
-                leftLegDelta = -48f * env,
-                leftKneeDelta = 82f * env,
-                rightLegDelta = -48f * env,
-                rightKneeDelta = 82f * env,
-                torsoTiltDelta = 12f * env
-            )
-            "act_leg_stance" -> ModularActionSample(
-                track = ModularActionTrack.LEGS,
-                leftLegDelta = 26f * env,
-                leftKneeDelta = 14f * env,
-                rightLegDelta = -26f * env,
-                rightKneeDelta = 14f * env,
-                torsoTiltDelta = 4f * env
-            )
-            else -> ModularActionSample(track = action.track)
+    /**
+     * Deterministic multi-harmonic syllable mouth cadence for `Speaking = Yes`.
+     */
+    fun evaluateSpeakingMouth(localFrame: Int, fps: Int, isAngry: Boolean = false): MouthShapeOverride {
+        val safeFps = fps.coerceAtLeast(12)
+        val tSec = localFrame.coerceAtLeast(0).toFloat() / safeFps.toFloat()
+        val syllableWave = sin(tSec * 2.0 * PI * 4.1).toFloat() * 0.68f +
+            sin(tSec * 2.0 * PI * 6.9 + 0.6).toFloat() * 0.34f +
+            sin(tSec * 2.0 * PI * 11.3 + 1.4).toFloat() * 0.16f
+        val phraseBreath = sin(tSec * 2.0 * PI * 0.52).toFloat()
+        if (phraseBreath < -0.78f) {
+            return if (isAngry) MouthShapeOverride.GRIT_ANGRY else MouthShapeOverride.NEUTRAL
+        }
+        return when {
+            syllableWave > 0.58f -> MouthShapeOverride.TALK_AA
+            syllableWave > 0.24f -> MouthShapeOverride.SHOCK_O
+            syllableWave > -0.08f -> MouthShapeOverride.TALK_EE
+            syllableWave > -0.42f -> if (isAngry) MouthShapeOverride.GRIT_ANGRY else MouthShapeOverride.SMILE
+            else -> if (isAngry) MouthShapeOverride.FROWN else MouthShapeOverride.NEUTRAL
         }
     }
 
     /**
-     * Non-destructively blends a previewed [ModularActionDef] at [progress] onto the character's
+     * Non-destructively blends a single previewed [ModularActionDef] at [progress] onto the character's
      * existing base pose, touching ONLY the previewed action's own track!
      */
     fun blendPreviewOntoBase(
@@ -382,15 +203,20 @@ object ModularActionEngine {
                 eyebrowOverride = sample.eyebrowShapeOverride ?: baseEyebrowOverride,
                 handPose = baseHandPose,
                 blinkOverride = sample.blinkOverride,
-                gazeTarget = baseGaze,
-                headTilt = baseHeadTilt
+                gazeTarget = if (abs(sample.gazeX) > 0.01f || abs(sample.gazeY) > 0.01f) {
+                    GazeTarget(sample.gazeX.coerceIn(-1f, 1f), sample.gazeY.coerceIn(-1f, 1f))
+                } else baseGaze,
+                headTilt = baseHeadTilt,
+                bodyBobDelta = sample.bodyBobDelta,
+                squashX = sample.squashX,
+                squashY = sample.squashY
             )
             ModularActionTrack.HANDS -> BlendedPreviewPose(
                 poseOffsets = basePose.copy(
-                    leftArmOffset = (basePose.leftArmOffset + sample.leftArmDelta).coerceIn(-160f, 160f),
-                    leftForearmOffset = (basePose.leftForearmOffset + sample.leftForearmDelta).coerceIn(-145f, 145f),
-                    rightArmOffset = (basePose.rightArmOffset + sample.rightArmDelta).coerceIn(-160f, 160f),
-                    rightForearmOffset = (basePose.rightForearmOffset + sample.rightForearmDelta).coerceIn(-145f, 145f)
+                    leftArmOffset = (basePose.leftArmOffset + sample.leftArmDelta).coerceIn(-165f, 165f),
+                    leftForearmOffset = (basePose.leftForearmOffset + sample.leftForearmDelta).coerceIn(-155f, 155f),
+                    rightArmOffset = (basePose.rightArmOffset + sample.rightArmDelta).coerceIn(-165f, 165f),
+                    rightForearmOffset = (basePose.rightForearmOffset + sample.rightForearmDelta).coerceIn(-155f, 155f)
                 ),
                 expression = baseExpression,
                 facialPresetId = null,
@@ -400,15 +226,16 @@ object ModularActionEngine {
                 handPose = sample.handPoseOverride ?: baseHandPose,
                 blinkOverride = null,
                 gazeTarget = baseGaze,
-                headTilt = baseHeadTilt
+                headTilt = baseHeadTilt,
+                overrideHandTrack = true
             )
             ModularActionTrack.LEGS -> BlendedPreviewPose(
                 poseOffsets = basePose.copy(
                     torsoTiltOffset = (basePose.torsoTiltOffset + sample.torsoTiltDelta).coerceIn(-55f, 55f),
-                    leftLegOffset = (basePose.leftLegOffset + sample.leftLegDelta).coerceIn(-120f, 120f),
-                    leftKneeOffset = (basePose.leftKneeOffset + sample.leftKneeDelta).coerceIn(-135f, 135f),
-                    rightLegOffset = (basePose.rightLegOffset + sample.rightLegDelta).coerceIn(-120f, 120f),
-                    rightKneeOffset = (basePose.rightKneeOffset + sample.rightKneeDelta).coerceIn(-135f, 135f)
+                    leftLegOffset = (basePose.leftLegOffset + sample.leftLegDelta).coerceIn(-125f, 125f),
+                    leftKneeOffset = (basePose.leftKneeOffset + sample.leftKneeDelta).coerceIn(-140f, 140f),
+                    rightLegOffset = (basePose.rightLegOffset + sample.rightLegDelta).coerceIn(-125f, 125f),
+                    rightKneeOffset = (basePose.rightKneeOffset + sample.rightKneeDelta).coerceIn(-140f, 140f)
                 ),
                 expression = baseExpression,
                 facialPresetId = null,
@@ -418,13 +245,157 @@ object ModularActionEngine {
                 handPose = baseHandPose,
                 blinkOverride = null,
                 gazeTarget = baseGaze,
-                headTilt = baseHeadTilt
+                headTilt = baseHeadTilt,
+                bodyBobDelta = sample.bodyBobDelta,
+                squashX = sample.squashX,
+                squashY = sample.squashY,
+                overrideLegTrack = true
             )
         }
     }
 
     /**
-     * Commits a previewed [ModularActionDef] onto [clipId] starting at [startGlobalFrame] by
+     * Simultaneously layers an active [ModularControlSelection] (Expression + Hand Part + Leg Part
+     * + Speaking mode + Eyeblink mode) non-destructively onto a character's base pose at [localFrame].
+     *
+     * Sets [BlendedPreviewPose.overrideHandTrack] when a Hand Part is active and
+     * [BlendedPreviewPose.overrideLegTrack] when a Leg Part is active so base AnimationPreset
+     * limbs never fight or double-add against the chosen modular tracks!
+     */
+    fun blendControlSelectionOntoBase(
+        basePose: PoseKeyframeOffsets,
+        baseExpression: FacialExpression,
+        baseFacialPresetId: String?,
+        baseMouthOverride: MouthShapeOverride,
+        baseEyeOverride: EyeShapeOverride,
+        baseEyebrowOverride: EyebrowShapeOverride,
+        baseHandPose: HandPoseType,
+        baseBlinkOverride: Boolean?,
+        baseGaze: GazeTarget,
+        baseHeadTilt: Float,
+        selection: ModularControlSelection,
+        localFrame: Int,
+        fps: Int,
+        speedMultiplier: Float = 1f
+    ): BlendedPreviewPose {
+        val safeSpeed = speedMultiplier.coerceIn(0.25f, 4f)
+        fun progressFor(act: ModularActionDef): Float {
+            val cycle = act.durationFrames.coerceAtLeast(8).toFloat() / safeSpeed
+            return ((localFrame.coerceAtLeast(0) % cycle) / cycle).coerceIn(0f, 1f)
+        }
+
+        val exprSample = findById(selection.expressionId)?.let { evaluateAtProgress(it, progressFor(it)) }
+        val handSample = findById(selection.handId)?.let { evaluateAtProgress(it, progressFor(it)) }
+        val legSample = findById(selection.legId)?.let { evaluateAtProgress(it, progressFor(it)) }
+
+        val combinedPose = basePose.copy(
+            headNodOffset = (basePose.headNodOffset + (exprSample?.headNodDelta ?: 0f)).coerceIn(-65f, 65f),
+            leftArmOffset = (basePose.leftArmOffset + (handSample?.leftArmDelta ?: 0f)).coerceIn(-165f, 165f),
+            leftForearmOffset = (basePose.leftForearmOffset + (handSample?.leftForearmDelta ?: 0f)).coerceIn(-155f, 155f),
+            rightArmOffset = (basePose.rightArmOffset + (handSample?.rightArmDelta ?: 0f)).coerceIn(-165f, 165f),
+            rightForearmOffset = (basePose.rightForearmOffset + (handSample?.rightForearmDelta ?: 0f)).coerceIn(-155f, 155f),
+            torsoTiltOffset = (basePose.torsoTiltOffset + (legSample?.torsoTiltDelta ?: 0f)).coerceIn(-55f, 55f),
+            leftLegOffset = (basePose.leftLegOffset + (legSample?.leftLegDelta ?: 0f)).coerceIn(-125f, 125f),
+            leftKneeOffset = (basePose.leftKneeOffset + (legSample?.leftKneeDelta ?: 0f)).coerceIn(-140f, 140f),
+            rightLegOffset = (basePose.rightLegOffset + (legSample?.rightLegDelta ?: 0f)).coerceIn(-125f, 125f),
+            rightKneeOffset = (basePose.rightKneeOffset + (legSample?.rightKneeDelta ?: 0f)).coerceIn(-140f, 140f)
+        )
+
+        val effExpression = exprSample?.expressionOverride ?: baseExpression
+        val effFacialPresetId = exprSample?.facialPresetId ?: baseFacialPresetId
+        var effMouth = exprSample?.mouthShapeOverride ?: baseMouthOverride
+        var effEye = exprSample?.eyeShapeOverride ?: baseEyeOverride
+        val effBrow = exprSample?.eyebrowShapeOverride ?: baseEyebrowOverride
+        val effHandPose = handSample?.handPoseOverride ?: baseHandPose
+
+        // Speaking mode radio control
+        when (selection.speakingMode) {
+            CharacterSpeakingMode.YES -> {
+                effMouth = evaluateSpeakingMouth(
+                    localFrame = localFrame,
+                    fps = fps,
+                    isAngry = effExpression == FacialExpression.ANGRY
+                )
+            }
+            CharacterSpeakingMode.NO -> {
+                if (effMouth == MouthShapeOverride.TALK_AA ||
+                    effMouth == MouthShapeOverride.TALK_EE ||
+                    effMouth == MouthShapeOverride.OPEN_LAUGH
+                ) {
+                    effMouth = MouthShapeOverride.NEUTRAL
+                }
+            }
+            CharacterSpeakingMode.AUTO_LIP_SYNC -> Unit
+        }
+
+        // Eyeblink mode radio control
+        val effBlink: Boolean? = when (selection.eyeblinkMode) {
+            CharacterEyeblinkMode.ENABLE -> exprSample?.blinkOverride ?: baseBlinkOverride
+            CharacterEyeblinkMode.DISABLE -> false
+            CharacterEyeblinkMode.EYE_CLOSED -> {
+                effEye = EyeShapeOverride.CLOSED_SLEEP
+                true
+            }
+        }
+
+        val effGaze = if (exprSample != null && (abs(exprSample.gazeX) > 0.01f || abs(exprSample.gazeY) > 0.01f)) {
+            GazeTarget(exprSample.gazeX.coerceIn(-1f, 1f), exprSample.gazeY.coerceIn(-1f, 1f))
+        } else {
+            baseGaze
+        }
+
+        val combinedBob = ((exprSample?.bodyBobDelta ?: 0f) + (legSample?.bodyBobDelta ?: 0f)).coerceIn(-52f, 36f)
+        val combinedSqX = ((exprSample?.squashX ?: 1f) * (legSample?.squashX ?: 1f)).coerceIn(0.82f, 1.20f)
+        val combinedSqY = ((exprSample?.squashY ?: 1f) * (legSample?.squashY ?: 1f)).coerceIn(0.82f, 1.20f)
+
+        return BlendedPreviewPose(
+            poseOffsets = combinedPose,
+            expression = effExpression,
+            facialPresetId = effFacialPresetId,
+            mouthOverride = effMouth,
+            eyeOverride = effEye,
+            eyebrowOverride = effBrow,
+            handPose = effHandPose,
+            blinkOverride = effBlink,
+            gazeTarget = effGaze,
+            headTilt = baseHeadTilt,
+            bodyBobDelta = combinedBob,
+            squashX = combinedSqX,
+            squashY = combinedSqY,
+            overrideHandTrack = handSample != null,
+            overrideLegTrack = legSample != null
+        )
+    }
+
+    /**
+     * Commits the selected Expression + Hand Part + Leg Part + Speaking + Eyeblink non-destructively
+     * onto [clipId], preserving all existing keyframes, transform, shadow, tears, and props!
+     */
+    fun applyModularControlConfigToProject(
+        project: ProjectDocument,
+        clipId: String,
+        selection: ModularControlSelection
+    ): ProjectDocument {
+        return ProjectMutator.updateActiveScene(project) { scene ->
+            scene.copy(
+                clips = scene.clips.map { clip ->
+                    if (clip.id == clipId) {
+                        clip.copy(
+                            modularExpressionId = selection.expressionId,
+                            modularHandId = selection.handId,
+                            modularLegId = selection.legId,
+                            speakingMode = selection.speakingMode,
+                            eyeblinkMode = selection.eyeblinkMode,
+                            forceBlink = selection.eyeblinkMode == CharacterEyeblinkMode.EYE_CLOSED
+                        )
+                    } else clip
+                }
+            )
+        }
+    }
+
+    /**
+     * Commits a single previewed [ModularActionDef] onto [clipId] starting at [startGlobalFrame] by
      * stamping 5 clean track-isolated keyframes (`0%`, `25%`, `50%`, `75%`, `100%`) that ONLY
      * alter the target track's channels while keeping all other body tracks intact!
      */
@@ -440,12 +411,16 @@ object ModularActionEngine {
         val span = action.durationFrames.coerceIn(8, (clip.endFrame - safeStart).coerceAtLeast(8))
         val sampleSteps = listOf(0f, 0.25f, 0.5f, 0.75f, 1f)
 
-        val baseProject = project
         var updatedProject = project
         for (u in sampleSteps) {
             val targetGlobalFrame = (safeStart + (span * u).roundToInt())
                 .coerceIn(clip.startFrame, (clip.endFrame - 1).coerceAtLeast(clip.startFrame))
             val sample = evaluateAtProgress(action, u)
+            // Smooth entry/exit weight on one-shot timeline keyframe stamps so transitions ease cleanly
+            val rampWeight = when {
+                u <= 0.01f || u >= 0.99f -> 0.15f
+                else -> 1f
+            }
             val baselineEval = KeyframeEvaluator.evaluate(clip, targetGlobalFrame)
             val basePose = baselineEval.poseOffsets
 
@@ -454,7 +429,7 @@ object ModularActionEngine {
                     ModularActionTrack.FACIAL -> kf.copy(
                         easing = EasingType.EASE_IN_OUT,
                         poseOffsets = basePose.copy(
-                            headNodOffset = (basePose.headNodOffset + sample.headNodDelta).coerceIn(-65f, 65f)
+                            headNodOffset = (basePose.headNodOffset + sample.headNodDelta * rampWeight).coerceIn(-65f, 65f)
                         ),
                         expressionOverride = sample.expressionOverride ?: baselineEval.expressionOverride,
                         facialPresetId = sample.facialPresetId ?: baselineEval.facialPresetId,
@@ -467,10 +442,10 @@ object ModularActionEngine {
                     ModularActionTrack.HANDS -> kf.copy(
                         easing = EasingType.EASE_IN_OUT,
                         poseOffsets = basePose.copy(
-                            leftArmOffset = (basePose.leftArmOffset + sample.leftArmDelta).coerceIn(-160f, 160f),
-                            leftForearmOffset = (basePose.leftForearmOffset + sample.leftForearmDelta).coerceIn(-145f, 145f),
-                            rightArmOffset = (basePose.rightArmOffset + sample.rightArmDelta).coerceIn(-160f, 160f),
-                            rightForearmOffset = (basePose.rightForearmOffset + sample.rightForearmDelta).coerceIn(-145f, 145f)
+                            leftArmOffset = (basePose.leftArmOffset + sample.leftArmDelta * rampWeight).coerceIn(-165f, 165f),
+                            leftForearmOffset = (basePose.leftForearmOffset + sample.leftForearmDelta * rampWeight).coerceIn(-155f, 155f),
+                            rightArmOffset = (basePose.rightArmOffset + sample.rightArmDelta * rampWeight).coerceIn(-165f, 165f),
+                            rightForearmOffset = (basePose.rightForearmOffset + sample.rightForearmDelta * rampWeight).coerceIn(-155f, 155f)
                         ),
                         expressionOverride = baselineEval.expressionOverride,
                         facialPresetId = baselineEval.facialPresetId,
@@ -483,11 +458,11 @@ object ModularActionEngine {
                     ModularActionTrack.LEGS -> kf.copy(
                         easing = EasingType.EASE_IN_OUT,
                         poseOffsets = basePose.copy(
-                            torsoTiltOffset = (basePose.torsoTiltOffset + sample.torsoTiltDelta).coerceIn(-55f, 55f),
-                            leftLegOffset = (basePose.leftLegOffset + sample.leftLegDelta).coerceIn(-120f, 120f),
-                            leftKneeOffset = (basePose.leftKneeOffset + sample.leftKneeDelta).coerceIn(-135f, 135f),
-                            rightLegOffset = (basePose.rightLegOffset + sample.rightLegDelta).coerceIn(-120f, 120f),
-                            rightKneeOffset = (basePose.rightKneeOffset + sample.rightKneeDelta).coerceIn(-135f, 135f)
+                            torsoTiltOffset = (basePose.torsoTiltOffset + sample.torsoTiltDelta * rampWeight).coerceIn(-55f, 55f),
+                            leftLegOffset = (basePose.leftLegOffset + sample.leftLegDelta * rampWeight).coerceIn(-125f, 125f),
+                            leftKneeOffset = (basePose.leftKneeOffset + sample.leftKneeDelta * rampWeight).coerceIn(-140f, 140f),
+                            rightLegOffset = (basePose.rightLegOffset + sample.rightLegDelta * rampWeight).coerceIn(-125f, 125f),
+                            rightKneeOffset = (basePose.rightKneeOffset + sample.rightKneeDelta * rampWeight).coerceIn(-140f, 140f)
                         ),
                         expressionOverride = baselineEval.expressionOverride,
                         facialPresetId = baselineEval.facialPresetId,

@@ -109,7 +109,12 @@ object ProceduralRigRenderer {
         tearsConfig: TearsFxConfig = TearsFxConfig(),
         globalFrame: Int = 0,
         fps: Int = 24,
-        clipSeed: Int = 0
+        clipSeed: Int = 0,
+        bodyBobDelta: Float = 0f,
+        squashOverrideX: Float = 1f,
+        squashOverrideY: Float = 1f,
+        overrideHandTrack: Boolean = false,
+        overrideLegTrack: Boolean = false
     ) {
         val p = ((phase % 1f) + 1f) % 1f
         val swayDeg = when {
@@ -120,15 +125,36 @@ object ProceduralRigRenderer {
         val swayOffX = if (propSwayEnabled && propSwayState != null) propSwayState.offsetX else 0f
         val swayOffY = if (propSwayEnabled && propSwayState != null) propSwayState.offsetY else 0f
         val accFlutter = if (propSwayEnabled && propSwayState != null) propSwayState.accessoryFlutterDeg else 0f
-        val basePose = computePose(preset, p)
-        val pose = basePose.withOffsets(
+        val rawBasePose = computePose(preset, p)
+        // Track isolation: when modular Hand/Leg tracks are active, clear base preset's conflicting
+        // limb channels so modular actions never double-add or fight against the base AnimationPresetType!
+        val isolatedBasePose = rawBasePose.copy(
+            leftArmDeg = if (overrideHandTrack) 0f else rawBasePose.leftArmDeg,
+            leftForearmDeg = if (overrideHandTrack) 0f else rawBasePose.leftForearmDeg,
+            rightArmDeg = if (overrideHandTrack) 0f else rawBasePose.rightArmDeg,
+            rightForearmDeg = if (overrideHandTrack) 0f else rawBasePose.rightForearmDeg,
+            leftLegDeg = if (overrideLegTrack) 0f else rawBasePose.leftLegDeg,
+            leftKneeDeg = if (overrideLegTrack) 0f else rawBasePose.leftKneeDeg,
+            rightLegDeg = if (overrideLegTrack) 0f else rawBasePose.rightLegDeg,
+            rightKneeDeg = if (overrideLegTrack) 0f else rawBasePose.rightKneeDeg,
+            bodyTiltDeg = if (overrideLegTrack) 0f else rawBasePose.bodyTiltDeg,
+            bodyBobY = if (overrideLegTrack) 0f else rawBasePose.bodyBobY
+        )
+        val pose = isolatedBasePose.withOffsets(
             offsets = poseOffsets,
             expression = facialExpression,
             swayDeg = swayDeg,
             swayOffsetX = swayOffX,
             swayOffsetY = swayOffY,
             accessoryFlutterDeg = accFlutter
-        ).let { if (blinkOverride != null) it.copy(blinkClosed = blinkOverride) else it }
+        ).let {
+            it.copy(
+                bodyBobY = it.bodyBobY + bodyBobDelta,
+                squashX = (it.squashX * squashOverrideX).coerceIn(0.75f, 1.30f),
+                squashY = (it.squashY * squashOverrideY).coerceIn(0.75f, 1.30f),
+                blinkClosed = blinkOverride ?: it.blinkClosed
+            )
+        }
 
         canvas.save()
         canvas.translate(0f, pose.bodyBobY * rigScale)
@@ -1078,48 +1104,72 @@ object ProceduralRigRenderer {
                 wingFlapDeg = abs(s1) * 24f,
                 wheelSpinDeg = phase * 180f
             )
-            AnimationPresetType.WALK -> PoseAngles(
-                bodyBobY = -abs(s1) * 6f,
-                bodyTiltDeg = 4f,
-                leftArmDeg = s1 * 32f,
-                rightArmDeg = -s1 * 32f,
-                leftForearmDeg = -14f,
-                rightForearmDeg = -14f,
-                leftLegDeg = -s1 * 34f,
-                rightLegDeg = s1 * 34f,
-                leftKneeDeg = (s1.coerceAtLeast(0f)) * 22f,
-                rightKneeDeg = ((-s1).coerceAtLeast(0f)) * 22f,
-                wingFlapDeg = s1 * 28f,
-                wheelSpinDeg = phase * 360f
-            )
-            AnimationPresetType.JOGGING -> PoseAngles(
-                bodyBobY = -abs(s1) * 11f,
-                bodyTiltDeg = 9f,
-                leftArmDeg = s1 * 52f,
-                rightArmDeg = -s1 * 52f,
-                leftForearmDeg = -45f,
-                rightForearmDeg = -45f,
-                leftLegDeg = -s1 * 48f,
-                rightLegDeg = s1 * 48f,
-                leftKneeDeg = 26f + (s1.coerceAtLeast(0f)) * 28f,
-                rightKneeDeg = 26f + ((-s1).coerceAtLeast(0f)) * 28f,
-                wingFlapDeg = s1 * 42f,
-                wheelSpinDeg = phase * 720f
-            )
-            AnimationPresetType.RUNNING -> PoseAngles(
-                bodyBobY = -abs(s1) * 15f,
-                bodyTiltDeg = 16f,
-                leftArmDeg = s1 * 72f,
-                rightArmDeg = -s1 * 72f,
-                leftForearmDeg = -62f,
-                rightForearmDeg = -62f,
-                leftLegDeg = -s1 * 64f,
-                rightLegDeg = s1 * 64f,
-                leftKneeDeg = 36f + (s1.coerceAtLeast(0f)) * 38f,
-                rightKneeDeg = 36f + ((-s1).coerceAtLeast(0f)) * 38f,
-                wingFlapDeg = s1 * 55f,
-                wheelSpinDeg = phase * 1080f
-            )
+            AnimationPresetType.WALK -> {
+                val stride = sin(rad)
+                val foreLag = sin(rad - 0.55f)
+                val doubleBounce = (1f - cos(rad * 2f)) * 0.5f // 0 at contact, 1 at passing peak
+                PoseAngles(
+                    bodyBobY = -doubleBounce * 6.5f,
+                    bodyTiltDeg = 3.5f + stride * 1.4f,
+                    squashX = 1.015f - doubleBounce * 0.025f,
+                    squashY = 0.985f + doubleBounce * 0.025f,
+                    headNodDeg = -doubleBounce * 2.2f,
+                    leftArmDeg = stride * 30f,
+                    rightArmDeg = -stride * 30f,
+                    leftForearmDeg = -14f - foreLag * 10f,
+                    rightForearmDeg = 14f - foreLag * 10f,
+                    leftLegDeg = -stride * 34f,
+                    rightLegDeg = stride * 34f,
+                    leftKneeDeg = max(0f, sin(rad - 0.35f)) * 28f + 4f,
+                    rightKneeDeg = max(0f, -sin(rad - 0.35f)) * 28f + 4f,
+                    wingFlapDeg = stride * 28f,
+                    wheelSpinDeg = phase * 360f
+                )
+            }
+            AnimationPresetType.JOGGING -> {
+                val stride = sin(rad)
+                val foreLag = sin(rad - 0.45f)
+                val doubleBounce = (1f - cos(rad * 2f)) * 0.5f
+                PoseAngles(
+                    bodyBobY = -doubleBounce * 11.5f,
+                    bodyTiltDeg = 9f + stride * 2f,
+                    squashX = 1.03f - doubleBounce * 0.05f,
+                    squashY = 0.97f + doubleBounce * 0.05f,
+                    headNodDeg = -4f - doubleBounce * 3f,
+                    leftArmDeg = stride * 50f,
+                    rightArmDeg = -stride * 50f,
+                    leftForearmDeg = -48f - foreLag * 14f,
+                    rightForearmDeg = 48f - foreLag * 14f,
+                    leftLegDeg = -stride * 48f,
+                    rightLegDeg = stride * 48f,
+                    leftKneeDeg = 22f + max(0f, sin(rad - 0.3f)) * 38f,
+                    rightKneeDeg = 22f + max(0f, -sin(rad - 0.3f)) * 38f,
+                    wingFlapDeg = stride * 42f,
+                    wheelSpinDeg = phase * 720f
+                )
+            }
+            AnimationPresetType.RUNNING -> {
+                val stride = sin(rad)
+                val foreLag = sin(rad - 0.40f)
+                val doubleBounce = (1f - cos(rad * 2f)) * 0.5f
+                PoseAngles(
+                    bodyBobY = -doubleBounce * 16f,
+                    bodyTiltDeg = 16f + stride * 2.5f,
+                    squashX = 1.045f - doubleBounce * 0.08f,
+                    squashY = 0.955f + doubleBounce * 0.08f,
+                    headNodDeg = -7f - doubleBounce * 3.5f,
+                    leftArmDeg = stride * 70f,
+                    rightArmDeg = -stride * 70f,
+                    leftForearmDeg = -66f - foreLag * 18f,
+                    rightForearmDeg = 66f - foreLag * 18f,
+                    leftLegDeg = -stride * 64f,
+                    rightLegDeg = stride * 64f,
+                    leftKneeDeg = 32f + max(0f, sin(rad - 0.25f)) * 46f,
+                    rightKneeDeg = 32f + max(0f, -sin(rad - 0.25f)) * 46f,
+                    wingFlapDeg = stride * 55f,
+                    wheelSpinDeg = phase * 1080f
+                )
+            }
             AnimationPresetType.SITTING -> PoseAngles(
                 bodyBobY = 20f + s1 * 1.8f,
                 leftArmDeg = 18f,
@@ -1141,42 +1191,63 @@ object ProceduralRigRenderer {
                 rightLegDeg = -3f,
                 blinkClosed = blink
             )
-            AnimationPresetType.TALKING -> PoseAngles(
-                bodyBobY = s1 * 2.5f,
-                headNodDeg = s2 * 6f,
-                leftArmDeg = 20f + s1 * 18f,
-                rightArmDeg = -36f - c1 * 22f,
-                leftForearmDeg = -28f,
-                rightForearmDeg = -40f + s2 * 16f,
-                mouthOpen = abs(sin(rad * 3f)),
-                happySmile = true,
-                wingFlapDeg = abs(s2) * 18f
-            )
+            AnimationPresetType.TALKING -> {
+                val speechEnv = (0.5f + 0.5f * sin(rad * 3f)) * (0.65f + 0.35f * sin(rad * 5f + 0.7f))
+                PoseAngles(
+                    bodyBobY = s1 * 2.2f,
+                    headNodDeg = s2 * 5.5f + s1 * 2f,
+                    leftArmDeg = 22f + s1 * 16f,
+                    rightArmDeg = -34f - c1 * 20f,
+                    leftForearmDeg = -32f + s1 * 12f,
+                    rightForearmDeg = 42f - s2 * 16f,
+                    mouthOpen = speechEnv.coerceIn(0f, 1f),
+                    happySmile = true,
+                    wingFlapDeg = abs(s2) * 18f
+                )
+            }
             AnimationPresetType.WAVING -> PoseAngles(
                 bodyBobY = s1 * 3f,
                 headNodDeg = -6f + s1 * 4f,
                 leftArmDeg = 14f,
                 rightArmDeg = -142f + s2 * 18f,
-                rightForearmDeg = -28f + s2 * 24f,
+                rightForearmDeg = 26f + s2 * 24f,
                 happySmile = true,
                 blinkClosed = blink,
                 wingFlapDeg = 35f + s2 * 20f
             )
             AnimationPresetType.JUMPING -> {
-                val air = sin(phase * PI).toFloat()
-                val crouch = if (phase < 0.2f || phase > 0.85f) 1f else 0f
+                // Smooth C1-continuous 3-phase jump arc (zero 1-frame snap/pop!):
+                // 0.00..0.22 anticipation crouch -> 0.22..0.80 airborne parabolic arc -> 0.80..1.00 cushioned landing recovery
+                val pClamped = ((phase % 1f) + 1f) % 1f
+                val crouchEnv = when {
+                    pClamped < 0.22f -> (0.5f - 0.5f * cos((pClamped / 0.22f) * 2.0 * PI)).toFloat()
+                    pClamped > 0.80f -> (0.5f - 0.5f * cos(((pClamped - 0.80f) / 0.20f) * 2.0 * PI)).toFloat()
+                    else -> 0f
+                }
+                val airEnv = if (pClamped in 0.22f..0.80f) {
+                    val uAir = (pClamped - 0.22f) / 0.58f
+                    sin(uAir * PI).toFloat()
+                } else 0f
+                val stretchEnv = if (pClamped in 0.20f..0.82f) {
+                    val uAir = ((pClamped - 0.20f) / 0.62f).coerceIn(0f, 1f)
+                    sin(uAir * PI).toFloat()
+                } else 0f
+
                 PoseAngles(
-                    bodyBobY = if (crouch > 0f) 12f else -air * 44f,
-                    squashX = if (crouch > 0f) 1.12f else 0.94f,
-                    squashY = if (crouch > 0f) 0.88f else 1.08f,
-                    leftArmDeg = if (crouch > 0f) 30f else 135f,
-                    rightArmDeg = if (crouch > 0f) -30f else -135f,
-                    leftLegDeg = if (crouch > 0f) -26f else 16f,
-                    rightLegDeg = if (crouch > 0f) 26f else -16f,
-                    leftKneeDeg = if (crouch > 0f) 46f else 18f,
-                    rightKneeDeg = if (crouch > 0f) 46f else 18f,
+                    bodyBobY = crouchEnv * 14f - airEnv * 46f,
+                    squashX = 1f + crouchEnv * 0.12f - stretchEnv * 0.07f,
+                    squashY = 1f - crouchEnv * 0.12f + stretchEnv * 0.08f,
+                    headNodDeg = crouchEnv * 6f - airEnv * 8f,
+                    leftArmDeg = 18f + crouchEnv * 14f + airEnv * 120f,
+                    rightArmDeg = -18f - crouchEnv * 14f - airEnv * 120f,
+                    leftForearmDeg = -18f - crouchEnv * 20f + airEnv * 8f,
+                    rightForearmDeg = 18f + crouchEnv * 20f - airEnv * 8f,
+                    leftLegDeg = -crouchEnv * 28f + airEnv * 16f,
+                    rightLegDeg = -crouchEnv * 24f - airEnv * 14f,
+                    leftKneeDeg = 8f + crouchEnv * 46f + airEnv * 26f,
+                    rightKneeDeg = 8f + crouchEnv * 46f + airEnv * 22f,
                     happySmile = true,
-                    wingFlapDeg = air * 52f
+                    wingFlapDeg = airEnv * 54f
                 )
             }
             AnimationPresetType.DANCING -> PoseAngles(

@@ -693,6 +693,7 @@ fun CharacterActingAndPropsDialog(
     onImportCustomPropPng: ((String) -> Unit) -> Unit,
     onFlipHorizontal: () -> Unit = {},
     onFlipVertical: () -> Unit = {},
+    onOpenModularControl: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val eval = remember(clip, currentFrame) { KeyframeEvaluator.evaluate(clip, currentFrame) }
@@ -790,6 +791,79 @@ fun CharacterActingAndPropsDialog(
                         leadingIcon = { Icon(Icons.Rounded.AccessibilityNew, null, modifier = Modifier.size(15.dp)) },
                         modifier = Modifier.testTag("char_stage_ik_toggle")
                     )
+                }
+
+                HorizontalDivider(color = StudioBorderSubtle)
+
+                // 0B. Pro Control Modular Action Library Launcher + Speaking / Eyeblink Quick Radios
+                Surface(
+                    onClick = {
+                        onDismiss()
+                        onOpenModularControl()
+                    },
+                    color = ElectricCyan.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.55f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("acting_open_pro_control_btn")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Pro Control Library (${com.example.engine.ModularActionEngine.catalog.size} Actions)",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = ElectricCyan
+                            )
+                            Text(
+                                text = "Live white silhouettes • Expressions, Hands & Legs",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioTextSecondary
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Rounded.AutoAwesomeMotion,
+                            contentDescription = "Open Pro Control Library",
+                            tint = ElectricCyan
+                        )
+                    }
+                }
+
+                Text("Speaking Mode", style = MaterialTheme.typography.labelSmall, color = ElectricCyan)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(CharacterSpeakingMode.entries) { mode ->
+                        FilterChip(
+                            selected = clip.speakingMode == mode,
+                            onClick = { onUpdateClip { it.copy(speakingMode = mode) } },
+                            label = { Text(mode.displayName) },
+                            modifier = Modifier.testTag("dialog_speaking_${mode.name.lowercase()}")
+                        )
+                    }
+                }
+
+                Text("Eyeblink Mode", style = MaterialTheme.typography.labelSmall, color = AmberKeyframe)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(CharacterEyeblinkMode.entries) { mode ->
+                        FilterChip(
+                            selected = clip.eyeblinkMode == mode,
+                            onClick = {
+                                onUpdateClip {
+                                    it.copy(
+                                        eyeblinkMode = mode,
+                                        forceBlink = mode == CharacterEyeblinkMode.EYE_CLOSED
+                                    )
+                                }
+                            },
+                            label = { Text(mode.displayName) },
+                            modifier = Modifier.testTag("dialog_eyeblink_${mode.name.lowercase()}")
+                        )
+                    }
                 }
 
                 HorizontalDivider(color = StudioBorderSubtle)

@@ -4,10 +4,13 @@ import com.example.model.AnimationScene
 import com.example.model.ArmGestureTrackPreset
 import com.example.model.AudioSyncMetadata
 import com.example.model.CameraKeyframe
+import com.example.model.CharacterEyeblinkMode
+import com.example.model.CharacterSpeakingMode
 import com.example.model.EasingType
 import com.example.model.EyeShapeOverride
 import com.example.model.EyebrowShapeOverride
 import com.example.model.FacialExpression
+import com.example.model.GazeTarget
 import com.example.model.HandPoseType
 import com.example.model.MouthShapeOverride
 import com.example.model.NormalizedPoint
@@ -62,7 +65,14 @@ data class SimultaneousCharacterBlend(
     val effectiveHandPose: HandPoseType,
     val activeArmGesture: ArmGestureTrackPreset,
     val effectiveBlink: Boolean?,
-    val lipSyncActive: Boolean
+    val lipSyncActive: Boolean,
+    val effectiveGazeX: Float? = null,
+    val effectiveGazeY: Float? = null,
+    val bodyBobDelta: Float = 0f,
+    val squashX: Float = 1f,
+    val squashY: Float = 1f,
+    val overrideHandTrack: Boolean = false,
+    val overrideLegTrack: Boolean = false
 )
 
 data class EvaluatedCamera(
@@ -352,46 +362,105 @@ object KeyframeEvaluator {
             EyebrowShapeOverride.AUTO
         }
 
-        // Track 5: Auto Audio Lip-Sync (overrides mouth cleanly when active dialogue phoneme is speaking)
+        // Track 5: Auto Audio Lip-Sync + Speaking Mode (`Auto Lip Sync` | `Yes` | `No`)
         var lipSyncActive = false
-        val syncMeta = clip.lipSyncAudioClipId?.let { id ->
-            audioSyncTracks.firstOrNull { it.clipId == id }
-        }
-        if (syncMeta != null && syncMeta.phonemeMappings.isNotEmpty()) {
-            val phonemeCue = syncMeta.phonemeMappings.firstOrNull { it.frame == globalFrame }
-                ?: syncMeta.phonemeMappings.minByOrNull { abs(it.frame - globalFrame) }
-                    ?.takeIf { abs(it.frame - globalFrame) <= 2 }
-            val mappedMouth = phonemeCue?.let { mapPhonemeToMouthOverride(it.phoneme, it.amplitude) }
-            if (mappedMouth != null) {
-                effectiveMouth = mappedMouth
+        if (clip.speakingMode != CharacterSpeakingMode.NO) {
+            val syncMeta = clip.lipSyncAudioClipId?.let { id ->
+                audioSyncTracks.firstOrNull { it.clipId == id }
+            }
+            if (syncMeta != null && syncMeta.phonemeMappings.isNotEmpty()) {
+                val phonemeCue = syncMeta.phonemeMappings.firstOrNull { it.frame == globalFrame }
+                    ?: syncMeta.phonemeMappings.minByOrNull { abs(it.frame - globalFrame) }
+                        ?.takeIf { abs(it.frame - globalFrame) <= 2 }
+                val mappedMouth = phonemeCue?.let { mapPhonemeToMouthOverride(it.phoneme, it.amplitude) }
+                if (mappedMouth != null) {
+                    effectiveMouth = mappedMouth
+                    lipSyncActive = true
+                }
+            }
+            val lipSyncTrack = clip.simultaneousTracks.lastOrNull { tr ->
+                tr.trackType == SimultaneousTrackType.LIP_SYNC &&
+                    localFrame in tr.startLocalFrame until (tr.startLocalFrame + tr.durationFrames.coerceAtLeast(1))
+            }
+            if (lipSyncTrack?.mouthOverride != null) {
+                effectiveMouth = lipSyncTrack.mouthOverride
                 lipSyncActive = true
             }
         }
-        val lipSyncTrack = clip.simultaneousTracks.lastOrNull { tr ->
-            tr.trackType == SimultaneousTrackType.LIP_SYNC &&
-                localFrame in tr.startLocalFrame until (tr.startLocalFrame + tr.durationFrames.coerceAtLeast(1))
-        }
-        if (lipSyncTrack?.mouthOverride != null) {
-            effectiveMouth = lipSyncTrack.mouthOverride
-            lipSyncActive = true
+
+        val baseBlink = eval.blinkOverride ?: if (clip.forceBlink) true else null
+
+        // Track 6: Pro "Control" Modular Action Library (non-destructive Expression + Hands + Legs + Speaking + Eyeblink)
+        val hasModularControl = clip.modularExpressionId != null ||
+            clip.modularHandId != null ||
+            clip.modularLegId != null ||
+            clip.speakingMode != CharacterSpeakingMode.AUTO_LIP_SYNC ||
+            clip.eyeblinkMode != CharacterEyeblinkMode.ENABLE
+
+        val finalBlend = if (hasModularControl) {
+            val controlSel = ModularControlSelection.fromClip(clip)
+            val modular = ModularActionEngine.blendControlSelectionOntoBase(
+                basePose = blendedOffsets,
+                baseExpression = effectiveExpression,
+                baseFacialPresetId = effectiveFacialPresetId,
+                baseMouthOverride = effectiveMouth,
+                baseEyeOverride = effectiveEye,
+                baseEyebrowOverride = effectiveEyebrow,
+                baseHandPose = resolvedHandPose,
+                baseBlinkOverride = baseBlink,
+                baseGaze = GazeTarget(0f, 0f),
+                baseHeadTilt = 0f,
+                selection = controlSel,
+                localFrame = localFrame,
+                fps = safeFps,
+                speedMultiplier = clip.speedMultiplier
+            )
+            // Preserve audio lip-sync mouth when Speaking = AUTO_LIP_SYNC and audio is actively speaking
+            val resolvedMouth = if (clip.speakingMode == CharacterSpeakingMode.AUTO_LIP_SYNC && lipSyncActive) {
+                effectiveMouth
+            } else {
+                modular.mouthOverride
+            }
+            val isSpeakingYes = clip.speakingMode == CharacterSpeakingMode.YES
+            SimultaneousCharacterBlend(
+                blendedPoseOffsets = modular.poseOffsets,
+                effectiveExpression = modular.expression,
+                effectiveFacialPresetId = modular.facialPresetId,
+                previousFacialPresetId = eval.previousFacialPresetId,
+                framesSinceFacialKey = eval.framesSinceFacialKey,
+                effectiveMouthOverride = resolvedMouth,
+                effectiveEyeOverride = modular.eyeOverride,
+                effectiveEyebrowOverride = modular.eyebrowOverride,
+                effectiveHandPose = modular.handPose,
+                activeArmGesture = activeGesture,
+                effectiveBlink = modular.blinkOverride,
+                lipSyncActive = lipSyncActive || isSpeakingYes,
+                effectiveGazeX = modular.gazeTarget.x.takeIf { kotlin.math.abs(it) > 0.01f },
+                effectiveGazeY = modular.gazeTarget.y.takeIf { kotlin.math.abs(it) > 0.01f },
+                bodyBobDelta = modular.bodyBobDelta,
+                squashX = modular.squashX,
+                squashY = modular.squashY,
+                overrideHandTrack = modular.overrideHandTrack,
+                overrideLegTrack = modular.overrideLegTrack
+            )
+        } else {
+            SimultaneousCharacterBlend(
+                blendedPoseOffsets = blendedOffsets,
+                effectiveExpression = effectiveExpression,
+                effectiveFacialPresetId = effectiveFacialPresetId,
+                previousFacialPresetId = eval.previousFacialPresetId,
+                framesSinceFacialKey = eval.framesSinceFacialKey,
+                effectiveMouthOverride = effectiveMouth,
+                effectiveEyeOverride = effectiveEye,
+                effectiveEyebrowOverride = effectiveEyebrow,
+                effectiveHandPose = resolvedHandPose,
+                activeArmGesture = activeGesture,
+                effectiveBlink = baseBlink,
+                lipSyncActive = lipSyncActive
+            )
         }
 
-        val effectiveBlink = eval.blinkOverride ?: if (clip.forceBlink) true else null
-
-        return SimultaneousCharacterBlend(
-            blendedPoseOffsets = blendedOffsets,
-            effectiveExpression = effectiveExpression,
-            effectiveFacialPresetId = effectiveFacialPresetId,
-            previousFacialPresetId = eval.previousFacialPresetId,
-            framesSinceFacialKey = eval.framesSinceFacialKey,
-            effectiveMouthOverride = effectiveMouth,
-            effectiveEyeOverride = effectiveEye,
-            effectiveEyebrowOverride = effectiveEyebrow,
-            effectiveHandPose = resolvedHandPose,
-            activeArmGesture = activeGesture,
-            effectiveBlink = effectiveBlink,
-            lipSyncActive = lipSyncActive
-        )
+        return finalBlend
     }
 
     private fun evaluateArmGestureDeltas(
@@ -406,45 +475,45 @@ object KeyframeEvaluator {
         val raw = when (preset) {
             ArmGestureTrackPreset.NONE -> PoseKeyframeOffsets()
             ArmGestureTrackPreset.WAVE -> PoseKeyframeOffsets(
-                rightArmOffset = -112f * (0.65f + 0.35f * env),
-                rightForearmOffset = -32f + 24f * wave2
+                rightArmOffset = -112f * (0.75f + 0.25f * env),
+                rightForearmOffset = 28f + 24f * wave2
             )
             ArmGestureTrackPreset.POINT -> PoseKeyframeOffsets(
-                rightArmOffset = -80f * (0.7f + 0.3f * env),
-                rightForearmOffset = -12f
+                rightArmOffset = -80f * (0.78f + 0.22f * env),
+                rightForearmOffset = 10f
             )
             ArmGestureTrackPreset.HOLD_PROP -> PoseKeyframeOffsets(
-                rightArmOffset = -42f,
-                rightForearmOffset = -52f
+                rightArmOffset = -38f,
+                rightForearmOffset = 58f
             )
             ArmGestureTrackPreset.OPEN_WELCOME -> PoseKeyframeOffsets(
-                leftArmOffset = 68f * (0.65f + 0.35f * env),
-                leftForearmOffset = 20f,
-                rightArmOffset = -68f * (0.65f + 0.35f * env),
-                rightForearmOffset = -20f
+                leftArmOffset = 68f * (0.72f + 0.28f * env),
+                leftForearmOffset = -18f,
+                rightArmOffset = -68f * (0.72f + 0.28f * env),
+                rightForearmOffset = 18f
             )
             ArmGestureTrackPreset.FIST_PUMP -> {
                 val pump = 0.5f + 0.5f * sin(p * 4.0 * PI).toFloat()
                 PoseKeyframeOffsets(
-                    leftArmOffset = 52f + 24f * pump,
-                    leftForearmOffset = 62f + 16f * pump,
-                    rightArmOffset = -52f - 24f * pump,
-                    rightForearmOffset = -62f - 16f * pump
+                    leftArmOffset = 54f + 22f * pump,
+                    leftForearmOffset = -62f - 16f * pump,
+                    rightArmOffset = -54f - 22f * pump,
+                    rightForearmOffset = 62f + 16f * pump
                 )
             }
             ArmGestureTrackPreset.THINK_CHIN -> PoseKeyframeOffsets(
                 rightArmOffset = -56f,
-                rightForearmOffset = -108f,
+                rightForearmOffset = 112f,
                 leftArmOffset = 26f,
-                leftForearmOffset = 64f
+                leftForearmOffset = -64f
             )
             ArmGestureTrackPreset.CLAP -> {
-                val clap = abs(sin(p * 3.0 * PI).toFloat())
+                val clap = abs(sin(p * 2.0 * PI).toFloat())
                 PoseKeyframeOffsets(
-                    leftArmOffset = 32f + 24f * clap,
-                    leftForearmOffset = 52f + 34f * clap,
-                    rightArmOffset = -32f - 24f * clap,
-                    rightForearmOffset = -52f - 34f * clap
+                    leftArmOffset = 34f + 20f * clap,
+                    leftForearmOffset = -52f - 36f * clap,
+                    rightArmOffset = -34f - 20f * clap,
+                    rightForearmOffset = 52f + 36f * clap
                 )
             }
         }

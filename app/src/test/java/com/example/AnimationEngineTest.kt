@@ -4846,4 +4846,437 @@ class AnimationEngineTest {
         assertTrue("Duplicate layer must exist", outScene.layers.any { it.id == "lay_a_dup" })
         assertEquals("Sort BRING_TO_FRONT must move lay_a to highest orderIndex", "lay_a", outScene.layers.maxByOrNull { it.orderIndex }?.id)
     }
+
+    @Test
+    fun `Stage 1A - Pro Control Modular Action Catalog has 100+ Desi and Story presets with valid silhouette kinematics`() {
+        val all = com.example.engine.ModularActionEngine.catalog
+        val exprs = com.example.engine.ModularActionEngine.actionsForTrack(com.example.engine.ModularActionTrack.FACIAL)
+        val hands = com.example.engine.ModularActionEngine.actionsForTrack(com.example.engine.ModularActionTrack.HANDS)
+        val legs = com.example.engine.ModularActionEngine.actionsForTrack(com.example.engine.ModularActionTrack.LEGS)
+
+        assertTrue("Expected 35+ Expressions, got ${exprs.size}", exprs.size >= 35)
+        assertTrue("Expected 50+ Hand Parts, got ${hands.size}", hands.size >= 50)
+        assertTrue("Expected 25+ Leg Parts, got ${legs.size}", legs.size >= 25)
+        assertEquals("All preset IDs must be unique", all.size, all.map { it.id }.toSet().size)
+
+        // Verify authentic Desi/Story presets & search
+        assertTrue(com.example.engine.ModularActionEngine.search("ashirwaad").size >= 3)
+        assertTrue(com.example.engine.ModularActionEngine.search("matka").isNotEmpty())
+        assertTrue(com.example.engine.ModularActionEngine.search("bori").size >= 3)
+        assertTrue(com.example.engine.ModularActionEngine.search("namaskar").size >= 2)
+        assertTrue(com.example.engine.ModularActionEngine.search("roti").isNotEmpty())
+        assertTrue(com.example.engine.ModularActionEngine.search("bail gadi").size >= 2)
+
+        // Verify every single preset evaluates deterministically and produces valid silhouette geometry
+        for (act in all) {
+            val s0 = com.example.engine.ModularActionEngine.evaluateAtProgress(act, 0.25f)
+            val s1 = com.example.engine.ModularActionEngine.evaluateAtProgress(act, 0.55f)
+            assertEquals(act.track, s0.track)
+            assertFalse(s0.leftArmDelta.isNaN() || s0.rightLegDelta.isNaN() || s1.headNodDelta.isNaN())
+            val g0 = com.example.ui.screens.editor.SilhouettePreviewGeometryBuilder.build(act, s0, 140f, 90f)
+            assertTrue(g0.headRadius > 0f && g0.headCenterX.isFinite() && g0.rightHand.first.isFinite())
+        }
+
+        // Verify animated limb motion between two phases on a Hand preset and a Leg preset
+        val clap = com.example.engine.ModularActionEngine.findById("hand_cutting_tree")!!
+        val gA = com.example.ui.screens.editor.SilhouettePreviewGeometryBuilder.build(
+            clap, com.example.engine.ModularActionEngine.evaluateAtProgress(clap, 0.25f), 140f, 90f
+        )
+        val gB = com.example.ui.screens.editor.SilhouettePreviewGeometryBuilder.build(
+            clap, com.example.engine.ModularActionEngine.evaluateAtProgress(clap, 0.75f), 140f, 90f
+        )
+        assertNotEquals("Animated silhouette hands must move between phases", gA.rightHand.second, gB.rightHand.second, 1f)
+    }
+
+    @Test
+    fun `Stage 1B - ModularControlSelection layers Expression, Hands, Legs, Speaking, Eyeblink non-destructively and integrates with Blueprint and DirectorScript`() {
+        val baseLayer = AnimationLayer(id = "l_char", name = "Actor", type = LayerType.CHARACTER, orderIndex = 0)
+        val clip = TimelineClip(
+            id = "c_actor",
+            layerId = baseLayer.id,
+            name = "Hero",
+            characterId = BuiltInCatalog.builtInCharacters.first().id,
+            startFrame = 0,
+            durationFrames = 96
+        )
+        val doc = ProjectDocument(scenes = listOf(AnimationScene(layers = listOf(baseLayer), clips = listOf(clip))))
+
+        val selection = com.example.engine.ModularControlSelection(
+            expressionId = "expr_look_right",
+            handId = "hand_namaskar",
+            legId = "leg_namaskar_sitting",
+            speakingMode = CharacterSpeakingMode.YES,
+            eyeblinkMode = CharacterEyeblinkMode.DISABLE
+        )
+        val updatedDoc = com.example.engine.ModularActionEngine.applyModularControlConfigToProject(doc, clip.id, selection)
+        val updatedClip = updatedDoc.activeScene.clips.first()
+        assertEquals("expr_look_right", updatedClip.modularExpressionId)
+        assertEquals("hand_namaskar", updatedClip.modularHandId)
+        assertEquals("leg_namaskar_sitting", updatedClip.modularLegId)
+        assertEquals(CharacterSpeakingMode.YES, updatedClip.speakingMode)
+        assertEquals(CharacterEyeblinkMode.DISABLE, updatedClip.eyeblinkMode)
+
+        // Evaluate via KeyframeEvaluator at frame 12 -> all 3 tracks + Speaking YES + Eyeblink DISABLE active together
+        val eval = KeyframeEvaluator.evaluate(updatedClip, 12)
+        val blend = KeyframeEvaluator.evaluateSimultaneousCharacterTracks(updatedClip, eval, globalFrame = 12, fps = 24)
+        assertTrue("Namaskar hands should bend forearms inward", kotlin.math.abs(blend.blendedPoseOffsets.leftForearmOffset) > 40f)
+        assertTrue("Namaskar sitting should bend legs", kotlin.math.abs(blend.blendedPoseOffsets.leftKneeOffset) > 40f)
+        assertTrue("Look right should shift gaze X positive", (blend.effectiveGazeX ?: 0f) > 0.3f)
+        assertTrue("Speaking YES must activate lipSyncActive", blend.lipSyncActive)
+        assertEquals("Eyeblink DISABLE must force effectiveBlink=false", false, blend.effectiveBlink)
+
+        // Eyeblink EYE_CLOSED overrides to closed eyes
+        val closedClip = updatedClip.copy(eyeblinkMode = CharacterEyeblinkMode.EYE_CLOSED)
+        val closedBlend = KeyframeEvaluator.evaluateSimultaneousCharacterTracks(closedClip, eval, globalFrame = 12, fps = 24)
+        assertEquals(true, closedBlend.effectiveBlink)
+        assertEquals(EyeShapeOverride.CLOSED_SLEEP, closedBlend.effectiveEyeOverride)
+
+        // Dynamic StudioCapabilityRegistry + AIBlueprintExporter + DirectorScriptReceiver check
+        val caps = com.example.engine.StudioCapabilityRegistry.introspect()
+        assertTrue(caps.modularActions.any { it.id == "hand_carrying_water_matka" })
+        assertTrue(caps.speakingModes.any { it.id == "AUTO_LIP_SYNC" })
+        assertTrue(caps.eyeblinkModes.any { it.id == "EYE_CLOSED" })
+
+        val bp = com.example.engine.AIBlueprintExporter.buildBlueprint(updatedDoc, BuiltInCatalog.builtInCharacters, BuiltInCatalog.bundledMediaAssets)
+        assertTrue(bp.capabilities.modularActions.contains("leg_kicking_ball"))
+        assertTrue(bp.capabilities.speakingModes.contains("YES"))
+        assertTrue(bp.capabilities.eyeblinkModes.contains("DISABLE"))
+
+        val charId = BuiltInCatalog.builtInCharacters.first().id
+        val scriptJson = """
+            {
+              "format": "framecraft.director_script",
+              "schemaVersion": 3,
+              "scenes": [{
+                "name": "Desi Story Scene",
+                "durationSec": 4.0,
+                "layers": [{ "id": "l1", "name": "Farmer", "type": "CHARACTER", "zIndex": 0 }],
+                "clips": [{
+                  "id": "farmer_clip",
+                  "layerId": "l1",
+                  "characterId": "$charId",
+                  "startSec": 0.0,
+                  "durationSec": 3.0,
+                  "modularExpressionId": "expr_gods_ashirwaad",
+                  "modularHandId": "hand_gods_ashirwaad",
+                  "modularLegId": "leg_gods_ashirwaad",
+                  "speakingMode": "YES",
+                  "eyeblinkMode": "EYE_CLOSED"
+                }]
+              }]
+            }
+        """.trimIndent()
+        val compiled = com.example.engine.DirectorScriptReceiver.compileIntoProject(
+            context = null,
+            scriptJson = scriptJson,
+            currentProject = doc,
+            existingCharacters = BuiltInCatalog.builtInCharacters,
+            existingMediaAssets = BuiltInCatalog.bundledMediaAssets,
+            importMode = com.example.engine.DirectorScriptImportMode.REPLACE_TIMELINE
+        ).getOrThrow()
+        val compiledClip = compiled.project.scenes.first().clips.first { it.id == "farmer_clip" }
+        assertEquals("expr_gods_ashirwaad", compiledClip.modularExpressionId)
+        assertEquals("hand_gods_ashirwaad", compiledClip.modularHandId)
+        assertEquals("leg_gods_ashirwaad", compiledClip.modularLegId)
+        assertEquals(CharacterSpeakingMode.YES, compiledClip.speakingMode)
+        assertEquals(CharacterEyeblinkMode.EYE_CLOSED, compiledClip.eyeblinkMode)
+    }
+
+    @Test
+    fun `Stage 2A - MediaPipeMocapRetargeter retargets 52 ARKit blendshapes, 478 iris landmarks, and 4x4 head matrix`() {
+        // Build 478 neutral face landmarks with irises shifted to the right (gazeX > 0.3)
+        val landmarks = MutableList(478) { com.example.engine.MocapLandmark3D(0.5f, 0.5f, 0f) }
+        landmarks[33] = com.example.engine.MocapLandmark3D(0.35f, 0.42f, 0f)   // left eye outer
+        landmarks[133] = com.example.engine.MocapLandmark3D(0.45f, 0.42f, 0f)  // left eye inner
+        landmarks[468] = com.example.engine.MocapLandmark3D(0.43f, 0.42f, 0f)  // left iris right-shifted
+        landmarks[362] = com.example.engine.MocapLandmark3D(0.55f, 0.42f, 0f)  // right eye inner
+        landmarks[263] = com.example.engine.MocapLandmark3D(0.65f, 0.42f, 0f)  // right eye outer
+        landmarks[473] = com.example.engine.MocapLandmark3D(0.63f, 0.42f, 0f)  // right iris right-shifted
+
+        // 4x4 column-major matrix with ~18 deg roll
+        val rollRad = Math.toRadians(18.0)
+        val cosR = kotlin.math.cos(rollRad).toFloat()
+        val sinR = kotlin.math.sin(rollRad).toFloat()
+        val headMatrix = floatArrayOf(
+            cosR, sinR, 0f, 0f,
+            -sinR, cosR, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            0f, 0f, 0f, 1f
+        )
+
+        // Shocked / O-mouth + raised eyebrows (inner + outer up) + blinking off
+        val shockSample = com.example.engine.MediaPipeMocapRetargeter.retargetFace(
+            blendshapes = mapOf(
+                "jawOpen" to 0.70f,
+                "mouthFunnel" to 0.55f,
+                "eyeWideLeft" to 0.65f,
+                "eyeWideRight" to 0.65f,
+                "browInnerUp" to 0.60f,
+                "browOuterUpLeft" to 0.58f,
+                "browOuterUpRight" to 0.58f,
+                "eyeBlinkLeft" to 0.05f,
+                "eyeBlinkRight" to 0.05f
+            ),
+            faceLandmarks = landmarks,
+            headMatrix4x4 = headMatrix
+        )
+        assertFalse(shockSample.isBlinking)
+        assertTrue("Iris gazeX should shift right, got ${shockSample.gazeTarget.x}", shockSample.gazeTarget.x > 0.4f)
+        assertEquals(18f, shockSample.headTiltDeg, 1.5f)
+        assertEquals(MouthShapeOverride.SHOCK_O, shockSample.mouthOverride)
+        assertEquals("Lips_O", shockSample.visemeCode)
+        assertEquals("mth4", shockSample.mthCode)
+        assertEquals(EyebrowShapeOverride.RAISED_SURPRISE, shockSample.eyebrowOverride)
+        assertEquals(FacialExpression.SHOCKED, shockSample.expression)
+
+        // Worried/Sad inner-only brow lift
+        val worriedSample = com.example.engine.MediaPipeMocapRetargeter.retargetFace(
+            blendshapes = mapOf("browInnerUp" to 0.62f, "browOuterUpLeft" to 0.05f, "browOuterUpRight" to 0.05f)
+        )
+        assertEquals(EyebrowShapeOverride.WORRIED_SAD, worriedSample.eyebrowOverride)
+
+        // Angry + closed eyes blink + furrowed brows
+        val angryBlink = com.example.engine.MediaPipeMocapRetargeter.retargetFace(
+            blendshapes = mapOf(
+                "eyeBlinkLeft" to 0.85f,
+                "eyeBlinkRight" to 0.80f,
+                "browDownLeft" to 0.72f,
+                "browDownRight" to 0.75f,
+                "jawOpen" to 0.04f
+            )
+        )
+        assertTrue(angryBlink.isBlinking)
+        assertEquals(EyeShapeOverride.CLOSED_SLEEP, angryBlink.eyeOverride)
+        assertEquals(EyebrowShapeOverride.FURROWED_ANGRY, angryBlink.eyebrowOverride)
+        assertEquals(FacialExpression.ANGRY, angryBlink.expression)
+        assertEquals("Lips_M", angryBlink.visemeCode)
+        assertEquals("mth1", angryBlink.mthCode)
+    }
+
+    @Test
+    fun `Stage 2B - MediaPipeMocapRetargeter retargets 33 pose landmarks within AnatomicalJointLimits and classifies 6 palm gestures`() {
+        // 33 pose landmarks: raised arms and bent knee
+        val pose = MutableList(33) { com.example.engine.MocapLandmark3D(0.5f, 0.5f, 0f, 1f) }
+        pose[0] = com.example.engine.MocapLandmark3D(0.50f, 0.16f, 0f, 1f)   // nose
+        pose[11] = com.example.engine.MocapLandmark3D(0.42f, 0.30f, 0f, 1f)  // L shoulder
+        pose[12] = com.example.engine.MocapLandmark3D(0.58f, 0.30f, 0f, 1f)  // R shoulder
+        pose[13] = com.example.engine.MocapLandmark3D(0.28f, 0.18f, 0f, 1f)  // L elbow raised
+        pose[15] = com.example.engine.MocapLandmark3D(0.22f, 0.08f, 0f, 1f)  // L wrist high
+        pose[14] = com.example.engine.MocapLandmark3D(0.72f, 0.22f, 0f, 1f)  // R elbow raised
+        pose[16] = com.example.engine.MocapLandmark3D(0.78f, 0.10f, 0f, 1f)  // R wrist high
+        pose[23] = com.example.engine.MocapLandmark3D(0.45f, 0.58f, 0f, 1f)  // L hip
+        pose[24] = com.example.engine.MocapLandmark3D(0.55f, 0.58f, 0f, 1f)  // R hip
+        pose[25] = com.example.engine.MocapLandmark3D(0.42f, 0.76f, 0f, 1f)  // L knee
+        pose[27] = com.example.engine.MocapLandmark3D(0.45f, 0.94f, 0f, 1f)  // L ankle
+        pose[26] = com.example.engine.MocapLandmark3D(0.58f, 0.76f, 0f, 1f)  // R knee
+        pose[28] = com.example.engine.MocapLandmark3D(0.56f, 0.94f, 0f, 1f)  // R ankle
+
+        val offsets = com.example.engine.MediaPipeMocapRetargeter.retargetPose(
+            poseLandmarks = pose,
+            enforceJointLimits = true,
+            orientation = CharacterOrientation.FRONT
+        )
+        val reClamped = com.example.engine.IkRigSolver.clampPoseOffsets(offsets, true, CharacterOrientation.FRONT)
+        assertEquals(reClamped.headNodOffset, offsets.headNodOffset, 0.001f)
+        assertEquals(reClamped.torsoTiltOffset, offsets.torsoTiltOffset, 0.001f)
+        assertEquals(reClamped.leftArmOffset, offsets.leftArmOffset, 0.001f)
+        assertEquals(reClamped.rightArmOffset, offsets.rightArmOffset, 0.001f)
+        assertEquals(reClamped.leftLegOffset, offsets.leftLegOffset, 0.001f)
+
+        // Helper to build synthetic 21-point hand with chosen fingers extended or curled
+        fun buildHand(
+            originX: Float = 0.5f,
+            indexExt: Boolean,
+            middleExt: Boolean,
+            ringExt: Boolean,
+            pinkyExt: Boolean,
+            pinchThumbToIndex: Boolean = false
+        ): List<com.example.engine.MocapLandmark3D> {
+            val h = MutableList(21) { com.example.engine.MocapLandmark3D(originX, 0.60f, 0f) }
+            h[0] = com.example.engine.MocapLandmark3D(originX, 0.70f, 0f) // wrist
+            h[9] = com.example.engine.MocapLandmark3D(originX, 0.56f, 0f) // palm center
+            fun setFinger(pipIdx: Int, tipIdx: Int, xOff: Float, extended: Boolean) {
+                h[pipIdx] = com.example.engine.MocapLandmark3D(originX + xOff, 0.52f, 0f)
+                h[tipIdx] = com.example.engine.MocapLandmark3D(originX + xOff, if (extended) 0.34f else 0.62f, 0f)
+            }
+            setFinger(6, 8, -0.04f, indexExt)
+            setFinger(10, 12, 0.0f, middleExt)
+            setFinger(14, 16, 0.04f, ringExt)
+            setFinger(18, 20, 0.08f, pinkyExt)
+            h[4] = if (pinchThumbToIndex) {
+                com.example.engine.MocapLandmark3D(h[8].x + 0.01f, h[8].y + 0.01f, 0f)
+            } else {
+                com.example.engine.MocapLandmark3D(originX - 0.14f, 0.58f, 0f)
+            }
+            return h
+        }
+
+        val openHand = buildHand(indexExt = true, middleExt = true, ringExt = true, pinkyExt = true)
+        val fistHand = buildHand(indexExt = false, middleExt = false, ringExt = false, pinkyExt = false)
+        val pointHand = buildHand(indexExt = true, middleExt = false, ringExt = false, pinkyExt = false)
+        val peaceHand = buildHand(indexExt = true, middleExt = true, ringExt = false, pinkyExt = false)
+        val holdHand = buildHand(indexExt = false, middleExt = false, ringExt = false, pinkyExt = false, pinchThumbToIndex = true)
+        val namaskarLeft = buildHand(originX = 0.48f, indexExt = true, middleExt = true, ringExt = true, pinkyExt = true)
+        val namaskarRight = buildHand(originX = 0.52f, indexExt = true, middleExt = true, ringExt = true, pinkyExt = true)
+
+        assertEquals(com.example.engine.MocapPalmGesture.OPEN, com.example.engine.MediaPipeMocapRetargeter.classifyPalmGesture(openHand))
+        assertEquals(com.example.engine.MocapPalmGesture.FIST, com.example.engine.MediaPipeMocapRetargeter.classifyPalmGesture(fistHand))
+        assertEquals(com.example.engine.MocapPalmGesture.POINT, com.example.engine.MediaPipeMocapRetargeter.classifyPalmGesture(pointHand))
+        assertEquals(com.example.engine.MocapPalmGesture.PEACE, com.example.engine.MediaPipeMocapRetargeter.classifyPalmGesture(peaceHand))
+        assertEquals(com.example.engine.MocapPalmGesture.HOLD, com.example.engine.MediaPipeMocapRetargeter.classifyPalmGesture(holdHand))
+        assertEquals(
+            com.example.engine.MocapPalmGesture.NAMASKAR,
+            com.example.engine.MediaPipeMocapRetargeter.classifyPalmGesture(namaskarLeft, namaskarRight)
+        )
+    }
+
+    @Test
+    fun `Stage 2C - MocapEmaSmoother reduces high-frequency jitter and baker stamps selected tracks onto timeline`() {
+        val smoother = com.example.engine.MocapEmaSmoother(initialAlpha = 0.30f)
+        val base = com.example.engine.MocapRetargetedFrame(
+            timestampMs = 0L,
+            poseOffsets = PoseKeyframeOffsets(leftArmOffset = 0f),
+            hasPoseData = true
+        )
+        val spike = com.example.engine.MocapRetargetedFrame(
+            timestampMs = 40L,
+            poseOffsets = PoseKeyframeOffsets(leftArmOffset = 100f),
+            hasPoseData = true
+        )
+        val s0 = smoother.smooth(base)
+        val s1 = smoother.smooth(spike)
+        val s2 = smoother.smooth(spike.copy(timestampMs = 80L))
+        assertEquals(0f, s0.poseOffsets.leftArmOffset, 0.01f)
+        assertEquals(30f, s1.poseOffsets.leftArmOffset, 0.5f)
+        assertTrue("EMA should converge monotonically toward target", s2.poseOffsets.leftArmOffset > s1.poseOffsets.leftArmOffset && s2.poseOffsets.leftArmOffset < 100f)
+
+        // Bake 6 captured frames at 24fps (step=2) with Legs DISABLED and Expression+Hands ENABLED
+        val charLayer = AnimationLayer(id = "l_mocap", name = "Mocap Actor", type = LayerType.CHARACTER, orderIndex = 0)
+        val clip = TimelineClip(
+            id = "c_mocap",
+            layerId = charLayer.id,
+            name = "Hero",
+            characterId = BuiltInCatalog.builtInCharacters.first().id,
+            startFrame = 0,
+            durationFrames = 96
+        )
+        val doc = ProjectDocument(fps = 24, scenes = listOf(AnimationScene(layers = listOf(charLayer), clips = listOf(clip))))
+        val captured = (0 until 6).map { i ->
+            com.example.engine.MocapRetargetedFrame(
+                timestampMs = i * 84L, // ~2 frames apart at 24fps
+                poseOffsets = PoseKeyframeOffsets(
+                    headNodOffset = 12f,
+                    leftArmOffset = 45f,
+                    leftLegOffset = 50f
+                ),
+                expression = FacialExpression.HAPPY,
+                mouthOverride = MouthShapeOverride.SMILE,
+                handPose = HandPoseType.POINT,
+                hasFaceData = true,
+                hasPoseData = true,
+                hasHandData = true
+            )
+        }
+        val (bakedDoc, stampedCount) = com.example.engine.MediaPipeMocapRetargeter.bakeMocapRecordingToProject(
+            project = doc,
+            clipId = clip.id,
+            startGlobalFrame = 10,
+            frames = captured,
+            config = com.example.engine.MocapBakeConfig(
+                sampleEveryNFrames = 2,
+                bakeIkPose = true,
+                bakeExpression = true,
+                bakeHands = true,
+                bakeLegs = false,
+                enforceJointLimits = true
+            ),
+            fps = 24
+        )
+        assertTrue("Should bake at least 3 sampled keyframes, got $stampedCount", stampedCount >= 3)
+        val bakedClip = bakedDoc.activeScene.clips.first { it.id == clip.id }
+        val evalAt10 = KeyframeEvaluator.evaluate(bakedClip, 10)
+        assertEquals(FacialExpression.HAPPY, evalAt10.expressionOverride)
+        assertEquals(MouthShapeOverride.SMILE, evalAt10.mouthShapeOverride)
+        assertEquals(HandPoseType.POINT, evalAt10.handPoseOverride)
+        assertTrue("Hands track enabled -> leftArmOffset should be baked", evalAt10.poseOffsets.leftArmOffset > 30f)
+        assertEquals("Legs track disabled -> leftLegOffset must remain untouched (0)", 0f, evalAt10.poseOffsets.leftLegOffset, 0.01f)
+    }
+
+    @Test
+    fun `Pro Animation Polish - 180 presets loop seamlessly with exact Canvas FK signs, track isolation, and C1 jump`() {
+        val all = com.example.engine.ModularActionEngine.catalog
+        val exprs = com.example.engine.ModularActionEngine.actionsForTrack(com.example.engine.ModularActionTrack.FACIAL)
+        val hands = com.example.engine.ModularActionEngine.actionsForTrack(com.example.engine.ModularActionTrack.HANDS)
+        val legs = com.example.engine.ModularActionEngine.actionsForTrack(com.example.engine.ModularActionTrack.LEGS)
+
+        assertTrue("Expected 50+ Expressions, got ${exprs.size}", exprs.size >= 50)
+        assertTrue("Expected 85+ Hand Parts, got ${hands.size}", hands.size >= 85)
+        assertTrue("Expected 38+ Leg Parts, got ${legs.size}", legs.size >= 38)
+        assertEquals("All 180 preset IDs must be unique", all.size, all.map { it.id }.toSet().size)
+
+        // 1. Every single preset must be seamless at loop boundary p=0f vs p=1f (no zero-snap pop!)
+        for (act in all) {
+            val s0 = com.example.engine.ModularActionEngine.evaluateAtProgress(act, 0f)
+            val s1 = com.example.engine.ModularActionEngine.evaluateAtProgress(act, 1f)
+            assertEquals("Loop discontinuity on leftArmDelta for ${act.id}", s0.leftArmDelta, s1.leftArmDelta, 0.5f)
+            assertEquals("Loop discontinuity on rightArmDelta for ${act.id}", s0.rightArmDelta, s1.rightArmDelta, 0.5f)
+            assertEquals("Loop discontinuity on leftLegDelta for ${act.id}", s0.leftLegDelta, s1.leftLegDelta, 0.5f)
+            assertEquals("Loop discontinuity on bodyBobDelta for ${act.id}", s0.bodyBobDelta, s1.bodyBobDelta, 0.5f)
+        }
+
+        // 2. Held poses must NOT collapse to 0 at p=0f (former holdEnv bug!)
+        val namaskar = com.example.engine.ModularActionEngine.findById("hand_namaskar")!!
+        val nam0 = com.example.engine.ModularActionEngine.evaluateAtProgress(namaskar, 0f)
+        assertTrue("Namaskar left forearm must fold inward (< -60 deg) at p=0, got ${nam0.leftForearmDelta}", nam0.leftForearmDelta < -60f)
+        assertTrue("Namaskar right forearm must fold inward (> 60 deg) at p=0, got ${nam0.rightForearmDelta}", nam0.rightForearmDelta > 60f)
+
+        // Exact Android Canvas FK check: Namaskar hands must be closer to center X than elbows!
+        val namGeom = com.example.ui.screens.editor.SilhouettePreviewGeometryBuilder.build(namaskar, nam0, 140f, 90f)
+        val cx = 70f
+        assertTrue(
+            "Left Namaskar hand (${namGeom.leftHand.first}) must fold inward toward center ($cx) compared to elbow (${namGeom.leftElbow.first})",
+            kotlin.math.abs(namGeom.leftHand.first - cx) < kotlin.math.abs(namGeom.leftElbow.first - cx)
+        )
+        assertTrue(
+            "Right Namaskar hand (${namGeom.rightHand.first}) must fold inward toward center ($cx) compared to elbow (${namGeom.rightElbow.first})",
+            kotlin.math.abs(namGeom.rightHand.first - cx) < kotlin.math.abs(namGeom.rightElbow.first - cx)
+        )
+
+        // Single right arm silhouette metadata check
+        val angryR = com.example.engine.ModularActionEngine.findById("hand_angry_r")!!
+        assertEquals("single_right_arm", com.example.engine.ModularActionEngine.evaluateAtProgress(angryR, 0.3f).silhouetteStyle)
+        val ashirwaadR = com.example.engine.ModularActionEngine.findById("hand_gods_ashirwaad_r")!!
+        assertEquals("single_right_arm", com.example.engine.ModularActionEngine.evaluateAtProgress(ashirwaadR, 0.3f).silhouetteStyle)
+
+        // 3. Track isolation & bodyBobDelta / squashX propagation through KeyframeEvaluator
+        val layer = AnimationLayer(id = "l_iso", name = "Actor", type = LayerType.CHARACTER, orderIndex = 0)
+        val clip = TimelineClip(
+            id = "c_iso",
+            layerId = layer.id,
+            name = "Hero",
+            characterId = BuiltInCatalog.builtInCharacters.first().id,
+            animationPresetType = AnimationPresetType.WALK,
+            modularHandId = "hand_namaskar",
+            modularLegId = "leg_sitting",
+            startFrame = 0,
+            durationFrames = 72
+        )
+        val eval = KeyframeEvaluator.evaluate(clip, 10)
+        val blend = KeyframeEvaluator.evaluateSimultaneousCharacterTracks(clip, eval, globalFrame = 10, fps = 24)
+        assertTrue("overrideHandTrack must be true when modularHandId is set", blend.overrideHandTrack)
+        assertTrue("overrideLegTrack must be true when modularLegId is set", blend.overrideLegTrack)
+        assertTrue("leg_sitting must lower hips via positive bodyBobDelta, got ${blend.bodyBobDelta}", blend.bodyBobDelta > 10f)
+
+        // 4. C1-continuous ProceduralRigRenderer.computePose(JUMPING) — zero 1-frame snap between 0.19f and 0.23f
+        val jumpBefore = ProceduralRigRenderer.computePose(AnimationPresetType.JUMPING, 0.21f)
+        val jumpAfter = ProceduralRigRenderer.computePose(AnimationPresetType.JUMPING, 0.23f)
+        assertTrue(
+            "JUMPING bodyBobY must transition smoothly across takeoff (delta=${kotlin.math.abs(jumpAfter.bodyBobY - jumpBefore.bodyBobY)})",
+            kotlin.math.abs(jumpAfter.bodyBobY - jumpBefore.bodyBobY) < 8f
+        )
+        assertTrue(
+            "JUMPING leftArmDeg must transition smoothly across takeoff (delta=${kotlin.math.abs(jumpAfter.leftArmDeg - jumpBefore.leftArmDeg)})",
+            kotlin.math.abs(jumpAfter.leftArmDeg - jumpBefore.leftArmDeg) < 16f
+        )
+    }
 }

@@ -77,6 +77,7 @@ fun IkStudioModal(
     onDeleteSavedPoses: (Set<String>) -> Unit = { ids -> ids.forEach(onDeleteSavedPose) },
     onApplySavedPose: (SavedPose) -> Unit,
     onInsertModularAction: (clipId: String, action: ModularActionDef) -> Unit,
+    onApplyModularControl: (clipId: String, selection: ModularControlSelection) -> Unit = { _, _ -> },
     onCommitIkPose: (
         clipId: String,
         offsets: PoseKeyframeOffsets,
@@ -111,50 +112,50 @@ fun IkStudioModal(
     var activeDragHandle by remember { mutableStateOf<IkHandleId?>(null) }
     var isDraggingGaze by remember { mutableStateOf(false) }
 
-    // Modular Action Preview Mode state (strictly non-destructive!)
-    var selectedActionTrack by remember { mutableStateOf(ModularActionTrack.FACIAL) }
+    // Pro "Control" Modular Action Library live preview state (strictly non-destructive!)
+    var controlSelectionPreview by remember(clip.id) {
+        mutableStateOf(ModularControlSelection.fromClip(clip))
+    }
     var previewAction by remember { mutableStateOf<ModularActionDef?>(null) }
-    var previewProgress by remember { mutableFloatStateOf(0f) }
-    var isPreviewPlaying by remember { mutableStateOf(false) }
+    var previewTickFrame by remember { mutableIntStateOf(0) }
 
     // Save Pose Dialog state
     var showSavePoseDialog by remember { mutableStateOf(false) }
 
-    // Safety: automatically cancel Action Preview Mode on tab switch or character change
+    // Safety: reset preview ticker cleanly on tab switch or character change
     LaunchedEffect(activeTab, clip.id) {
         if (activeTab != 1) {
             previewAction = null
-            isPreviewPlaying = false
-            previewProgress = 0f
         }
     }
 
     DisposableEffect(Unit) {
         onDispose {
             previewAction = null
-            isPreviewPlaying = false
         }
     }
 
-    // Smooth 30fps loop playback for Modular Action Preview Mode
-    LaunchedEffect(previewAction?.id, isPreviewPlaying) {
-        val act = previewAction ?: return@LaunchedEffect
-        if (!isPreviewPlaying) return@LaunchedEffect
-        val durationMs = ((act.durationFrames.coerceAtLeast(8) * 1000f) / fps.coerceAtLeast(12)).coerceIn(350f, 3500f)
-        val stepPerTick = 33f / durationMs
+    // Smooth 24fps live preview ticker on the big IK rig whenever Control tab is active
+    LaunchedEffect(activeTab) {
+        if (activeTab != 1) return@LaunchedEffect
         while (true) {
-            delay(33L) // smooth 30fps preview cadence
-            val next = previewProgress + stepPerTick
-            previewProgress = if (next > 1f) next - 1f else next
+            delay(42L) // ~24fps live multi-track rig preview
+            previewTickFrame = (previewTickFrame + 1) % 100_000
         }
     }
 
-    // Compute displayed pose: either base pose or non-destructively blended preview pose
+    // Compute displayed pose: either base pose or non-destructively layered Control preview pose
     val activeCombinedBaseOffsets = remember(workingOffsets, workingHeadTilt) {
         workingOffsets.copy(
             headNodOffset = (workingOffsets.headNodOffset + workingHeadTilt).coerceIn(-65f, 65f)
         )
     }
+
+    val isControlPreviewActive = activeTab == 1 && (
+        controlSelectionPreview.activeCount > 0 ||
+            controlSelectionPreview.speakingMode != CharacterSpeakingMode.AUTO_LIP_SYNC ||
+            controlSelectionPreview.eyeblinkMode != CharacterEyeblinkMode.ENABLE
+        )
 
     val displayedPose: BlendedPreviewPose = remember(
         activeCombinedBaseOffsets,
@@ -165,22 +166,26 @@ fun IkStudioModal(
         workingHandPose,
         workingGaze,
         workingHeadTilt,
-        previewAction,
-        previewProgress
+        isControlPreviewActive,
+        controlSelectionPreview,
+        previewTickFrame
     ) {
-        val act = previewAction
-        if (act != null) {
-            ModularActionEngine.blendPreviewOntoBase(
+        if (isControlPreviewActive) {
+            ModularActionEngine.blendControlSelectionOntoBase(
                 basePose = activeCombinedBaseOffsets,
                 baseExpression = workingExpression,
+                baseFacialPresetId = evalTransform.facialPresetId,
                 baseMouthOverride = evalTransform.mouthShapeOverride ?: MouthShapeOverride.AUTO,
                 baseEyeOverride = evalTransform.eyeShapeOverride ?: EyeShapeOverride.AUTO,
                 baseEyebrowOverride = evalTransform.eyebrowShapeOverride ?: EyebrowShapeOverride.AUTO,
                 baseHandPose = workingHandPose,
+                baseBlinkOverride = evalTransform.blinkOverride,
                 baseGaze = workingGaze,
                 baseHeadTilt = workingHeadTilt,
-                action = act,
-                progress = previewProgress
+                selection = controlSelectionPreview,
+                localFrame = previewTickFrame,
+                fps = fps.coerceAtLeast(12),
+                speedMultiplier = clip.speedMultiplier
             )
         } else {
             BlendedPreviewPose(
@@ -201,7 +206,6 @@ fun IkStudioModal(
     Dialog(
         onDismissRequest = {
             previewAction = null
-            isPreviewPlaying = false
             onDismiss()
         },
         properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false)
@@ -231,7 +235,6 @@ fun IkStudioModal(
                         IconButton(
                             onClick = {
                                 previewAction = null
-                                isPreviewPlaying = false
                                 onDismiss()
                             },
                             modifier = Modifier
@@ -285,7 +288,6 @@ fun IkStudioModal(
                         Button(
                             onClick = {
                                 previewAction = null
-                                isPreviewPlaying = false
                                 onCommitIkPose(
                                     clip.id,
                                     activeCombinedBaseOffsets,
@@ -329,7 +331,8 @@ fun IkStudioModal(
                         viewportPanX = viewportPanX,
                         viewportPanY = viewportPanY,
                         isPanMode = isPanMode,
-                        isPreviewingAction = previewAction != null,
+                        isPreviewingAction = isControlPreviewActive,
+                        previewTickFrame = previewTickFrame,
                         activeDragHandle = activeDragHandle,
                         isDraggingGaze = isDraggingGaze,
                         ikFlipBend = ikFlipBend,
@@ -351,8 +354,9 @@ fun IkStudioModal(
                     )
 
                     // Top-Left Live Preview Mode Indicator Badge
-                    if (previewAction != null) {
-                        val act = previewAction!!
+                    if (isControlPreviewActive) {
+                        val badgeLabel = previewAction?.let { "${it.name} (${it.track.displayName})" }
+                            ?: "${controlSelectionPreview.activeCount} Control Layers Active"
                         Surface(
                             color = StudioObsidian.copy(alpha = 0.90f),
                             shape = RoundedCornerShape(12.dp),
@@ -374,7 +378,7 @@ fun IkStudioModal(
                                         .background(AmberKeyframe)
                                 )
                                 Text(
-                                    text = "PREVIEWING: ${act.name} (${act.track.timelineTrackLabel} Track)",
+                                    text = "LIVE CONTROL: $badgeLabel",
                                     color = AmberKeyframe,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
@@ -472,7 +476,7 @@ fun IkStudioModal(
                         modifier = Modifier
                             .height(48.dp)
                             .testTag("ik_studio_tab_actions"),
-                        text = { Text("Actions", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold) }
+                        text = { Text("Control", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold) }
                     )
                     Tab(
                         selected = activeTab == 2,
@@ -526,35 +530,15 @@ fun IkStudioModal(
                             }
                         )
 
-                        1 -> IkModularActionsTab(
-                            selectedTrack = selectedActionTrack,
-                            previewAction = previewAction,
-                            previewProgress = previewProgress,
-                            isPreviewPlaying = isPreviewPlaying,
-                            onSelectTrack = { selectedActionTrack = it },
-                            onTapActionCard = { action ->
-                                // Tap to Preview (Non-Destructive)
-                                previewAction = action
-                                previewProgress = 0f
-                                isPreviewPlaying = true
+                        1 -> ModularControlLibraryPanel(
+                            initialSelection = controlSelectionPreview,
+                            onSelectionPreviewChanged = { nextSel, tapped ->
+                                controlSelectionPreview = nextSel
+                                previewAction = tapped
                             },
-                            onTogglePlayPause = { isPreviewPlaying = !isPreviewPlaying },
-                            onScrubProgress = { p ->
-                                isPreviewPlaying = false
-                                previewProgress = p.coerceIn(0f, 1f)
-                            },
-                            onInsertAtPlayhead = { action ->
-                                onInsertModularAction(clip.id, action)
-                                // Refresh working pose from action midpoint/end cleanly and exit preview
-                                previewAction = null
-                                isPreviewPlaying = false
-                                previewProgress = 0f
-                            },
-                            onCancelPreview = {
-                                // Instant exact restore with zero leftover state
-                                previewAction = null
-                                isPreviewPlaying = false
-                                previewProgress = 0f
+                            onApplyChanges = { finalSel ->
+                                onApplyModularControl(clip.id, finalSel)
+                                onDismiss()
                             }
                         )
 
@@ -648,6 +632,7 @@ private fun IkStudioInteractiveCanvas(
     viewportPanY: Float,
     isPanMode: Boolean,
     isPreviewingAction: Boolean,
+    previewTickFrame: Int = 0,
     activeDragHandle: IkHandleId?,
     isDraggingGaze: Boolean,
     ikFlipBend: Boolean,
@@ -835,13 +820,15 @@ private fun IkStudioInteractiveCanvas(
         )
 
         val baseScale = (min(w, h) / 420f) * viewportZoom
+        val effectiveAnimFrame = if (isPreviewingAction) previewTickFrame else currentFrame
         val organicFace = FacialExpressionEngine.evaluateOrganicFace(
             activePresetId = displayedPose.facialPresetId,
             previousPresetId = null,
             fallbackExpression = displayedPose.expression,
             framesSinceKey = 18,
-            globalFrame = currentFrame,
+            globalFrame = effectiveAnimFrame,
             fps = fps,
+            blinkOverride = displayedPose.blinkOverride,
             mouthOverride = displayedPose.mouthOverride,
             eyeOverride = displayedPose.eyeOverride,
             eyebrowOverride = displayedPose.eyebrowOverride
@@ -870,7 +857,15 @@ private fun IkStudioInteractiveCanvas(
                 handPose = displayedPose.handPose,
                 blinkOverride = displayedPose.blinkOverride,
                 atlasSlices = atlasSlices,
-                organicFace = organicFace
+                organicFace = organicFace,
+                globalFrame = effectiveAnimFrame,
+                fps = fps,
+                clipSeed = clip.id.hashCode(),
+                bodyBobDelta = displayedPose.bodyBobDelta,
+                squashOverrideX = displayedPose.squashX,
+                squashOverrideY = displayedPose.squashY,
+                overrideHandTrack = displayedPose.overrideHandTrack,
+                overrideLegTrack = displayedPose.overrideLegTrack
             )
             nativeCanvas.restore()
         }
@@ -885,7 +880,21 @@ private fun IkStudioInteractiveCanvas(
             opacity = 1f,
             poseOffsets = displayedPose.poseOffsets
         )
-        val posed = basePose.withOffsets(displayedPose.poseOffsets, displayedPose.expression)
+        val isolatedBaseForHandles = basePose.copy(
+            leftArmDeg = if (displayedPose.overrideHandTrack) 0f else basePose.leftArmDeg,
+            leftForearmDeg = if (displayedPose.overrideHandTrack) 0f else basePose.leftForearmDeg,
+            rightArmDeg = if (displayedPose.overrideHandTrack) 0f else basePose.rightArmDeg,
+            rightForearmDeg = if (displayedPose.overrideHandTrack) 0f else basePose.rightForearmDeg,
+            leftLegDeg = if (displayedPose.overrideLegTrack) 0f else basePose.leftLegDeg,
+            leftKneeDeg = if (displayedPose.overrideLegTrack) 0f else basePose.leftKneeDeg,
+            rightLegDeg = if (displayedPose.overrideLegTrack) 0f else basePose.rightLegDeg,
+            rightKneeDeg = if (displayedPose.overrideLegTrack) 0f else basePose.rightKneeDeg,
+            bodyTiltDeg = if (displayedPose.overrideLegTrack) 0f else basePose.bodyTiltDeg,
+            bodyBobY = if (displayedPose.overrideLegTrack) 0f else basePose.bodyBobY
+        )
+        val posed = isolatedBaseForHandles
+            .withOffsets(displayedPose.poseOffsets, displayedPose.expression)
+            .let { it.copy(bodyBobY = it.bodyBobY + displayedPose.bodyBobDelta) }
         val (handles, anchors) = IkRigSolver.computeStageIkHandlesWithAnchors(
             clip = clip,
             rig = rig,
